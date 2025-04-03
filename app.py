@@ -1,17 +1,26 @@
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 import asyncio
 from fastapi.encoders import jsonable_encoder
-from contextlib import asynccontextmanager
-from serving.model_loader import load_model
+from serving.model_loader import ForwardModel
 from serving.text_generation import generate_text
-from serving.models import ChatRequest, CompletionRequest
+from serving.req_protocol import ChatRequest, CompletionRequest
+import argparse
 
 # Global model variable
-OnServingModel = load_model()   
+OnServingModel = None
 
-app = FastAPI(title="Multimodal LLM Serving Framework")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Load the ML model
+    global OnServingModel
+    OnServingModel = ForwardModel()
+    yield
+
+
+app = FastAPI(title="Multimodal LLM Serving Framework", lifespan=lifespan)
 
 # Add CORS middleware
 app.add_middleware(
@@ -69,20 +78,19 @@ async def chat_completions(request: ChatRequest):
     
     prompt += "<start_of_turn>model\n"
 
-    
+    inputs = OnServingModel.tokenize(prompt, request.messages)
+
     # Generate text with image context if available
-    response_text = await generate_text(
+    engine_out = await generate_text(
         model=OnServingModel,
-        prompt=prompt,
-        messages=json_body['messages'],
-        image_embeddings=None,
+        inputs=inputs,
         temperature=request.temperature,
         top_p=request.top_p,
         max_tokens=request.max_tokens,
-        is_gemma="gemma" in request.model.lower(),
-        use_cuda_graph=True  # Enable CUDA Graph optimization
+        # use_cuda_graph=True  # Enable CUDA Graph optimization
     )
-    
+    response_text = engine_out["text"]
+    usage = engine_out["usage"]
     # Format the response according to OpenAI's format
     response = {
         "id": "chatcmpl-123",
@@ -99,6 +107,7 @@ async def chat_completions(request: ChatRequest):
                 "finish_reason": "stop"
             }
         ],
+        "usage":usage
     }
     
     return response
@@ -108,18 +117,18 @@ async def completions(request: CompletionRequest):
     if OnServingModel is None:
         raise HTTPException(status_code=500, detail="Model not loaded")
     
+    inputs = OnServingModel.tokenize(request.prompt)
     # Generate text
-    response_text = await generate_text(
+    engine_out = await generate_text(
         model=OnServingModel,
-        prompt=request.prompt,
-        messages=None,
+        inputs=inputs,
         temperature=request.temperature,
         top_p=request.top_p,
         max_tokens=request.max_tokens,
-        is_gemma="gemma" in request.model.lower(),
-        use_cuda_graph=True  # Enable CUDA Graph optimization
+        # use_cuda_graph=True  # Enable CUDA Graph optimization
     )
-    
+    response_text = engine_out["text"]
+    usage = engine_out["usage"]
     # Format the response according to OpenAI's format
     response = {
         "id": "cmpl-123",
@@ -134,6 +143,7 @@ async def completions(request: CompletionRequest):
                 "finish_reason": "stop"
             }
         ],
+        "usage":usage
     }
     
     return response
@@ -144,4 +154,8 @@ async def health():
     return {"status": "healthy"}
 
 if __name__ == "__main__":
-    uvicorn.run("app:app", host="0.0.0.0", port=6006, reload=False)
+    # Parse command line arguments
+    argparser = argparse.ArgumentParser(description="Gemma Model Client")
+    argparser.add_argument("--port", type=int, default=6006, help="Port number")
+    args = argparser.parse_args()
+    uvicorn.run("app:app", host="0.0.0.0", port=args.port, reload=False)
