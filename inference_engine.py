@@ -5,7 +5,7 @@ import time
 from typing import Dict, Any, List
 
 from serving.model_loader import ForwardModel
-from serving.text_generation import generate_text
+from serving.model_runner import generate_text
 
 class InferenceWorker:
     """Worker that processes inference requests from a queue."""

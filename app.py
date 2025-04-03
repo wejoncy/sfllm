@@ -10,7 +10,7 @@ from serving.req_protocol import ChatRequest, CompletionRequest
 from queue_management import QueueManager
 from inference_engine import InferenceWorker
 from message_formatter import format_chat_messages
-from config import DEFAULT_PORT, REQUEST_TIMEOUT
+from config import REQUEST_TIMEOUT
 
 # Global variables
 queue_manager = QueueManager()
@@ -64,6 +64,12 @@ async def chat_completions(request: ChatRequest):
     try:
         request_id = queue_manager.submit_request(request_data)
         response = await queue_manager.get_response(request_id, timeout=REQUEST_TIMEOUT)
+        if isinstance(response, dict) and "error" in response:
+            raise HTTPException(
+                status_code=500,
+                detail=response.get("error", "Unknown error during inference")
+            )
+        
         response_text = response["text"]
         usage = response["usage"]
         # Format the response
@@ -84,11 +90,7 @@ async def chat_completions(request: ChatRequest):
             ],
             "usage": usage
         }
-        if isinstance(response, dict) and "error" in response:
-            raise HTTPException(
-                status_code=500,
-                detail=response.get("error", "Unknown error during inference")
-            )
+
             
         return response
         
@@ -114,6 +116,12 @@ async def completions(request: CompletionRequest):
     try:
         request_id = queue_manager.submit_request(request_data)
         output = await queue_manager.get_response(request_id, timeout=REQUEST_TIMEOUT)
+        if isinstance(output, dict) and "error" in output:
+            raise HTTPException(
+                status_code=500,
+                detail=output.get("error", "Unknown error during inference")
+            )
+            
         response_text = output["text"]
         usage = output["usage"]
         # Format the response
@@ -133,12 +141,7 @@ async def completions(request: CompletionRequest):
             "usage": usage
         }
         
-        if isinstance(response, dict) and "error" in response:
-            raise HTTPException(
-                status_code=500,
-                detail=response.get("error", "Unknown error during inference")
-            )
-            
+
         return response
         
     except TimeoutError:
@@ -158,6 +161,6 @@ async def health():
 if __name__ == "__main__":
     # Parse command line arguments
     argparser = argparse.ArgumentParser(description="Gemma Model Client")
-    argparser.add_argument("--port", type=int, default=6006, help="Port number")
+    argparser.add_argument("--port", type=int, default=8080, help="Port number")
     args = argparser.parse_args()
     uvicorn.run("app:app", host="0.0.0.0", port=args.port, reload=False)

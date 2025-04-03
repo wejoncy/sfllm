@@ -17,9 +17,7 @@ async def generate_text(model, inputs, temperature=0.7, top_p=1.0,
         model: The loaded model and tokenizer
         temperature: Controls randomness in boltzmann distribution
         top_p: Controls diversity via nucleus sampling
-        max_tokens: Maximum number of tokens to generate
-        use_cuda_graph: Whether to use CUDA graphs for generation (only for token generation, not prefill)
-        
+        max_tokens: Maximum number of tokens to generate        
     Returns:
         The generated text
     """
