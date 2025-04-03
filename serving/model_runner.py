@@ -6,6 +6,8 @@ from transformers.cache_utils import (
     DynamicCache,
     StaticCache,
 )
+import time
+from typing import Dict, List, Any, Optional
 
 
 async def generate_text(model, inputs, temperature=0.7, top_p=1.0, 
@@ -58,3 +60,34 @@ async def generate_text(model, inputs, temperature=0.7, top_p=1.0,
     
     # Run the generation in a separate thread to avoid blocking the event loop
     return await loop.run_in_executor(None, _generate)
+
+
+async def batch_generate_text(model, batch_inputs):
+    """
+    Generate text for a batch of requests.
+    
+    Args:
+        model: The model to use for generation
+        batch_inputs: List of tokenized inputs
+        
+    Returns:
+        List of generated text outputs
+    """
+    if not batch_inputs:
+        return []
+    
+    results = []
+    
+    # Process each input in the batch
+    for i, (temperature, top_p, max_tokens, inputs) in enumerate(batch_inputs):
+        output = await generate_text(
+            model,
+            inputs,
+            temperature=temperature,
+            top_p=top_p,
+            max_tokens=max_tokens
+        )
+        
+        # Store the result
+        results.append(output)
+    return results

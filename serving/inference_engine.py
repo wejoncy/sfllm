@@ -1,11 +1,9 @@
 import asyncio
-import queue
-import threading
-import time
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Tuple
 
 from serving.model_loader import ForwardModel
-from serving.model_runner import generate_text
+from serving.model_runner import generate_text,batch_generate_text
+from serving.scheduler import Scheduler
 
 class InferenceWorker:
     """Worker that processes inference requests from a queue."""
@@ -22,10 +20,12 @@ class InferenceWorker:
         self.running = False
         self.worker_threads = []
         self.response_processor = None
+        self.scheduler = Scheduler(queue_manager)
     
-    async def process_request(self, request_id: str, request_data: Dict[str, Any]):
+    async def process_requests(self, requests: List[Tuple[str, Dict[str, Any]]]):
         """Process a single inference request."""
-        try:
+        batch_requests = []
+        for request_id, request_data in requests:
             request_type = request_data.get("type")
             temperature=request_data.get("temperature", 0.7)
             top_p=request_data.get("top_p", 0.95)
@@ -39,19 +39,16 @@ class InferenceWorker:
                 # Handle text completion
                 prompt = request_data.get("prompt", "")
 
-            inputs = self.model.tokenize(prompt, messages)   
-            # Generate text
-            engine_out = await generate_text(
+            inputs = self.model.tokenize(prompt, messages)
+            batch_requests.append((temperature, top_p, max_tokens, inputs))
+        try:
+            batch_output = await batch_generate_text(
                 model=self.model,
-                inputs=inputs,
-                temperature=temperature,
-                top_p=top_p,
-                max_tokens=max_tokens,
+                batch_inputs=batch_requests,
             )
-            
-            # Submit the response
-            self.queue_manager.submit_response(request_id, engine_out)
-            
+            for engine_out, (request_id, _) in zip(batch_output, requests):
+                # Submit the response
+                self.queue_manager.submit_response(request_id, engine_out)
         except Exception as e:
             error_response = {
                 "error": str(e),
@@ -63,15 +60,13 @@ class InferenceWorker:
         """Worker coroutine that processes requests from the queue."""
         while self.running:
             try:
-                # Get the next request with a timeout
-                request_id, request_data = self.queue_manager.get_next_request(timeout=0.1)
-                
+                running_requests = self.scheduler.schedule()
+                if len(running_requests) == 0:
+                    # No request available, just continue
+                    await asyncio.sleep(0.1)
+                    continue
                 # Process the request
-                await self.process_request(request_id, request_data)
-                
-            except queue.Empty:
-                # No request available, just continue
-                await asyncio.sleep(0.01)
+                await self.process_requests(running_requests)
             except asyncio.CancelledError:
                 # Exit cleanly if the task is cancelled
                 break

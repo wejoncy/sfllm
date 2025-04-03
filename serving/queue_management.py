@@ -1,9 +1,9 @@
 import queue
-import uuid
 import asyncio
+import uuid
 import threading
 import time
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Any, Optional, Tuple, List
 
 class QueueManager:
     """Manages input and output queues for the inference engine."""
@@ -28,20 +28,19 @@ class QueueManager:
         self.input_queue.put((request_id, request_data))
         return request_id
     
-    def get_next_request(self, timeout: Optional[float] = None) -> Tuple[str, Dict[str, Any]]:
+    def get_next_request(self) -> Tuple[str, Dict[str, Any]]:
         """
         Get the next request from the input queue.
         
-        Args:
-            timeout: How long to wait (in seconds) for a request
-            
         Returns:
             Tuple of (request_id, request_data)
-            
-        Raises:
-            queue.Empty: If no request is available within timeout
         """
-        return self.input_queue.get(block=True, timeout=timeout)
+        req = None
+        try:
+            req = self.input_queue.get(block=False)
+        except queue.Empty:
+            pass
+        return req
     
     def submit_response(self, request_id: str, response: Any) -> None:
         """
