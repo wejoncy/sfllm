@@ -3,7 +3,6 @@ import torch
 from transformers import AutoModelForCausalLM, AutoProcessor, AutoTokenizer
 import sglang as sgl
 
-USE_SGLANG = os.getenv("USE_SGLANG", "0") == "1"
 MODEL_PATH = "/root/work/gemma-3-4b-it"
 
 def load_model(model_name=MODEL_PATH):
@@ -17,15 +16,10 @@ def load_model(model_name=MODEL_PATH):
         A dictionary containing model, tokenizer, and processor
     """
     print(f"Loading model: {model_name}")
-    
-    # use sglang
-    if USE_SGLANG:
-        model = sgl.Engine(model_path=MODEL_PATH)
-    else:
-        model = AutoModelForCausalLM.from_pretrained(
-            model_name,
-            device_map="auto",
-        )
+    model = AutoModelForCausalLM.from_pretrained(
+        model_name,
+        device_map="auto",
+    )
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     
     # Try loading a processor for vision models
@@ -33,8 +27,7 @@ def load_model(model_name=MODEL_PATH):
         processor = AutoProcessor.from_pretrained(model_name)
     except:
         processor = None
-
-        
+   
     return {
         "model": model, 
         "tokenizer": tokenizer,

@@ -9,7 +9,7 @@ class Client:
     def __init__(self, host: str):
         self.host = host
 
-    def generate(self, prompt: str, model: str = "gemma-3-4b-it", max_tokens: int = 64,
+    def generate_chat(self, prompt: str, model: str = "gemma-3-4b-it", max_tokens: int = 64,
                  temperature: float = 0.8, top_p: float = 0.95, stream: bool = False) -> Dict:
         payload = {
             "model": model,
@@ -37,7 +37,27 @@ class Client:
         )
         response.raise_for_status()
         result = response.json()
+        return result.get("message", "")
+
+    def generate(self, prompt: str, model: str = "gemma-3-4b-it", max_tokens: int = 64,
+                 temperature: float = 0.8, top_p: float = 0.95, stream: bool = False) -> Dict:
+        payload = {
+            "model": model,
+            "prompt": prompt,
+            "temperature": temperature,
+            "top_p": top_p,
+            "max_tokens": max_tokens,
+            "stream": stream
+        }
+        session = requests.Session()
+        response = session.post(
+            f"{self.host}/v1/completions",
+            json=payload
+        )
+        response.raise_for_status()
+        result = response.json()
         return result.get("text", "") if "text" in result else result
+
 # Example usage
 if __name__ == "__main__":
     argparser = argparse.ArgumentParser(description="Gemma Model Client")

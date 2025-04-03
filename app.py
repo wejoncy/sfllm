@@ -103,6 +103,42 @@ async def chat_completions(request: ChatRequest):
     
     return response
 
+@app.post("/v1/completions")
+async def completions(request: CompletionRequest):
+    if OnServingModel is None:
+        raise HTTPException(status_code=500, detail="Model not loaded")
+    
+    # Generate text
+    response_text = await generate_text(
+        model=OnServingModel,
+        prompt=request.prompt,
+        messages=None,
+        temperature=request.temperature,
+        top_p=request.top_p,
+        max_tokens=request.max_tokens,
+        is_gemma="gemma" in request.model.lower(),
+        use_cuda_graph=True  # Enable CUDA Graph optimization
+    )
+    
+    # Format the response according to OpenAI's format
+    response = {
+        "id": "cmpl-123",
+        "object": "text_completion",
+        "created": int(asyncio.get_event_loop().time()),
+        "model": request.model,
+        "choices": [
+            {
+                "text": response_text,
+                "index": 0,
+                "logprobs": None,
+                "finish_reason": "stop"
+            }
+        ],
+    }
+    
+    return response
+
+
 @app.get("/health")
 async def health():
     return {"status": "healthy"}

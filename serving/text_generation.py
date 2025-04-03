@@ -6,15 +6,10 @@ from transformers.cache_utils import (
     DynamicCache,
     StaticCache,
 )
-from serving.model_loader import USE_SGLANG
 # Global cache for CUDA graphs by model type
 _cuda_graph_cache = {}
 _kv_cache_pool = {}
 
-
-def worker(model_obj,prompts,sampling_params,q):
-    outputs = model_obj.generate(prompts, sampling_params)
-    q.put(outputs)
 
 async def generate_text(model, prompt, messages, temperature=0.7, top_p=1.0, 
                         max_tokens=64, image_embeddings=None, 
@@ -43,21 +38,8 @@ async def generate_text(model, prompt, messages, temperature=0.7, top_p=1.0,
         prompt = processor.apply_chat_template(
                 messages, add_generation_prompt=True, tokenize=False,
                 return_dict=True, return_tensors="pt"
-            )
-    
-    #.to(model_obj.device, dtype=torch.bfloat16)
-    sampling_params = {"temperature": temperature, "top_p": top_p,"max_new_tokens": max_tokens}
+            )#.to(model_obj.device, dtype=torch.bfloat16)
 
-    if USE_SGLANG:
-        q = multiprocessing.Queue()
-        prompts = [prompt]
-        p = multiprocessing.Process(target=worker, args=(model_obj,prompts,sampling_params, q))
-        p.start()
-        p.join()
-        outputs = q.get()
-        # outputs = model_obj.generate(prompts, sampling_params)
-        # Print the outputs.
-        return outputs[0]['text']
     # Use a thread pool to run the model inference
     loop = asyncio.get_event_loop()
     
