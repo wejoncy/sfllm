@@ -93,7 +93,7 @@ async def generate_text(model, prompt, messages, temperature=0.7, top_p=1.0,
 
         # Initialize generated tokens with the first token from prefill
         generated_ids = outputs.sequences
-        generated_text = tokenizer.decode(generated_ids[:,input_length:], skip_special_tokens=True)
+        generated_text = tokenizer.decode(generated_ids[0,input_length:], skip_special_tokens=True)
         response = generated_text.strip()
         return response
 

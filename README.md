@@ -6,14 +6,6 @@ This project implements a serving framework for Google's Gemma 3-4B-IT model tha
 
 - Compatible with OpenAI API format
 - Supports chat completions (`/v1/chat/completions`)
-- Supports text completions (`/v1/completions`)
-- Supports multimodal inputs (images + text)
-- Custom endpoint for direct image uploads (`/v1/images_and_text`)
-- Health check endpoint (`/health`)
-- Optimized for Google's Gemma 3-4B-IT model
-- Uses Google's vision models for image processing
-- Performance optimization with CUDA Graphs for token generation
-- Pre-allocated KV cache to reduce memory fragmentation
 
 ## Setup
 
@@ -27,14 +19,14 @@ pip install -r requirements.txt
 python app.py
 ```
 
-The server will be available at http://localhost:8000
+The server will be available at http://localhost:6006
 
 ## API Usage
 
 ### Chat Completions
 
 ```bash
-curl -X POST "http://localhost:8000/v1/chat/completions" \
+curl -X POST "http://localhost:6006/v1/chat/completions" \
   -H "Content-Type: application/json" \
   -d '{
     "model": "google/gemma-3-4b-it",
@@ -45,43 +37,4 @@ curl -X POST "http://localhost:8000/v1/chat/completions" \
     "temperature": 0.7,
     "max_tokens": 1024
   }'
-```
-
-### Text Completions
-
-```bash
-curl -X POST "http://localhost:8000/v1/completions" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "google/gemma-3-4b-it",
-    "prompt": "Once upon a time",
-    "temperature": 0.7,
-    "max_tokens": 1024
-  }'
-```
-
-### Multimodal Inputs (Images + Text)
-
-```bash
-curl -X POST "http://localhost:8000/v1/images_and_text" \
-  -H "Content-Type: multipart/form-data" \
-  -F "image=@/path/to/your/image.jpg" \
-  -F 'payload={
-    "model": "google/gemma-3-4b-it",
-    "text": "Describe the image",
-    "temperature": 0.7,
-    "max_tokens": 1024
-  }'
-```
-
-## Docker Deployment
-
-Build the Docker image:
-```
-docker build -t llm-serving .
-```
-
-Run the container:
-```
-docker run -p 8000:8000 llm-serving
 ```
