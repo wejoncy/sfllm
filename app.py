@@ -7,8 +7,8 @@ from fastapi.encoders import jsonable_encoder
 import argparse
 
 from serving.req_protocol import ChatRequest, CompletionRequest
-from queue_management import QueueManager
-from inference_engine import InferenceWorker
+from serving.queue_management import QueueManager
+from serving.inference_engine import InferenceWorker
 from message_formatter import format_chat_messages
 from config import REQUEST_TIMEOUT
 
