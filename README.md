@@ -67,3 +67,53 @@ So I focus on what I can do for the inference service on the acspect of performa
 `python benchmark.py --concurrency 20 --requests 20`
 after the optimiation，we achieved **Throughput: 1.41 requests/second.**. It's 2 times faster than before.
 A very abvious improvement is the GPU utilization, the baseline can't leverage GPU all the time and it's very unefficent with only one batchsize.
+
+
+Some benchmark results
+```
+Throughput: 1.79 requests/second
+root@autodl-container-4c3247ac55-044103ae:~/work/gemma_serving# python benchmark.py --concurrency 20 --requests 40
+Server health check: {'status': 'healthy', 'queue_size': 0, 'workers': 1}
+Running benchmark with concurrency=20, requests=40
+Warming up the server...
+100%|██████████████████████████████████████████████████████████████████████████████████████████| 5/5 [00:12<00:00,  2.41s/it]
+Warm-up complete. starting benchmark...
+100%|████████████████████████████████████████████████████████████████████████████████████████| 40/40 [00:04<00:00,  9.88it/s]
+Waiting for remaining 40 tasks to complete...
+
+--- Benchmark Results ---
+Total Requests: 40
+Successful: 40 (100.0%)
+Failed: 0 (0.0%)
+
+Latency (seconds):
+  Min: 2.3248
+  Max: 19.9545
+  Avg: 0.5596
+  Median: 13.0541
+  Std Dev: 4.9845
+
+Throughput: 1.79 requests/second
+root@autodl-container-4c3247ac55-044103ae:~/work/gemma_serving# python benchmark.py --concurrency 20 --requests 40 --url http://104.208.77.11:8080
+Server health check: {'status': 'healthy', 'queue_size': 0, 'workers': 1}
+Running benchmark with concurrency=20, requests=40
+Warming up the server...
+100%|██████████████████████████████████████████████████████████████████████████████████████████| 5/5 [00:14<00:00,  2.82s/it]
+Warm-up complete. starting benchmark...
+100%|████████████████████████████████████████████████████████████████████████████████████████| 40/40 [00:04<00:00,  9.90it/s]
+Waiting for remaining 40 tasks to complete...
+
+--- Benchmark Results ---
+Total Requests: 40
+Successful: 40 (100.0%)
+Failed: 0 (0.0%)
+
+Latency (seconds):
+  Min: 3.4448
+  Max: 19.2793
+  Avg: 0.5603
+  Median: 13.4163
+  Std Dev: 4.5976
+
+Throughput: 1.78 requests/second
+```
