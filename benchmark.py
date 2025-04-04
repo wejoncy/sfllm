@@ -77,6 +77,7 @@ async def run_benchmark(url, concurrency, num_requests, prompts=None):
             if concurrency == 1:
                 start_idx+=1
                 results.extend(await asyncio.gather(*tasks[:start_idx]))
+                tasks = tasks[start_idx:]
             elif current_idx-start_idx >= concurrency*random.uniform(2, 8):
                 start_idx += concurrency//4 
                 # Wait for some tasks to complete
@@ -125,8 +126,8 @@ def print_results(results):
 async def main():
     parser = argparse.ArgumentParser(description="Benchmark the LLM serving system")
     parser.add_argument("--url", default="http://localhost:8080", help="Server URL")
-    parser.add_argument("--concurrency", type=int, default=15, help="Concurrent requests")
-    parser.add_argument("--requests", type=int, default=20, help="Total number of requests")
+    parser.add_argument("--concurrency", type=int, default=1, help="Concurrent requests")
+    parser.add_argument("--requests", type=int, default=3, help="Total number of requests")
     args = parser.parse_args()
     
     # Check server health before starting
