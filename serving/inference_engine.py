@@ -4,6 +4,7 @@ from typing import Dict, Any, List, Tuple
 from serving.model_loader import ForwardModel
 from serving.model_runner import generate_text,batch_generate_text
 from serving.scheduler import Scheduler
+from serving.request_sort_policy import RequestSortPolicy
 
 class InferenceWorker:
     """Worker that processes inference requests from a queue."""
@@ -21,6 +22,7 @@ class InferenceWorker:
         self.worker_threads = []
         self.response_processor = None
         self.scheduler = Scheduler(queue_manager)
+        self.sort_policy = RequestSortPolicy()
     
     async def process_requests(self, requests: List[Tuple[str, Dict[str, Any]]]):
         """Process a single inference request."""
@@ -40,15 +42,19 @@ class InferenceWorker:
                 prompt = request_data.get("prompt", "")
 
             inputs = self.model.tokenize(prompt, messages)
-            batch_requests.append((temperature, top_p, max_tokens, inputs))
+            batch_requests.append((request_id, temperature, top_p, max_tokens, inputs))
         try:
-            batch_output = await batch_generate_text(
-                model=self.model,
-                batch_inputs=batch_requests,
-            )
-            for engine_out, (request_id, _) in zip(batch_output, requests):
-                # Submit the response
-                self.queue_manager.submit_response(request_id, engine_out)
+            policy_grouped_requests = self.sort_policy.sort_requests(batch_requests)
+            for token_len, grouped_request in policy_grouped_requests.items():
+                print(f"Processing batch of {len(grouped_request)} requests with token length {token_len}")
+                batch_output = await batch_generate_text(
+                    model=self.model,
+                    batch_inputs=grouped_request,
+                )
+                for engine_out, request in zip(batch_output, grouped_request):
+                    # Submit the response
+                    request_id = request[0]
+                    self.queue_manager.submit_response(request_id, engine_out)
         except Exception as e:
             error_response = {
                 "error": str(e),
