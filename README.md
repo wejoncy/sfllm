@@ -28,6 +28,30 @@ curl -X POST "http://localhost:6006/v1/chat/completions" \
 For the first version with running request one by one, we got **Throughput: 0.4 requests/second.** Given that rental price
 is 7.68RMB per hour. we have nearly 7.68/(3600/3.02)=0.00644266666 RMB per request.
 
+```
+root@autodl-container-4c3247ac55-044103ae:~/work/gemma_serving# python benchmark.py --concurrency 1 --requests 40 --url http://104.208.77.11:8080
+Server health check: {'status': 'healthy', 'queue_size': 0, 'workers': 1}
+Running benchmark with concurrency=1, requests=40
+Warming up the server...
+100%|██████████████████████████████████████████████████████████████████████████████████████████| 5/5 [00:14<00:00,  2.81s/it]
+Warm-up complete. starting benchmark...
+100%|████████████████████████████████████████████████████████████████████████████████████████| 40/40 [01:51<00:00,  2.79s/it]
+Waiting for remaining 0 tasks to complete...
+
+--- Benchmark Results ---
+Total Requests: 40
+Successful: 40 (100.0%)
+Failed: 0 (0.0%)
+
+Latency (seconds):
+  Min: 2.5529
+  Max: 3.1295
+  Avg: 2.7865
+  Median: 2.6659
+  Std Dev: 0.1082
+
+Throughput: 0.36 requests/second
+```
 Hence, we can improve it from some aspect:
 1. improve the model inference performance for a single forward process
   - cuda graph
