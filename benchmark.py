@@ -29,18 +29,20 @@ async def send_request(session, url, prompt, max_tokens=64):
         async with session.post(url, json=data) as response:
             result = await response.json()
             end_time = time.time()
-            return {
+            resonse_body = {
                 "success": True,
                 "latency": end_time - start_time,
                 "status": response.status
             }
     except Exception as e:
         end_time = time.time()
-        return {
+        resonse_body = {
             "success": False,
             "latency": end_time - start_time,
             "error": str(e)
         }
+    finally:
+        return resonse_body
 
 async def run_benchmark(url, concurrency, num_requests, prompts=None):
     """Run benchmark with the specified concurrency level."""
@@ -49,24 +51,34 @@ async def run_benchmark(url, concurrency, num_requests, prompts=None):
         
     print(f"Running benchmark with concurrency={concurrency}, requests={num_requests}")
     results = []
+    # Warm up the server
+    # This is to ensure the server is ready before the actual benchmark
+    print("Warming up the server...")
+    async with aiohttp.ClientSession() as session:
+        await send_request(session, f"{url}/v1/completions", "abc ")
+    start_time = time.time()
+    start_idx = 0
     async with aiohttp.ClientSession() as session:
         tasks = []
-        for _ in tqdm.tqdm(range(num_requests)):
+        for current_idx in tqdm.tqdm(range(num_requests)):
             prompt = random.choice(prompts)
             tasks.append(asyncio.create_task(
                 send_request(session, f"{url}/v1/completions", prompt)
             ))
             
             # Control concurrency
-            if len(tasks) >= concurrency:
+            if current_idx-start_idx >= concurrency*random.uniform(2, 8):
+                start_idx += concurrency//8 
                 # Wait for some tasks to complete
-                results.extend(await asyncio.gather(*tasks[:concurrency]))
-                tasks = tasks[concurrency:]
+                results.extend(await asyncio.gather(*tasks[:start_idx]))
+                tasks = tasks[start_idx:]
+            await asyncio.sleep(0.1)  # Optional: add a small delay to avoid overwhelming the server
                 
         # Wait for remaining tasks
-        results .extend(await asyncio.gather(*tasks))
-    
-    return results
+        print(f"Waiting for remaining {len(tasks)} tasks to complete...")
+        results.extend(await asyncio.gather(*tasks))
+    end_time = time.time()
+    return results, end_time - start_time
 
 def print_results(results):
     """Print benchmark results in a nice format."""
@@ -102,8 +114,8 @@ def print_results(results):
 async def main():
     parser = argparse.ArgumentParser(description="Benchmark the LLM serving system")
     parser.add_argument("--url", default="http://localhost:8080", help="Server URL")
-    parser.add_argument("--concurrency", type=int, default=10, help="Concurrent requests")
-    parser.add_argument("--requests", type=int, default=10, help="Total number of requests")
+    parser.add_argument("--concurrency", type=int, default=15, help="Concurrent requests")
+    parser.add_argument("--requests", type=int, default=20, help="Total number of requests")
     args = parser.parse_args()
     
     # Check server health before starting

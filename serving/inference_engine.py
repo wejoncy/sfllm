@@ -60,7 +60,8 @@ class InferenceWorker:
                 "error": str(e),
                 "status": "error"
             }
-            self.queue_manager.submit_response(request_id, error_response)
+            for token_len, grouped_request in policy_grouped_requests.items():
+                self.queue_manager.submit_response(grouped_request[0], error_response)
     
     async def worker_loop(self):
         """Worker coroutine that processes requests from the queue."""
@@ -71,6 +72,8 @@ class InferenceWorker:
                     # No request available, just continue
                     await asyncio.sleep(0.1)
                     continue
+                print("running_requests", len(running_requests))
+                print('pending_request:', self.queue_manager.size())
                 # Process the request
                 await self.process_requests(running_requests)
             except asyncio.CancelledError:

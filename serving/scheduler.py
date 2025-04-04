@@ -11,7 +11,7 @@ class Scheduler:
         # Get the next request with a timeout
         while True:
             request = self.queue_manager.get_next_request()
-            if request is None or len(self.pending_requests) >= 10:
+            if request is None:
                 self.running_requests = (self.pending_requests).copy()
                 self.pending_requests.clear()
                 break

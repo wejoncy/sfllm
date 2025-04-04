@@ -28,6 +28,15 @@ class QueueManager:
         self.input_queue.put((request_id, request_data))
         return request_id
     
+    def size(self) -> int:
+        """
+        Get the size of the input queue.
+        
+        Returns:
+            Size of the input queue
+        """
+        return self.input_queue.qsize()
+    
     def get_next_request(self) -> Tuple[str, Dict[str, Any]]:
         """
         Get the next request from the input queue.
