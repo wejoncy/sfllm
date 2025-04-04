@@ -74,7 +74,10 @@ async def run_benchmark(url, concurrency, num_requests, prompts=None):
             ))
             
             # Control concurrency
-            if current_idx-start_idx >= concurrency*random.uniform(2, 8):
+            if concurrency == 1:
+                start_idx+=1
+                results.extend(await asyncio.gather(*tasks[:start_idx]))
+            elif current_idx-start_idx >= concurrency*random.uniform(2, 8):
                 start_idx += concurrency//4 
                 # Wait for some tasks to complete
                 results.extend(await asyncio.gather(*tasks[:start_idx]))
