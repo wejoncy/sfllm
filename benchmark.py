@@ -50,12 +50,19 @@ async def run_benchmark(url, concurrency, num_requests, prompts=None):
         prompts = SAMPLE_PROMPTS
         
     print(f"Running benchmark with concurrency={concurrency}, requests={num_requests}")
-    results = []
     # Warm up the server
     # This is to ensure the server is ready before the actual benchmark
     print("Warming up the server...")
     async with aiohttp.ClientSession() as session:
-        await send_request(session, f"{url}/v1/completions", "abc ")
+        for _ in tqdm.tqdm(range(5)):
+            prompt = random.choice(prompts)
+            await send_request(session, f"{url}/v1/completions", prompt)
+    print("Warm-up complete. starting benchmark...")
+    # Start the benchmark
+    # This is the main benchmarking loop
+    # It sends requests in a controlled manner to avoid overwhelming the server
+    # and collects the results
+    results = []
     start_time = time.time()
     start_idx = 0
     async with aiohttp.ClientSession() as session:
@@ -68,7 +75,7 @@ async def run_benchmark(url, concurrency, num_requests, prompts=None):
             
             # Control concurrency
             if current_idx-start_idx >= concurrency*random.uniform(2, 8):
-                start_idx += concurrency//8 
+                start_idx += concurrency//4 
                 # Wait for some tasks to complete
                 results.extend(await asyncio.gather(*tasks[:start_idx]))
                 tasks = tasks[start_idx:]
@@ -82,6 +89,7 @@ async def run_benchmark(url, concurrency, num_requests, prompts=None):
 
 def print_results(results):
     """Print benchmark results in a nice format."""
+    results,total_time = results
     successful = [r for r in results if r["success"]]
     failed = [r for r in results if not r["success"]]
     
@@ -95,12 +103,12 @@ def print_results(results):
         print("\nLatency (seconds):")
         print(f"  Min: {min(latencies):.4f}")
         print(f"  Max: {max(latencies):.4f}")
-        print(f"  Avg: {sum(latencies)/len(latencies):.4f}")
+        print(f"  Avg: {total_time/len(latencies):.4f}")
         if len(latencies) > 1:
             print(f"  Median: {statistics.median(latencies):.4f}")
             print(f"  Std Dev: {statistics.stdev(latencies):.4f}")
         
-        print(f"\nThroughput: {len(successful) / sum(latencies):.2f} requests/second")
+        print(f"\nThroughput: {len(successful) / total_time:.2f} requests/second")
     
     if failed:
         print("\nError summary:")
