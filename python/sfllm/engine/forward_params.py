@@ -16,6 +16,7 @@ class ForwardMode(IntEnum):
     # No sequence to forward. For data parallel attention, some workers will be IDLE if no sequence are allocated.
     IDLE = auto()
 
+MAX_PROCESSED_TOKENS = 1024*2
 
 class ForwardMetaData:
     def __init__(self, config):
@@ -29,13 +30,13 @@ class ForwardMetaData:
         )
         # need to inilialize during prepare inputs
         self.max_extend_len = 0
-        self.num_kv_splits_buffer = torch.zeros((128,), dtype=torch.int32, device="cuda")
+        self.num_kv_splits_buffer = torch.zeros((MAX_PROCESSED_TOKENS,), dtype=torch.int32, device="cuda")
         self.num_kv_splits = None
-        self.kv_indptr_buffer = torch.zeros((128,), dtype=torch.int32, device="cuda")
+        self.kv_indptr_buffer = torch.zeros((MAX_PROCESSED_TOKENS,), dtype=torch.int32, device="cuda")
         self.kv_indptr = None
-        self.kv_indices_buffer = torch.zeros((128,), dtype=torch.int64, device="cuda")
+        self.kv_indices_buffer = torch.zeros((MAX_PROCESSED_TOKENS,), dtype=torch.int64, device="cuda")
         self.kv_indices = None
-        self.qo_indptr_buffer = torch.zeros((128,), dtype=torch.int32, device="cuda")
+        self.qo_indptr_buffer = torch.zeros((MAX_PROCESSED_TOKENS,), dtype=torch.int32, device="cuda")
         self.qo_indptr = None
         self.out_cache_loc = None
         self.custom_mask = None
