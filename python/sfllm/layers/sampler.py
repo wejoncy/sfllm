@@ -1,12 +1,21 @@
 import torch
 from torch import nn
+import platform
 
+def maybe_compile(fn):
+    """Only compile if not on Windows."""
+    if platform.system() == "Windows":
+        print("[torch.compile disabled on Windows]")
+        return fn
+    else:
+        print("[torch.compile enabled]")
+        return torch.compile(fn) 
 
 class Sampler(nn.Module):
     def __init__(self):
         super().__init__()
 
-    @torch.compile
+    @maybe_compile
     def forward(self, logits: torch.Tensor, temperatures: torch.Tensor):
         logits = logits.float().div_(temperatures.unsqueeze(dim=1))
         probs = torch.softmax(logits, dim=-1)
