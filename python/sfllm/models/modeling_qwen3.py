@@ -12,7 +12,7 @@ from torch import Tensor
 from tqdm import tqdm
 from contextlib import ContextDecorator
 from sfllm.layers.triton_attention import decode_attention_fwd_interface,extend_attention_fwd_interface
-from sfllm.engine.model_runner import ForwardMode
+from sfllm.engine.forward_params import ForwardMode, ForwardMetaData
 
 
 class Cache:
@@ -216,35 +216,39 @@ class Qwen3Attention(nn.Module):
 
         if forward_metadata is not None:
             # sin and cos are specific to RoPE models; cache_position needed for the static cache
-            cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
-            key_states, value_states = forward_metadata.update(key_states, value_states, self.layer_idx, cache_kwargs)
+            # cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
+            key_states, value_states = forward_metadata.update(key_states, value_states, self.layer_idx)
 
         attention_interface: Callable = eager_attention_forward
         if forward_metadata.forward_mode == ForwardMode.DECODE:
-            attn_output = decode_attention_fwd_interface(query_states[0],
-                                                         forward_metadata.k_buffers,
-                                                         forward_metadata.v_buffers,
-                                                         forward_metadata.kv_indptr,
-                                                         forward_metadata.kv_indices,
-                                                         forward_metadata.attn_logits,
-                                                         forward_metadata.attn_lse,
-                                                         forward_metadata.num_kv_splits,
-                                                         forward_metadata.max_kv_splits,
-                                                         self.scaling)
+            attn_output = decode_attention_fwd_interface(
+                query_states[0],
+                forward_metadata.past_key_values[self.layer_idx][0],
+                forward_metadata.past_key_values[self.layer_idx][1],
+                forward_metadata.kv_indptr,
+                forward_metadata.kv_indices,
+                forward_metadata.attn_logits,
+                forward_metadata.attn_lse,
+                forward_metadata.num_kv_splits,
+                forward_metadata.max_kv_splits,
+                self.scaling,
+            )
         elif forward_metadata.forward_mode == ForwardMode.EXTEND:
-            attn_output = extend_attention_fwd_interface(query_states[0],
-                                                         key_states[0],
-                                                         value_states[0],
-                                                         forward_metadata.k_buffer,
-                                                         forward_metadata.v_buffer,
-                                                         forward_metadata.qo_indptr,
-                                                         forward_metadata.kv_indptr,
-                                                         forward_metadata.kv_indices,
-                                                         forward_metadata.max_extend_len)
+            attn_output = extend_attention_fwd_interface(
+                query_states[0],
+                key_states[0],
+                value_states[0],
+                forward_metadata.past_key_values[self.layer_idx][0],
+                forward_metadata.past_key_values[self.layer_idx][1],
+                forward_metadata.qo_indptr,
+                forward_metadata.kv_indptr,
+                forward_metadata.kv_indices,
+                forward_metadata.max_extend_len,
+            )
         else:
             # if self.config._attn_implementation != "eager":
             #     attention_interface = ALL_ATTENTION_FUNCTIONS[self.config._attn_implementation]
-
+            attention_mask = create_causal_mask(input_shape[1], device=hidden_states.device)
             attn_output, attn_weights = attention_interface(
                 self,
                 query_states.transpose(1, 2),
@@ -259,7 +263,7 @@ class Qwen3Attention(nn.Module):
 
         attn_output = attn_output.reshape(*input_shape, -1).contiguous()
         attn_output = self.o_proj(attn_output)
-        return attn_output, _
+        return attn_output, None
 
 
 class Qwen3DecoderLayer(nn.Module):
@@ -369,6 +373,7 @@ class Qwen3Model(Qwen3PreTrainedModel):
 
         if input_ids.dim() == 1:
             input_ids = input_ids[None]
+            position_ids = position_ids[None] if position_ids is not None else None
         if inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids)
 
@@ -467,8 +472,11 @@ class Qwen3ForCausalLM(Qwen3PreTrainedModel):
 
         hidden_states = outputs[0]
         # Only compute necessary logits, and do not upcast them to float if we are not computing the loss
-        slice_indices = slice(-logits_to_keep, None) if isinstance(logits_to_keep, int) else logits_to_keep
-        logits = self.lm_head(hidden_states[:, slice_indices, :])
+        # slice_indices = slice(-logits_to_keep, None) if isinstance(logits_to_keep, int) else logits_to_keep
+        if forward_metadata.forward_mode == ForwardMode.EXTEND:
+            logits = self.lm_head(hidden_states[0, forward_metadata.qo_indptr[1:] - 1, :])
+        else:
+            logits = self.lm_head(hidden_states[0])
 
         return logits
 

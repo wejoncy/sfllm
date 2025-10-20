@@ -1,25 +1,69 @@
 import asyncio
 from typing import Dict, Any, List, Tuple
 
-from serving.model_loader import ForwardModel
-from serving.model_runner import generate_text,batch_generate_text
-from serving.scheduler import Scheduler
-from serving.request_sort_policy import RequestSortPolicy
+from sfllm.engine.model_runner import ModelRunner, generate_text, batch_generate_text
+from sfllm.engine.scheduler import Scheduler
+from sfllm.engine.sampling_params import SamplingParams
+from sfllm.engine.sequence import Sequence,SequenceGroup
 
-class InferenceWorker:
+class InferenceEngine:
     """Worker that processes inference requests from a queue."""
     
-    def __init__(self):
+    def __init__(self, model_path: str):
         """
         Initialize the inference worker.
         """
-        self.model = ForwardModel()
+        self.model_runner = ModelRunner(model_path)
         self.running = False
         self.worker_threads = []
-        self.response_processor = None
         self.scheduler = Scheduler()
-        self.sort_policy = RequestSortPolicy()
+        self.finished_sequences = []
     
+    def post_forward(self, sequence_group: SequenceGroup, token_ids: List[int]) -> None:
+        """Post-process the model outputs and update the sequences."""
+        idx = 0
+        for sequence in sequence_group:
+            sequence.new_tokens = token_ids[idx: idx + 1]
+            sequence.tokens.extend(sequence.new_tokens)
+            idx += 1
+
+            if len(sequence.tokens) < sequence.sampling_params.max_tokens:
+                sequence.status = "RUNNING"
+                self.scheduler.running_queue.put(sequence)
+            else:
+                sequence.status = "COMPLETED"
+                self.finished_sequences.append(sequence)
+
+
+    def add_request(self, prompt: str, sampling_params: SamplingParams) -> None:
+        """Add a new inference request to the queue."""
+        sequence = Sequence(prompt, sampling_params)
+        sequence.tokens = self.model_runner.tokenize(prompt)
+        sequence.new_tokens = sequence.tokens
+        self.scheduler.add_request(sequence)
+    
+    def step(self):
+        """Process a single inference request."""
+        seq_group = self.scheduler.schedule()
+        if seq_group.empty():
+            return
+        token_ids = self.model_runner.forward(seq_group)
+        self.post_forward(seq_group, token_ids)
+
+    def generate(self, prompt: List[str]|str, sampling_params: SamplingParams) -> Dict[str, Any]:
+        """Generate text for inference requests."""
+        if isinstance(prompt, str):
+            prompt = [prompt]
+        for p in prompt:
+            self.add_request(p, sampling_params)
+        while not self.scheduler.is_done():
+            self.step()
+        
+        for sequence in self.finished_sequences:
+            sequence.generated_text = self.model_runner.detokenize(sequence.tokens)
+            print(f"Generated text for sequence {sequence.generated_text}")
+        return {}
+
     async def process_requests(self, requests: List[Tuple[str, Dict[str, Any]]]):
         """Process a single inference request."""
         batch_requests = []
@@ -86,7 +130,7 @@ class InferenceWorker:
         worker = asyncio.create_task(self.worker_loop())
         self.worker_threads.append(worker)
 
-        print(f"Started inference workers")
+        print("Started inference workers")
     
     async def stop(self):
         """Stop the inference workers."""
@@ -105,3 +149,13 @@ class InferenceWorker:
                 
         self.worker_threads = []
         print("Stopped inference workers")
+
+
+if __name__ == "__main__":
+    # Example usage
+    engine = InferenceEngine("/home/jicwen/work/Qwen3-0.6B/")
+    # engine.add_request("Hello, world!", SamplingParams())
+    engine.generate("Hello, world!", SamplingParams())
+    print("Inference step completed.")
+
+        

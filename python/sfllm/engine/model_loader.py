@@ -5,14 +5,14 @@ import json
 from pathlib import Path
 import safetensors
 import torch
+import logging
 from tqdm import tqdm
 import transformers
 
 
 from sfllm.models.modeling_qwen3 import Qwen3ForCausalLM
 
-MODEL_PATH = "/root/work/gemma-3-4b-it"
-MODEL_PATH = "D:\\work\\gemma-3-4b-it"
+logger = logging.getLogger(__name__)
 
 def _hf_weight_generator(hf_weights_files, is_safetensors:bool):
     if is_safetensors:
@@ -106,8 +106,9 @@ class TorchDefaultDtype(ContextDecorator):
     def __exit__(self, exc_type, exc, tb):
         torch.set_default_dtype(self._prev)
         return False
+
 class ForwardModel:
-    def __init__(self, model_name=MODEL_PATH):
+    def __init__(self, model_name:str):
         """
         Initialize the ForwardModel with the model name or path.
         
@@ -115,12 +116,13 @@ class ForwardModel:
             model_name: The name or path of the model to load
         """
         self.model = None
+        self.config = None
         self.tokenizer = None
         
         # Load the model and tokenizer
         self.load_model(model_name)
 
-    def load_model(self, model_name=MODEL_PATH):
+    def load_model(self, model_name:str):
         """
         Load the model and tokenizer
         
@@ -131,36 +133,37 @@ class ForwardModel:
             A dictionary containing model, tokenizer, and processor
         """
         print(f"Loading model: {model_name}")
-        config = transformers.AutoConfig.from_pretrained(model_name)
-        with TorchDefaultDtype(config.torch_dtype):
-            model = Qwen3ForCausalLM(config).cuda()
+        before_avail_memory, _ = torch.cuda.mem_get_info(0)
+        self.config = transformers.AutoConfig.from_pretrained(model_name)
+        with TorchDefaultDtype(self.config.dtype):
+            model = Qwen3ForCausalLM(self.config).cuda()
             _load_check_point(model, model_name)
-        self.model = model
-        self.model = self.model.eval()
+        self.model = model.eval()
         self.tokenizer = transformers.AutoTokenizer.from_pretrained(model_name, use_fast=False)
+        after_avail_memory,_ = torch.cuda.mem_get_info(0)
+        self.weight_load_mem_usage = before_avail_memory - after_avail_memory
+        logger.info(
+            f"Load weight end. "
+            f"type={type(self.model).__name__}, "
+            f"dtype={self.config.dtype}, "
+            f"avail mem={after_avail_memory:.2f} GB, "
+            f"mem usage={self.weight_load_mem_usage:.2f} GB."
+        )
 
-    def tokenize(self, prompt, messages=None):
+    def __call__(self, *args, **kwargs):
+        return self.forward(*args, **kwargs)
+
+        
+    def forward(self, input_ids, position_ids, forward_metadata):
         """
-        Tokenize the prompt and messages for the model.
+        Perform a forward pass on the model with the given sequence group.
         
         Args:
-            prompt: The prompt to tokenize
-            messages: The messages to tokenize
+            sequence_group: The sequence group to process
             
         Returns:
-            The tokenized inputs
+            The model outputs
         """
-        return self.tokenizer.tokenize(prompt, messages)
-
-
-    def detokenize(self, tokens):
-        """
-        Detokenize the tokens to get the original text.
-        
-        Args:
-            tokens: The tokens to detokenize
-            
-        Returns:
-            The detokenized text
-        """
-        return self.tokenizer.detokenize(tokens)
+        with torch.no_grad():
+            outputs = self.model(input_ids=input_ids, position_ids=position_ids, forward_metadata=forward_metadata)
+        return outputs
