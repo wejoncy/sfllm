@@ -1,8 +1,8 @@
 import torch
-from myvllm.kernels.decode_attention import (
+from sfllm.kernels.decode_attention import (
     decode_attention_fwd,
 )
-from myvllm.kernels.extend_attention import (
+from sfllm.kernels.extend_attention import (
     extend_attention_fwd,
 )
 

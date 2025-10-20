@@ -9,7 +9,7 @@ from tqdm import tqdm
 import transformers
 
 
-from myvllm.models.modeling_qwen3 import Qwen3ForCausalLM
+from sfllm.models.modeling_qwen3 import Qwen3ForCausalLM
 
 MODEL_PATH = "/root/work/gemma-3-4b-it"
 MODEL_PATH = "D:\\work\\gemma-3-4b-it"

@@ -1,5 +1,5 @@
 """
-MyVLLM: Multimodal LLM Serving Framework for Gemma 3-4B-IT
+sfllm: Multimodal LLM Serving Framework for Gemma 3-4B-IT
 
 A high-performance serving framework that follows the OpenAI API protocol 
 with support for both text and image inputs.

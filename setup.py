@@ -13,7 +13,7 @@ with open(os.path.join(this_directory, "requirements.txt"), encoding="utf-8") as
     requirements = [line.strip() for line in f if line.strip() and not line.startswith("#")]
 
 setup(
-    name="myvllm",
+    name="sfllm",
     version="0.1.0",
     author="wejoncy",
     author_email="",
@@ -55,7 +55,7 @@ setup(
     },
     entry_points={
         "console_scripts": [
-            "myvllm-serve=myvllm.serving.api:main",
+            "sfllm-serve=sfllm.serving.api:main",
         ],
     },
     include_package_data=True,

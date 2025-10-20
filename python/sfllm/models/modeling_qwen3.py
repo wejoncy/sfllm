@@ -11,8 +11,8 @@ from torch import nn
 from torch import Tensor
 from tqdm import tqdm
 from contextlib import ContextDecorator
-from myvllm.layers.triton_attention import decode_attention_fwd_interface,extend_attention_fwd_interface
-from myvllm.engine.model_runner import ForwardMode
+from sfllm.layers.triton_attention import decode_attention_fwd_interface,extend_attention_fwd_interface
+from sfllm.engine.model_runner import ForwardMode
 
 
 class Cache:

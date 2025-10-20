@@ -3,7 +3,7 @@ requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "myvllm"
+name = "sfllm"
 version = "0.1.0"
 authors = [
     {name = "wejoncy"},
@@ -46,7 +46,7 @@ benchmarks = [
 ]
 
 [project.scripts]
-myvllm-serve = "myvllm.serving.api:main"
+sfllm-serve = "sfllm.serving.api:main"
 
 [project.urls]
 Homepage = "https://github.com/wejoncy/gemma_serving"

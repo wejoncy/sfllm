@@ -2,7 +2,7 @@ include README.md
 include LICENSE
 include requirements.txt
 include pyproject.toml
-recursive-include python/myvllm *.py
+recursive-include python/sfllm *.py
 recursive-exclude * *.py[co]
 recursive-exclude * *.so
 recursive-exclude * .DS_Store

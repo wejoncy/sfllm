@@ -9,19 +9,15 @@ from serving.request_sort_policy import RequestSortPolicy
 class InferenceWorker:
     """Worker that processes inference requests from a queue."""
     
-    def __init__(self, queue_manager):
+    def __init__(self):
         """
         Initialize the inference worker.
-        
-        Args:
-            queue_manager: The QueueManager instance
         """
-        self.queue_manager = queue_manager
         self.model = ForwardModel()
         self.running = False
         self.worker_threads = []
         self.response_processor = None
-        self.scheduler = Scheduler(queue_manager)
+        self.scheduler = Scheduler()
         self.sort_policy = RequestSortPolicy()
     
     async def process_requests(self, requests: List[Tuple[str, Dict[str, Any]]]):
