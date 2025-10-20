@@ -11,7 +11,7 @@ from torch import nn
 from torch import Tensor
 from tqdm import tqdm
 from contextlib import ContextDecorator
-from sfllm.layers.triton_attention import decode_attention_fwd_interface,extend_attention_fwd_interface
+from sfllm.layers.triton_attention import RaggedAttention
 from sfllm.engine.forward_params import ForwardMode, ForwardMetaData
 
 
@@ -194,6 +194,7 @@ class Qwen3Attention(nn.Module):
         self.q_norm = Qwen3RMSNorm(self.head_dim, eps=config.rms_norm_eps)  # unlike olmo, only on the head dim!
         self.k_norm = Qwen3RMSNorm(self.head_dim, eps=config.rms_norm_eps)  # thus post q_norm does not need reshape
         self.sliding_window = config.sliding_window if self.layer_type == "sliding_attention" else None
+        self.attention = RaggedAttention(layer_idx, config)
 
     def forward(
         self,
@@ -221,29 +222,12 @@ class Qwen3Attention(nn.Module):
 
         attention_interface: Callable = eager_attention_forward
         if forward_metadata.forward_mode == ForwardMode.DECODE:
-            attn_output = decode_attention_fwd_interface(
-                query_states[0],
-                forward_metadata.past_key_values[self.layer_idx][0],
-                forward_metadata.past_key_values[self.layer_idx][1],
-                forward_metadata.kv_indptr,
-                forward_metadata.kv_indices,
-                forward_metadata.attn_logits,
-                forward_metadata.attn_lse,
-                forward_metadata.num_kv_splits,
-                forward_metadata.max_kv_splits,
-                self.scaling,
+            attn_output = self.attention.forward_decode(
+                query_states[0], forward_metadata, self.scaling,
             )
         elif forward_metadata.forward_mode == ForwardMode.EXTEND:
-            attn_output = extend_attention_fwd_interface(
-                query_states[0],
-                key_states[0],
-                value_states[0],
-                forward_metadata.past_key_values[self.layer_idx][0],
-                forward_metadata.past_key_values[self.layer_idx][1],
-                forward_metadata.qo_indptr,
-                forward_metadata.kv_indptr,
-                forward_metadata.kv_indices,
-                forward_metadata.max_extend_len,
+            attn_output = self.attention.forward_extend(
+                query_states[0], key_states[0], value_states[0], forward_metadata,
             )
         else:
             # if self.config._attn_implementation != "eager":
@@ -480,128 +464,6 @@ class Qwen3ForCausalLM(Qwen3PreTrainedModel):
 
         return logits
 
-def _hf_weight_generator(hf_weights_files, is_safetensors:bool):
-    if is_safetensors:
-        from safetensors.torch import safe_open
-        for st_file in hf_weights_files:
-            with safe_open(st_file, framework="pt", device="cuda") as f:
-                for name in f.keys():  # noqa: SIM118
-                    param = f.get_tensor(name)
-                    yield name, param
-    else:
-        for bin_file in hf_weights_files:
-            state = torch.load(bin_file, map_location="cuda")
-            for name, param in state.items():
-                yield name, param
-            del state
-            torch.cuda.empty_cache()
-
-
-def _get_resolved_weight_or_index_file(model_name_or_path):
-    if Path(model_name_or_path).exists():  # local
-        weight_or_index_file = glob.glob(str(Path(model_name_or_path).absolute()/ '*.index.json'))
-        weight_or_index_file += glob.glob(str(Path(model_name_or_path).absolute()/ '*.safetensors'))
-        weight_or_index_file += glob.glob(str(Path(model_name_or_path).absolute()/ 'pytorch_model*.bin'))
-        if weight_or_index_file: 
-            weight_or_index_file = weight_or_index_file[0]
-            
-        else:
-            raise FileNotFoundError("model weight is not found")
-    else:
-        for possible_index_name in ["model.safetensors.index.json", "pytorch_model.bin.index.json"]:
-            weight_or_index_file = BaseQuantizeConfig.get_resolved_base_dir(model_name_or_path, possible_index_name)
-            if weight_or_index_file:break
-        if not weight_or_index_file:
-            for possible_weight_file in ["model.safetensors", "pytorch_model.bin"]:
-                weight_or_index_file = cached_file(model_name_or_path, possible_weight_file)
-                if weight_or_index_file:break
-    return str(weight_or_index_file)
-
-
-def _load_check_point(model, model_name_or_path, get_keys_only: bool = False):
-    weight_or_index_file = _get_resolved_weight_or_index_file(model_name_or_path)
-    all_keys = set()
-    all_missing_keys = []
-    all_unexpected_keys = []
-    if weight_or_index_file.endswith(".index.json"):
-        with open(weight_or_index_file, "r") as f:
-            index = json.loads(f.read())
-        if "weight_map" in index:
-            index = index["weight_map"]
-        checkpoint_files = sorted(list(set(index.values())))
-        with concurrent.futures.ThreadPoolExecutor() as executor:
-            future_to_checkpoint_files = {executor.submit(cached_file, model_name_or_path, f): f for f in checkpoint_files}
-            checkpoint_files = [future.result() for future in concurrent.futures.as_completed(future_to_checkpoint_files)]
-        #checkpoint_files = [cached_file(model_name_or_path, f) for f in checkpoint_files]
-    else:
-        checkpoint_files = [weight_or_index_file]
-
-    if len(checkpoint_files) > 0:
-        for i in tqdm(range(len(checkpoint_files)), desc="loading weights"):
-            if not checkpoint_files[i].endswith("safetensors"):
-                weights = torch.load(checkpoint_files[i], map_location="cpu", weights_only=True)
-            else:
-                weights = safetensors.torch.load_file(checkpoint_files[i], device="cpu")
-            if get_keys_only:
-                all_keys.update(weights.keys())
-                del weights
-            else:
-                ret = model.load_state_dict(weights, strict=False)
-                del weights
-                all_missing_keys.extend(ret.missing_keys)
-                all_unexpected_keys.extend(ret.unexpected_keys)
-    else:
-        raise ValueError(f"{model_name_or_path} is not a folder containing weights or safetensors")
-
-    if get_keys_only:
-        return all_keys
-    return all_missing_keys, all_unexpected_keys
-
-class TorchDefaultDtype(ContextDecorator):
-    def __init__(self, dtype):
-        if not isinstance(dtype, torch.dtype):
-            raise TypeError("dtype must be a torch.dtype")
-        self.new_dtype = dtype
-        self._prev = None
-
-    def __enter__(self):
-        self._prev = torch.get_default_dtype()
-        torch.set_default_dtype(self.new_dtype)
-        return self
-
-    def __exit__(self, exc_type, exc, tb):
-        torch.set_default_dtype(self._prev)
-        return False
-
-class ForwardMetaData:
-    def __init__(self, config):
-        self.forward_metadata = self.create_past_kv(config)
-        self.seq_length = 0
-
-    def create_past_kv(self, config, max_length=1024):
-        forward_metadata = []
-        dim = getattr(config, "head_dim", None) or config.hidden_size // config.num_attention_heads
-        n_heads = config.num_key_value_heads
-        free, total = torch.cuda.mem_get_info("cuda:0")
-        one_token_size = n_heads * dim * 2 * 2  # key + value, float16
-        max_length = min(max_length, free // one_token_size // config.num_hidden_layers)
-        for _ in range(config.num_hidden_layers):
-            forward_metadata.append((torch.zeros(n_heads, max_length, dim).cuda(),
-                                    torch.zeros(n_heads, max_length, dim).cuda()))
-        return forward_metadata
-
-    def get_seq_length(self):
-        return self.seq_length
-
-    def update(self, key_states, value_states, layer_idx, cache_kwargs):
-        bsz, kv_heads, seq_len, head_dim = key_states.size()
-        past_key, past_value = self.forward_metadata[layer_idx]
-        past_key[:, self.seq_length:self.seq_length + seq_len, :] = key_states[0]
-        past_value[:, self.seq_length:self.seq_length + seq_len, :] = value_states[0]
-        self.seq_length += seq_len
-        updated_key = past_key[:, :self.seq_length, :][None]
-        updated_value = past_value[:, :self.seq_length, :][None]
-        return updated_key, updated_value
 def generate_greedy(model, tokenizer, prompt, max_new_tokens=50, device='cuda'):
     model.eval()
     model.to(device)
