@@ -49,6 +49,7 @@ def extend_attention_fwd_interface(q_extend,
         window_kv_offsets,
         xai_temperature_len,
     )
+    return o_extend
 
 def decode_attention_fwd_interface(q,
                                     k_buffer,
@@ -74,3 +75,4 @@ def decode_attention_fwd_interface(q,
         max_kv_splits,
         sm_scale,
     )
+    return o
