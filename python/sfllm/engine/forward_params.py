@@ -30,7 +30,7 @@ class ForwardMetaData:
         )
         # need to inilialize during prepare inputs
         self.max_extend_len = 0
-        self.num_kv_splits_buffer = torch.zeros((MAX_PROCESSED_TOKENS,), dtype=torch.int32, device="cuda")
+        self.num_kv_splits_buffer = torch.zeros((MAX_PROCESSED_TOKENS,), dtype=torch.int32, device="cuda")+2
         self.num_kv_splits = None
         self.kv_indptr_buffer = torch.zeros((MAX_PROCESSED_TOKENS,), dtype=torch.int32, device="cuda")
         self.kv_indptr = None
@@ -75,7 +75,6 @@ class ForwardMetaData:
         return self.seq_length
 
     def update(self, key_states, value_states, layer_idx):
-        bsz, seq_len, kv_heads, head_dim = key_states.size()
         past_key, past_value = self.past_key_values[layer_idx]
 
         past_key[self.out_cache_loc, ...] = key_states[0]

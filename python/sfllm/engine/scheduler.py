@@ -1,12 +1,40 @@
+import time
 import queue
+import logging
 from sfllm.engine.sequence import Sequence,SequenceGroup
 from sfllm.engine.memory_pool import BlockMemoryManager
+
+logger = logging.getLogger(__name__)
+class RunningMetrics:
+    def __init__(self, waiting_queue: queue.Queue):
+        self.tokens_generated = 0
+        self.last_refresh_time = time.perf_counter()
+        self.waiting_queue = waiting_queue
+
+    def refresh(self, seq_group: SequenceGroup):
+        current_time = time.perf_counter()
+        elapsed = current_time - self.last_refresh_time
+        refresh_interval = 1.0  # seconds
+        self.tokens_generated += len(seq_group)
+
+        if elapsed < refresh_interval:
+            return
+        msg = f"Decode batch. #running-req: {len(seq_group)}. "
+        tps = self.tokens_generated / elapsed if elapsed > 0 else 0.0
+        self.tokens_generated = 0
+        self.last_refresh_time = current_time
+        msg += (
+            f"gen throughput (token/s): {tps:.2f}, "
+            f"#queue-req: {(self.waiting_queue.qsize())}, "
+        )
+        logger.warning(msg)
 
 class Scheduler:
     def __init__(self):
         self.waiting_queue = queue.Queue()
         self.running_queue = queue.Queue()
         self.block_memory_manager = BlockMemoryManager(num_blocks=10240)
+        self.metrics = RunningMetrics(self.waiting_queue)
 
     
     def add_request(self, sequence: Sequence):

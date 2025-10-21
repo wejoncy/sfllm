@@ -51,6 +51,7 @@ class InferenceEngine:
         if seq_group.empty():
             return
         token_ids = self.model_runner.forward(seq_group)
+        self.scheduler.metrics.refresh(seq_group)
         self.post_forward(seq_group, token_ids)
 
     def generate(self, prompt: List[str]|str, sampling_params: SamplingParams) -> Dict[str, Any]:
@@ -65,7 +66,7 @@ class InferenceEngine:
         
         for sequence in self.finished_sequences:
             sequence.generated_text = self.model_runner.detokenize(sequence.tokens)
-            seq_outputs[sequence.id] = sequence.generated_text
+            seq_outputs[sequence.sequence_id] = sequence.generated_text
         return seq_outputs
     
     async def worker_loop(self):

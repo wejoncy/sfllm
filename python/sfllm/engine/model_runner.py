@@ -30,6 +30,7 @@ class ModelRunner:
         # cuda graph
         self.input_ids = torch.empty((max(self.capture_batch_size),), dtype=torch.long, device=self.device_id)
         self.position_ids = torch.empty((max(self.capture_batch_size),), dtype=torch.long, device=self.device_id)
+        self.out_cache_loc = torch.zeros((max(self.capture_batch_size),), dtype=torch.int64, device=self.device_id)
         self.output_logits = {}
         self.cuda_graphs = {}
         self.graph_pool = torch.cuda.graph_pool_handle()
@@ -106,9 +107,7 @@ class ModelRunner:
             ]
             self.forward_metadata.kv_indices[past_seq_len:].copy_(cache_loc_ids, non_blocking=True)
             self.forward_metadata.num_kv_splits = self.forward_metadata.num_kv_splits_buffer[:batch_size].add_(2)
-        self.forward_metadata.out_cache_loc = self.forward_metadata.kv_indices[
-            past_seq_len : seq_len + past_seq_len
-        ]
+        self.forward_metadata.out_cache_loc = self.forward_metadata.kv_indices[past_seq_len : seq_len + past_seq_len]
         self.forward_metadata.seq_length += seq_len
 
         return {
@@ -139,16 +138,28 @@ class ModelRunner:
             is_all_greedy=all(seq.sampling_params.is_greedy for seq in seqs),
         )
 
+    def prepare_replay(self, inputs: Dict[str, Any], sequence_group: SequenceGroup):
+        bs_size = len(sequence_group)
+        self.input_ids[:bs_size].copy_(
+            inputs["input_ids"], non_blocking=True
+        )
+        self.position_ids[:bs_size].copy_(
+            inputs["position_ids"], non_blocking=True
+        )
+        self.out_cache_loc[:bs_size].copy_(
+            self.forward_metadata.out_cache_loc, non_blocking=True
+        )
+        # self.attention_mask[:bs_size].copy_(inputs["attention_mask"], non_blocking=True)
+
+
     def forward(self, sequence_group: SequenceGroup):
         inputs = self.prepare_inputs(sequence_group)
-        self.prepare_sample(sequence_group) if self.rank == 0 else (None, None, None)
-
-        if self.forward_metadata.forward_mode == ForwardMode.DECODE and self.cuda_graphs.get(len(sequence_group)) is not None:
-            self.input_ids[: len(sequence_group)].copy_(inputs["input_ids"], non_blocking=True)
-            self.position_ids[: len(sequence_group)].copy_(inputs["position_ids"], non_blocking=True)
-            # self.attention_mask[: len(sequence_group)].copy_(inputs["attention_mask"], non_blocking=True)
-            self.cuda_graphs[len(sequence_group)].replay()
-            logits = self.output_logits[len(sequence_group)]
+        self.prepare_sample(sequence_group) if self.rank == 0 else None
+        bs_size = len(sequence_group)
+        if self.forward_metadata.forward_mode == ForwardMode.DECODE and self.cuda_graphs.get(bs_size) is not None:
+            self.prepare_replay(inputs, sequence_group)
+            self.cuda_graphs[bs_size].replay()
+            logits = self.output_logits[bs_size]
         else:
             logits = self.model(**inputs)
 
@@ -164,7 +175,7 @@ class ModelRunner:
         self.forward_metadata.kv_indices = self.forward_metadata.kv_indices_buffer[
             : input_ids.shape[0]
         ]
-        self.forward_metadata.num_kv_splits = self.forward_metadata.num_kv_splits_buffer[:batch_size].add_(2)
+        self.forward_metadata.num_kv_splits = self.forward_metadata.num_kv_splits_buffer[:batch_size]
         self.forward_metadata.forward_mode = ForwardMode.DECODE
         self.forward_metadata.out_cache_loc = self.forward_metadata.kv_indices
         self.stream.synchronize()
@@ -178,7 +189,7 @@ class ModelRunner:
 
         for batch_size in tqdm.tqdm(self.capture_batch_size, desc="Capturing CUDA Graphs"):
             self.forward_metadata.kv_indptr = self.forward_metadata.kv_indptr_buffer[: batch_size + 1]
-            self.forward_metadata.out_cache_loc = self.forward_metadata.kv_indices_buffer[: batch_size]
+            self.forward_metadata.out_cache_loc = self.out_cache_loc[:batch_size]
             torch.cuda.synchronize()
             cudagraph = torch.cuda.CUDAGraph()
             # attention_mask = torch.empty((batch_size), dtype=torch.long, device=self.device_id)
