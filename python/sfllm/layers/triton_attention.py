@@ -1,15 +1,58 @@
 import torch
 from sfllm.kernels.decode_attention import (
-    decode_attention_fwd,
+    decode_attention_fwd, get_num_kv_splits_triton,
 )
 from sfllm.kernels.extend_attention import (
     extend_attention_fwd,
 )
+from sfllm.utils import get_device_core_count
+import triton
 
 class RaggedAttention:
     def __init__(self, layer_idx, config):
         self.layer_idx = layer_idx
         self.config = config
+        self.num_head = config.num_attention_heads
+        self.num_kv_head = config.num_attention_heads // 2
+        self.device_core_count = get_device_core_count()
+        self.max_kv_splits = 16
+        self.static_kv_splits = False
+
+    def get_num_kv_splits(
+        self,
+        num_kv_splits: torch.Tensor,
+        seq_lens: torch.Tensor,
+    ):
+        num_token, num_seq = num_kv_splits.shape[0], seq_lens.shape[0]
+        # NOTE(alcanderian): Considering speculative_decodeing,
+        # num_kv_splits.shape[0] will be topk * real_num_token.
+        # And the real_num_token is num_seq in decoding phase.
+        num_group = num_token // num_seq
+
+        assert num_group * num_seq == num_token, (
+            f"num_seq({num_seq}), num_token({num_token}), something goes wrong!"
+        )
+
+        if self.static_kv_splits or self.device_core_count <= 0:
+            num_kv_splits.fill_(self.max_kv_splits)
+            return
+
+        if num_seq < 256:
+            SCHEDULE_SEQ = 256
+        else:
+            SCHEDULE_SEQ = triton.next_power_of_2(num_seq)
+
+        get_num_kv_splits_triton[(1,)](
+            num_kv_splits,
+            seq_lens,
+            num_seq,
+            num_group,
+            self.num_head,
+            self.num_kv_head,
+            self.max_kv_splits,
+            self.device_core_count,
+            MAX_NUM_SEQ=SCHEDULE_SEQ,
+        )
 
     def forward_extend(self,
         q_extend,

@@ -16,6 +16,9 @@ class ServerArgs:
     cuda_graph_bs: Optional[List[int]] = None
     disable_cuda_graph: bool = False
 
+    # Logging
+    log_level: str = "info"
+
     @staticmethod
     def add_cli_args(parser: argparse.ArgumentParser):
         # Model and tokenizer
@@ -63,6 +66,14 @@ class ServerArgs:
             help="Tokenizer mode. 'auto' will use the fast "
             "tokenizer if available, and 'slow' will "
             "always use the slow tokenizer.",
+        )
+
+        # Logging
+        parser.add_argument(
+            "--log-level",
+            type=str,
+            default=ServerArgs.log_level,
+            help="The logging level of all loggers.",
         )
 
     @classmethod

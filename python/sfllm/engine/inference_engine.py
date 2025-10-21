@@ -7,6 +7,7 @@ from sfllm.engine.scheduler import Scheduler
 from sfllm.engine.sampling_params import SamplingParams
 from sfllm.engine.sequence import Sequence,SequenceGroup
 from sfllm.server_args import ServerArgs
+from sfllm.utils import configure_logger
 
 
 class InferenceEngine:
@@ -16,6 +17,7 @@ class InferenceEngine:
         """
         Initialize the inference worker.
         """
+        configure_logger(server_args)
         self.model_runner = ModelRunner(server_args)
         self.running = False
         self.worker_threads = []
@@ -43,6 +45,7 @@ class InferenceEngine:
         sequence = Sequence(prompt, sampling_params)
         sequence.tokens = self.model_runner.tokenize(prompt)
         sequence.new_tokens = sequence.tokens
+        sequence.prompt_token_len = len(sequence.tokens)
         self.scheduler.add_request(sequence)
     
     def step(self):
@@ -65,8 +68,10 @@ class InferenceEngine:
             self.step()
         
         for sequence in self.finished_sequences:
-            sequence.generated_text = self.model_runner.detokenize(sequence.tokens)
-            seq_outputs[sequence.sequence_id] = sequence.generated_text
+            sequence.generated_text = self.model_runner.detokenize(
+                sequence.tokens[sequence.prompt_token_len:],
+            )
+            seq_outputs[sequence.sequence_id] = {"prompt": sequence.prompt, "generated_text": sequence.generated_text}
         return seq_outputs
     
     async def worker_loop(self):
@@ -125,8 +130,17 @@ if __name__ == "__main__":
     ServerArgs.add_cli_args(parser)
     args = parser.parse_args()
     server_args = ServerArgs.from_cli_args(args)
-    # server_args.disable_cuda_graph = True
+    server_args.disable_cuda_graph = True
     engine = InferenceEngine(server_args)
+    prompts = [
+        "Hello, my name is",
+        "The president of the United States is",
+        "The capital of France is",
+        "The future of AI is",
+    ]
     # engine.add_request("Hello, world!", SamplingParams())
-    engine.generate("Hello, my name is", SamplingParams())
+    outputs = engine.generate(prompts, SamplingParams(max_tokens=300, top_k=1))
+    for k, output in outputs.items():
+        print("===============================")
+        print(f"Prompt: {output['prompt']}\nGenerated text: {output['generated_text']}")
     print("Inference step completed.")

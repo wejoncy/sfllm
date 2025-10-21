@@ -57,7 +57,7 @@ class Sampler(nn.Module):
 
     @maybe_compile
     def forward(self, logits: torch.Tensor, sampling_batch_info: SamplingBatchInfo):
-        if sampling_batch_info.is_all_greedy or True:
+        if sampling_batch_info.is_all_greedy:
             return torch.argmax(logits, dim=-1)
         else:
             logits = logits.float().div_(sampling_batch_info.temperatures.unsqueeze(dim=1))

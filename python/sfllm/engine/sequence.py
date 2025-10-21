@@ -18,6 +18,7 @@ class Sequence:
     def __init__(self, prompt:str, sampling_params:SamplingParams = SamplingParams()):
         self.sequence_id = _get_next_sequence_id()
         self.prompt = prompt
+        self.prompt_token_len = 0
         self.sampling_params = sampling_params
         self.tokens = []
         self.new_tokens = []

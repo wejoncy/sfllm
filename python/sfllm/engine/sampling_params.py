@@ -5,4 +5,4 @@ class SamplingParams:
         self.temperature = temperature
         self.top_p = top_p
         self.top_k = top_k
-        self.is_greedy = temperature == 0.0
+        self.is_greedy = top_k <=1

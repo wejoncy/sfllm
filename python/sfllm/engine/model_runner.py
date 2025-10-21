@@ -43,11 +43,11 @@ class ModelRunner:
         self.forward_metadata = ForwardMetaData(self.model.config)
     
     def prepare_inputs(self, sequence_group: SequenceGroup) -> Dict[str, Any]:
-        seq_len = 0
         cur_seq_lens_list = []
         input_ids_list = []
         position_ids_list = []
         cache_loc_ids_list = []
+        kv_indices_list = []
         prefix_lens_list = []
         if len(sequence_group[-1].new_tokens) == len(sequence_group[-1].tokens):
             self.forward_metadata.forward_mode = ForwardMode.EXTEND
@@ -62,7 +62,7 @@ class ModelRunner:
             )
             prefix_lens_list.append(start_pos)
             cache_loc_ids_list.extend(sequence.cache_loc_ids[-len(sequence.new_tokens):])
-        seq_len = sum(cur_seq_lens_list)
+            kv_indices_list.extend(sequence.cache_loc_ids)
         batch_size = len(sequence_group)
 
         input_ids = torch.tensor(
@@ -73,9 +73,10 @@ class ModelRunner:
         )
         cur_seq_lens = torch.tensor(cur_seq_lens_list, dtype=torch.int32)
         cache_loc_ids = torch.tensor(cache_loc_ids_list, dtype=torch.int64)
+        kv_indices = torch.tensor(kv_indices_list, dtype=torch.int64)
         prefix_lens = torch.tensor(prefix_lens_list, dtype=torch.int32)
 
-        past_seq_len = self.forward_metadata.seq_length
+        total_seq_len = kv_indices.shape[0]
         if self.forward_metadata.forward_mode == ForwardMode.EXTEND:
             self.forward_metadata.max_extend_len = max(cur_seq_lens_list)
             self.forward_metadata.kv_indptr = self.forward_metadata.kv_indptr_buffer[
@@ -86,11 +87,9 @@ class ModelRunner:
             )
 
             self.forward_metadata.kv_indices = self.forward_metadata.kv_indices_buffer[
-                : seq_len + past_seq_len
+                :total_seq_len
             ]
-            self.forward_metadata.kv_indices[
-                past_seq_len : seq_len + past_seq_len
-            ].copy_(cache_loc_ids, non_blocking=True)
+            self.forward_metadata.kv_indices.copy_(kv_indices, non_blocking=True)
 
             self.forward_metadata.qo_indptr = self.forward_metadata.qo_indptr_buffer[
                 : batch_size + 1
@@ -103,12 +102,11 @@ class ModelRunner:
             self.forward_metadata.kv_indptr[1:].copy_((prefix_lens+1).cumsum(dim=-1), non_blocking=True)
             
             self.forward_metadata.kv_indices = self.forward_metadata.kv_indices_buffer[
-                : seq_len + past_seq_len
+                :total_seq_len
             ]
-            self.forward_metadata.kv_indices[past_seq_len:].copy_(cache_loc_ids, non_blocking=True)
+            self.forward_metadata.kv_indices.copy_(kv_indices, non_blocking=True)
             self.forward_metadata.num_kv_splits = self.forward_metadata.num_kv_splits_buffer[:batch_size].add_(2)
-        self.forward_metadata.out_cache_loc = self.forward_metadata.kv_indices[past_seq_len : seq_len + past_seq_len]
-        self.forward_metadata.seq_length += seq_len
+        self.forward_metadata.out_cache_loc = cache_loc_ids.to(self.forward_metadata.kv_indices.device, non_blocking=True)
 
         return {
             "input_ids": input_ids,
@@ -118,8 +116,8 @@ class ModelRunner:
         }
 
     def prepare_sample(self, seqs: SequenceGroup) -> torch.Tensor:
-        if self.forward_metadata.sampling_batch_info is not None:
-            return
+        # if self.forward_metadata.sampling_batch_info is not None:
+        #     return
         temperatures = []
         top_ps = []
         top_ks = []

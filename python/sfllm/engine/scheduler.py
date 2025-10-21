@@ -27,7 +27,7 @@ class RunningMetrics:
             f"gen throughput (token/s): {tps:.2f}, "
             f"#queue-req: {(self.waiting_queue.qsize())}, "
         )
-        logger.warning(msg)
+        logger.info(msg)
 
 class Scheduler:
     def __init__(self):
