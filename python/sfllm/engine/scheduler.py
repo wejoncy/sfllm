@@ -50,8 +50,7 @@ class Scheduler:
     def add_request(self, sequence: Sequence):
         self.waiting_queue.put(sequence)
 
-    def drop_request_to_waiting(self, sequence: Sequence):
-        self.running_queue.queue.remove(sequence)
+    def swap_req_to_waiting(self, sequence: Sequence):
         self.free_sequence_resources(sequence)
         sequence.cache_loc_ids = []
         sequence.status = "WAITING"
@@ -86,8 +85,9 @@ class Scheduler:
                 else:
                     break
         if len(running_sequences) == 0 and (not self.waiting_queue.empty() or not self.running_queue.empty()):
-            logger.error("deadlock detected: Memory full, cannot schedule any sequence.")
-            exit(-1)
+            self.swap_req_to_waiting(self.running_queue.get())
+            logger.error("deadlock detected: Memory full, move request to waiting queue.")
+            # exit(-1)
         return SequenceGroup(running_sequences)
 
     def free_sequence_resources(self, sequence: Sequence):

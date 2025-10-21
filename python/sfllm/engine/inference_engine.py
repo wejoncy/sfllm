@@ -38,7 +38,6 @@ class InferenceEngine:
                 self.scheduler.running_queue.put(sequence)
             else:
                 sequence.status = "COMPLETED"
-                logger.info(f"Sequence {sequence.sequence_id} completed.")
                 self.finished_sequences.append(sequence)
                 self.scheduler.free_sequence_resources(sequence)
 
