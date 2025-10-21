@@ -106,10 +106,9 @@ class EngineServer:
                 if request_id in self.req_to_state:
                     if "text" not in self.req_to_state[request_id]["response"]:
                         self.req_to_state[request_id]["response"]["text"] = ""
-                    if output["tokens"] is None or len(output["tokens"]) == 0:
-                        generated_text = ""
-                    else:
-                        generated_text = tokenizer.decode(output["tokens"])
+                    if None in output["tokens"]:
+                        print('debug')
+                    generated_text = tokenizer.decode(output["tokens"])
                     self.req_to_state[request_id]["response"]["text"] += generated_text
                     self.req_to_state[request_id]["status"] = output["status"]
                     self.req_to_state[request_id]["event"].set()

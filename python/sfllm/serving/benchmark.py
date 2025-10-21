@@ -132,7 +132,7 @@ async def send_request(session, url, prompt, max_new_tokens=64):
 
     start_time = time.time()
     try:
-        async with session.post(url, json=data, timeout=15) as response:
+        async with session.post(url, json=data, timeout=150) as response:
             result = await response.json()
             latency = time.time() - start_time
             return {

@@ -54,7 +54,6 @@ class Scheduler:
         self.free_sequence_resources(sequence)
         sequence.cache_loc_ids = []
         sequence.status = "WAITING"
-        sequence.tokens = sequence.tokens[: sequence.prompt_token_len]
         sequence.new_tokens = sequence.tokens.copy()
         self.waiting_queue.put(sequence)
 
@@ -63,15 +62,17 @@ class Scheduler:
 
         # schedule prefill first
         reserved_blocks = self.running_queue.qsize()  # reserve some blocks for running sequences
+        prefill_tokens = 0
         while not self.waiting_queue.empty():
             tokens = self.waiting_queue.queue[0].tokens
             if self.block_memory_manager.can_alloc(
                 len(tokens) + reserved_blocks*1000
-            ):  # the future token ids are unknown
+            ) and prefill_tokens + len(tokens) < 1024:  # the future token ids are unknown
                 running_sequences.append(self.waiting_queue.get())
                 running_sequences[-1].cache_loc_ids.extend(self.block_memory_manager.alloc_block(
                     tokens, hashv=0
                 ))
+                prefill_tokens += len(tokens)
             else:
                 break
         # if there is no prefill request, schedule decode requests
