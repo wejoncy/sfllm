@@ -15,13 +15,14 @@ class SamplingBatchInfo:
 
 
 def maybe_compile(fn):
-    """Only compile if not on Windows."""
-    if platform.system() == "Windows":
-        print("[torch.compile disabled on Windows]")
-        return fn
-    else:
-        print("[torch.compile enabled]")
-        return torch.compile(fn) 
+    def wrapper(*args, **kwargs):
+        """Only compile if not on Windows."""
+        if platform.system() == "Windows":
+            return fn(*args, **kwargs)
+        else:
+            return torch.compile(fn)(*args, **kwargs)
+
+    return wrapper
 
 class Sampler(nn.Module):
     def __init__(self):

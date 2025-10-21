@@ -211,7 +211,7 @@ class ModelRunner:
         return self.model.tokenizer.decode(tokens)
 
 async def generate_text(model, inputs, temperature=0.7, top_p=1.0, 
-                        max_tokens=64):
+                        max_new_tokens=64):
     """
     Generate text based on the prompt and optional image embeddings
     
@@ -219,7 +219,7 @@ async def generate_text(model, inputs, temperature=0.7, top_p=1.0,
         model: The loaded model and tokenizer
         temperature: Controls randomness in boltzmann distribution
         top_p: Controls diversity via nucleus sampling
-        max_tokens: Maximum number of tokens to generate        
+        max_new_tokens: Maximum number of tokens to generate        
     Returns:
         The generated text
     """
@@ -235,7 +235,7 @@ async def generate_text(model, inputs, temperature=0.7, top_p=1.0,
         with torch.no_grad():
             outputs = model_obj.generate(
                 **inputs,
-                max_new_tokens = max_tokens,
+                max_new_tokens = max_new_tokens,
                 # temperature=temperature,
                 # top_p=top_p,
                 pad_token_id=tokenizer.eos_token_id,
@@ -273,7 +273,7 @@ async def batch_generate_text(model, batch_inputs):
     # Process each input in the batch
     inputs_ids =[i[-1].input_ids for i in batch_inputs]
     attentionmask =[i[-1].attention_mask for i in batch_inputs]
-    (_, temperature, top_p, max_tokens, inputs) = batch_inputs[0]
+    (_, temperature, top_p, max_new_tokens, inputs) = batch_inputs[0]
     inputs_ids = torch.cat(inputs_ids, dim=0)
     attentionmask = torch.cat(attentionmask, dim=0)
     inputs = {
@@ -285,7 +285,7 @@ async def batch_generate_text(model, batch_inputs):
         inputs,
         temperature=temperature,
         top_p=top_p,
-        max_tokens=max_tokens
+        max_new_tokens=max_new_tokens
     )
     results = []
     input_length = inputs['input_ids'].shape[1]

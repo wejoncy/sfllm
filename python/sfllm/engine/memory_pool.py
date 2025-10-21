@@ -47,9 +47,9 @@ class BlockMemoryManager:
         self.used_block_ids.remove(block_id)
         self.free_block_ids.append(block_id)
 
-    def can_alloc(self, token_ids: list[int]) -> bool:
+    def can_alloc(self, token_len: int) -> bool:
         """Check if a block of memory can be allocated."""
-        return len(self.free_block_ids) >= len(token_ids)
+        return len(self.free_block_ids) >= token_len
 
     def alloc_block(self, token_ids: list[int], hashv: int) -> BlockMemory:
         """Allocate a block of memory."""
@@ -64,3 +64,8 @@ class BlockMemoryManager:
         """Free a block of memory."""
         for block_id in block_ids:
             self._free_block_by_id(block_id)
+        
+    def get_usage(self) -> float:
+        """Get the memory usage percentage."""
+        used_blocks = len(self.used_block_ids)
+        return (used_blocks / self.num_blocks) * 100.0

@@ -14,12 +14,12 @@ SAMPLE_PROMPTS = [
     "a " *1024,
 ]
 
-async def send_request(session, url, prompt, max_tokens=64):
+async def send_request(session, url, prompt, max_new_tokens=64):
     """Send a single request and return timing information."""
     data = {
         "prompt": prompt,
         "temperature": 0.7,
-        "max_tokens": max_tokens,
+        "max_new_tokens": max_new_tokens,
         "top_p": 0.95,
         "model": "gemma-7b"
     }
