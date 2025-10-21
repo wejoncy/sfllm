@@ -42,6 +42,7 @@ class ForwardMetaData:
         self.custom_mask = None
         self.mask_indptr = None
         self.max_kv_splits = 8
+        self.sampling_batch_info = None
 
         self.past_key_values = self.create_past_kv(config)
         self.seq_length = 0

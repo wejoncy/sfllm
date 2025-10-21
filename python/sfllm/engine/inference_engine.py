@@ -1,19 +1,22 @@
 import asyncio
+import argparse
 from typing import Dict, Any, List, Tuple
 
-from sfllm.engine.model_runner import ModelRunner, generate_text, batch_generate_text
+from sfllm.engine.model_runner import ModelRunner
 from sfllm.engine.scheduler import Scheduler
 from sfllm.engine.sampling_params import SamplingParams
 from sfllm.engine.sequence import Sequence,SequenceGroup
+from sfllm.server_args import ServerArgs
+
 
 class InferenceEngine:
     """Worker that processes inference requests from a queue."""
     
-    def __init__(self, model_path: str):
+    def __init__(self, server_args: ServerArgs):
         """
         Initialize the inference worker.
         """
-        self.model_runner = ModelRunner(model_path)
+        self.model_runner = ModelRunner(server_args)
         self.running = False
         self.worker_threads = []
         self.scheduler = Scheduler()
@@ -52,6 +55,7 @@ class InferenceEngine:
 
     def generate(self, prompt: List[str]|str, sampling_params: SamplingParams) -> Dict[str, Any]:
         """Generate text for inference requests."""
+        seq_outputs = {}
         if isinstance(prompt, str):
             prompt = [prompt]
         for p in prompt:
@@ -61,47 +65,8 @@ class InferenceEngine:
         
         for sequence in self.finished_sequences:
             sequence.generated_text = self.model_runner.detokenize(sequence.tokens)
-            print(f"Generated text for sequence {sequence.generated_text}")
-        return {}
-
-    async def process_requests(self, requests: List[Tuple[str, Dict[str, Any]]]):
-        """Process a single inference request."""
-        batch_requests = []
-        for request_id, request_data in requests:
-            request_type = request_data.get("type")
-            temperature=request_data.get("temperature", 0.7)
-            top_p=request_data.get("top_p", 0.95)
-            max_tokens=request_data.get("max_tokens", 100)
-            prompt = request_data.get("prompt", "")
-            messages = None
-            if request_type == "chat":
-                # Handle chat completion
-                messages = request_data.get("messages", [])
-            else:
-                # Handle text completion
-                prompt = request_data.get("prompt", "")
-
-            inputs = self.model.tokenize(prompt, messages)
-            batch_requests.append((request_id, temperature, top_p, max_tokens, inputs))
-        try:
-            policy_grouped_requests = self.sort_policy.sort_requests(batch_requests)
-            for token_len, grouped_request in policy_grouped_requests.items():
-                print(f"Processing batch of {len(grouped_request)} requests with token length {token_len}")
-                batch_output = await batch_generate_text(
-                    model=self.model,
-                    batch_inputs=grouped_request,
-                )
-                for engine_out, request in zip(batch_output, grouped_request):
-                    # Submit the response
-                    request_id = request[0]
-                    self.queue_manager.submit_response(request_id, engine_out)
-        except Exception as e:
-            error_response = {
-                "error": str(e),
-                "status": "error"
-            }
-            for token_len, grouped_request in policy_grouped_requests.items():
-                self.queue_manager.submit_response(grouped_request[0], error_response)
+            seq_outputs[sequence.id] = sequence.generated_text
+        return seq_outputs
     
     async def worker_loop(self):
         """Worker coroutine that processes requests from the queue."""
@@ -153,9 +118,14 @@ class InferenceEngine:
 
 if __name__ == "__main__":
     # Example usage
-    engine = InferenceEngine("/home/jicwen/work/Qwen3-0.6B/")
+    import sys
+    sys.argv = ["", "--model", "/home/jicwen/work/Qwen3-0.6B/"]
+    parser = argparse.ArgumentParser()
+    ServerArgs.add_cli_args(parser)
+    args = parser.parse_args()
+    server_args = ServerArgs.from_cli_args(args)
+    # server_args.disable_cuda_graph = True
+    engine = InferenceEngine(server_args)
     # engine.add_request("Hello, world!", SamplingParams())
-    engine.generate("Hello, world!", SamplingParams())
+    engine.generate("Hello, my name is", SamplingParams())
     print("Inference step completed.")
-
-        

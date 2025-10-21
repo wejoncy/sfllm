@@ -8,14 +8,16 @@ from sfllm.engine.model_loader import TorchDefaultDtype, _load_check_point, Forw
 from sfllm.models.modeling_qwen3 import Qwen3ForCausalLM
 from sfllm.engine.sequence import Sequence, SequenceGroup
 from sfllm.engine.forward_params import ForwardMode, ForwardMetaData
-from sfllm.layers.sampler import Sampler
+from sfllm.layers.sampler import Sampler, SamplingBatchInfo
+from sfllm.server_args import ServerArgs
+
 
 logger = logging.getLogger(__name__)
 
 
 class ModelRunner:
-    def __init__(self, model, device_id: int = 0):
-        self.model = ForwardModel(model)
+    def __init__(self, server_args: ServerArgs, device_id: int = 0):
+        self.model = ForwardModel(server_args.model_path)
         self.device_id = device_id
         self.stream = torch.cuda.Stream(device=device_id)
         self.graph = None
@@ -23,6 +25,7 @@ class ModelRunner:
         self.capture_batch_size = [1, 2, 3, 4, 8, 16]
         self.sampler = Sampler()
         self.rank = 0
+        self.server_args = server_args
 
         # cuda graph
         self.input_ids = torch.empty((max(self.capture_batch_size),), dtype=torch.long, device=self.device_id)
@@ -31,7 +34,8 @@ class ModelRunner:
         self.cuda_graphs = {}
         self.graph_pool = torch.cuda.graph_pool_handle()
         self.alloc_kv_cache()
-        self.capture_graph()
+        if server_args.disable_cuda_graph is False:
+            self.capture_graph()
         # self.attention_mask = torch.empty((max(self.capture_batch_size), 1), dtype=torch.long, device=self.device_id)
 
     def alloc_kv_cache(self):
@@ -86,9 +90,6 @@ class ModelRunner:
             self.forward_metadata.kv_indices[
                 past_seq_len : seq_len + past_seq_len
             ].copy_(cache_loc_ids, non_blocking=True)
-            self.forward_metadata.out_cache_loc = self.forward_metadata.kv_indices[
-                past_seq_len : seq_len + past_seq_len
-            ]
 
             self.forward_metadata.qo_indptr = self.forward_metadata.qo_indptr_buffer[
                 : batch_size + 1
@@ -105,6 +106,9 @@ class ModelRunner:
             ]
             self.forward_metadata.kv_indices[past_seq_len:].copy_(cache_loc_ids, non_blocking=True)
             self.forward_metadata.num_kv_splits = self.forward_metadata.num_kv_splits_buffer[:batch_size].add_(2)
+        self.forward_metadata.out_cache_loc = self.forward_metadata.kv_indices[
+            past_seq_len : seq_len + past_seq_len
+        ]
         self.forward_metadata.seq_length += seq_len
 
         return {
@@ -115,15 +119,29 @@ class ModelRunner:
         }
 
     def prepare_sample(self, seqs: SequenceGroup) -> torch.Tensor:
+        if self.forward_metadata.sampling_batch_info is not None:
+            return
         temperatures = []
+        top_ps = []
+        top_ks = []
         for seq in seqs:
             temperatures.append(seq.sampling_params.temperature)
+            top_ps.append(seq.sampling_params.top_p)
+            top_ks.append(seq.sampling_params.top_k)
         temperatures = torch.tensor(temperatures, dtype=torch.float32, pin_memory=True).cuda(non_blocking=True)
-        return temperatures
+        top_ks = torch.tensor(top_ks, dtype=torch.int32, pin_memory=True).cuda(non_blocking=True)
+        top_ps = torch.tensor(top_ps, dtype=torch.float32, pin_memory=True).cuda(non_blocking=True)
+        self.forward_metadata.sampling_batch_info = SamplingBatchInfo(
+            temperatures=temperatures,
+            top_ps=top_ps,
+            top_ks=top_ks,
+            min_ps=torch.zeros_like(top_ps),
+            is_all_greedy=all(seq.sampling_params.is_greedy for seq in seqs),
+        )
 
     def forward(self, sequence_group: SequenceGroup):
         inputs = self.prepare_inputs(sequence_group)
-        temperatures = self.prepare_sample(sequence_group) if self.rank == 0 else None
+        self.prepare_sample(sequence_group) if self.rank == 0 else (None, None, None)
 
         if self.forward_metadata.forward_mode == ForwardMode.DECODE and self.cuda_graphs.get(len(sequence_group)) is not None:
             self.input_ids[: len(sequence_group)].copy_(inputs["input_ids"], non_blocking=True)
@@ -135,7 +153,7 @@ class ModelRunner:
             logits = self.model(**inputs)
 
         token_ids = (
-            self.sampler(logits, temperatures).tolist() if self.rank == 0 else None
+            self.sampler(logits, self.forward_metadata.sampling_batch_info).tolist() if self.rank == 0 else None
         )
         return token_ids
 
