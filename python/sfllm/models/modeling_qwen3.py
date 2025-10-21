@@ -12,6 +12,7 @@ from torch import Tensor
 from tqdm import tqdm
 from contextlib import ContextDecorator
 from sfllm.layers.triton_attention import RaggedAttention
+from sfllm.kernels.rope import rope_forward
 from sfllm.engine.forward_params import ForwardMode, ForwardMetaData
 
 
