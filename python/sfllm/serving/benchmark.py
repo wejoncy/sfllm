@@ -127,19 +127,20 @@ async def send_request(session, url, prompt, max_new_tokens=64):
         "temperature": 0.7,
         "max_new_tokens": max_new_tokens,
         "top_p": 0.95,
-        "model": "gemma-7b"
+        "model": "gemma-7b",
+        "stream": False,
     }
 
     start_time = time.time()
     try:
         async with session.post(url, json=data, timeout=150) as response:
             result = await response.json()
-            latency = time.time() - start_time
-            return {
-                "success": True,
-                "latency": latency,
-                "status": response.status
-            }
+        latency = time.time() - start_time
+        return {
+            "success": True,
+            "latency": latency,
+            "status": response.status
+        }
     except Exception as e:
         return {
             "success": False,

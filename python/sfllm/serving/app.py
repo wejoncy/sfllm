@@ -14,6 +14,7 @@ ens": 100}'`
 """
 import multiprocessing as mp
 from contextlib import asynccontextmanager
+import fastapi
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -59,6 +60,7 @@ def create_app(server_args):
 
     # Streaming response
     async def generate_stream(request_id, generator):
+        import json
         async for chunk in generator:
             # Format streaming response according to OpenAI format
             stream_chunk = {
@@ -70,29 +72,30 @@ def create_app(server_args):
                         "index": 0,
                         "logprobs": None,
                         "finish_reason": "stop"
-                        if chunk.get("status", "COMPLETED")
+                        if chunk.get("status", "RUNNING") in ["COMPLETED", "FAILED"]
                         else None,
                     }
                 ],
             }
 
-            yield stream_chunk
+            # Convert to JSON string and add newline for proper streaming
+            yield json.dumps(stream_chunk) + "\n\n"
 
     @app.post("/v1/chat/completions")
-    async def chat_completions(request: ChatRequest):
+    async def chat_completions(request: fastapi.Request, body: ChatRequest):
         # Format messages into a prompt with processed images
-        prompt = format_chat_messages(request.messages)
+        prompt = format_chat_messages(body.messages)
         
         # Prepare request data for the queue
         request_data = {
             "type": "chat",
             "prompt": prompt,
-            "messages": request.messages,
-            "temperature": request.temperature,
-            "top_p": request.top_p,
-            "max_new_tokens": request.max_new_tokens,
-            "model": request.model,
-            "stream": request.stream
+            "messages": body.messages,
+            "temperature": body.temperature,
+            "top_p": body.top_p,
+            "max_new_tokens": body.max_new_tokens,
+            "model": body.model,
+            "stream": body.stream,
         }
         inference_worker = app.state.inference_worker
         
@@ -100,34 +103,17 @@ def create_app(server_args):
         request_id = await inference_worker.submit_request(request_data)
 
         try:
-            if request.stream:
-                return StreamingResponse(generate_stream(request_id, inference_worker.get_stream_response(request_id)), media_type="text/json")
+            if body.stream:
+                return StreamingResponse(generate_stream(request_id, inference_worker.get_stream_response(request_id)), media_type="text/plain")
             else:
                 # Non-streaming response
-                response = await inference_worker.get_response(request_id, timeout=REQUEST_TIMEOUT)
-                if isinstance(response, dict) and "error" in response:
-                    raise HTTPException(
-                        status_code=500,
-                        detail=response.get("error", "Unknown error during inference")
-                    )
-                
-                response_text = response["text"]
-                usage = response.get("usage", {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0})
-                # Format the response
-                response = {
-                    "id": request_id,
-                    "object": "chat.completion",
-                    "created": int(time.time()),
-                    "model": request_data.get("model"),
-                    "choices": [
-                        {
-                            "index": 0,
-                            "message": {"role": "assistant", "content": response_text},
-                            "finish_reason": "stop",
-                        }
-                    ],
-                    "usage": usage,
-                }
+                async for _v in generate_stream(
+                    request_id,
+                    inference_worker.get_stream_response(
+                        request_id, timeout=REQUEST_TIMEOUT
+                    ),
+                ):
+                    response = _v
 
                 return response
             
@@ -138,16 +124,16 @@ def create_app(server_args):
             )
 
     @app.post("/v1/completions")
-    async def completions(request: CompletionRequest):
+    async def completions(request: fastapi.Request, body: CompletionRequest):
         # Prepare request data for the queue
         request_data = {
             "type": "completion",
-            "prompt": request.prompt,
-            "temperature": request.temperature,
-            "top_p": request.top_p,
-            "max_new_tokens": request.max_new_tokens,
-            "model": request.model,
-            "stream": request.stream,
+            "prompt": body.prompt,
+            "temperature": body.temperature,
+            "top_p": body.top_p,
+            "max_new_tokens": body.max_new_tokens,
+            "model": body.model,
+            "stream": body.stream,
         }
         
         # Submit to queue and wait for response
@@ -155,7 +141,7 @@ def create_app(server_args):
             inference_worker = app.state.inference_worker
             request_id = await inference_worker.submit_request(request_data)
 
-            if request.stream:
+            if body.stream:
                 return StreamingResponse(
                     generate_stream(request_id,
                         inference_worker.get_stream_response(request_id, timeout=REQUEST_TIMEOUT),
