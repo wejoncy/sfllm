@@ -55,7 +55,7 @@ class Sampler(nn.Module):
         probs_idx = probs_idx.to(torch.int32)
         batch_next_token_ids = torch.gather(probs_idx, dim=1, index=sampled_index).view(-1)
         if batch_next_token_ids.max() > 151643:
-            print("errrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr", probs.shape())
+            print("errrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr", probs.shape)
             exit(-1)
         return batch_next_token_ids
 
