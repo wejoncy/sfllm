@@ -47,6 +47,7 @@ class Scheduler:
         self.metrics = RunningMetrics(self.waiting_queue, self.running_queue, self.block_memory_manager)
         self.max_context_length = max_context_length
         self.max_prefill_tokens = min(max_context_length, 4096)
+        self.max_decode_tokens = 16
 
     
     def add_request(self, sequence: Sequence):
@@ -63,12 +64,12 @@ class Scheduler:
         running_sequences = []
         failed_sequences = []
         # schedule prefill first
-        reserved_blocks = self.running_queue.qsize()  # reserve some blocks for running sequences
+        running_size = self.running_queue.qsize()  # reserve some blocks for running sequences
         prefill_tokens = 0
-        while not self.waiting_queue.empty():
+        while not self.waiting_queue.empty() and running_size < self.max_decode_tokens:
             tokens = self.waiting_queue.queue[0].tokens
             if self.block_memory_manager.can_alloc(
-                len(tokens) + reserved_blocks*1000
+                len(tokens) + running_size * 100
             ) and prefill_tokens + len(tokens) < self.max_prefill_tokens:  # the future token ids are unknown
                 running_sequences.append(self.waiting_queue.get())
                 running_sequences[-1].cache_loc_ids.extend(self.block_memory_manager.alloc_block(

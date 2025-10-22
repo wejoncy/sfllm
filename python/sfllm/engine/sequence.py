@@ -1,21 +1,40 @@
 
 from sfllm.engine.sampling_params import SamplingParams
+from enum import IntEnum, auto
+import threading
+from typing import List, Tuple
 
 
-class SequenceStatus:
-    PENDING = "PENDING"
-    RUNNING = "RUNNING"
-    COMPLETED = "COMPLETED"
-    FAILED = "FAILED"
+class SequenceStatus(IntEnum):
+    PENDING = auto()
+    RUNNING = auto()
+    COMPLETED = auto()
+    FAILED = auto()
 
-_cur_sequence_id = 0
+    def __str__(self):
+        return self.name
+
+class StrictCounter:
+    def __init__(self, start=0):
+        self._value = start
+        self._lock = threading.Lock()
+
+    def next(self):
+        with self._lock:
+            self._value += 1
+            return self._value
+
+strict_counter = StrictCounter()
 def _get_next_sequence_id():
-    global _cur_sequence_id
-    _cur_sequence_id += 1
-    return _cur_sequence_id
+    return strict_counter.next()
 
 class Sequence:
-    def __init__(self, prompt:str, sampling_params:SamplingParams = SamplingParams()):
+    def __init__(
+        self,
+        prompt: str,
+        sampling_params: SamplingParams = SamplingParams(),
+        input_ids: List[int] = None,
+    ):
         self.sequence_id = _get_next_sequence_id()
         self.prompt = prompt
         self.prompt_token_len = 0
@@ -25,6 +44,10 @@ class Sequence:
         self.generated_text = ""
         self.status = SequenceStatus.PENDING
         self.cache_loc_ids = []
+        if input_ids is not None:
+            self.tokens = input_ids
+            self.prompt_token_len = len(input_ids)
+            self.new_tokens = input_ids.copy()
 
 class SequenceGroup:
     def __init__(self, sequences: list[Sequence]):
@@ -41,3 +64,6 @@ class SequenceGroup:
     
     def empty(self) -> bool:
         return len(self.sequences) == 0
+
+    def append(self, sequence_list: list[Sequence]) -> None:
+        self.sequences.extend(sequence_list)

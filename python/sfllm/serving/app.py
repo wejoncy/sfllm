@@ -3,9 +3,14 @@
 Usage: python app.py --model <model_name_or_path> [--port <port_number>]
 Starts the FastAPI server for LLM serving.
 in the client
+powershell
 curl -Uri "http://127.0.0.1:8080/v1/completions" `   \
       -Method POST `    -Headers @{ "Content-Type" = "application/json" } `  \
       -Body '{"prompt": "how are you?","model":"1", "max_new_tokens":100}'
+
+bash
+`curl -X POST "http://127.0.0.1:8080/v1/completions"      -H "Content-Type: application/json"      -d '{"prompt": "how are you?", "model": "1", "max_new_tok
+ens": 100}'`
 """
 import multiprocessing as mp
 from contextlib import asynccontextmanager
@@ -15,7 +20,6 @@ from fastapi.responses import StreamingResponse
 import uvicorn
 import asyncio
 import time
-import json
 import argparse
 
 from sfllm.serving.req_protocol import ChatRequest, CompletionRequest
@@ -58,16 +62,18 @@ def create_app(server_args):
         async for chunk in generator:
             # Format streaming response according to OpenAI format
             stream_chunk = {
-                "id": f"cmpl-{request_id[:8]}",
+                "id": request_id,
                 "object": "text_completion",
                 "choices": [
                     {
                         "text": chunk.get("text", ""),
                         "index": 0,
                         "logprobs": None,
-                        "finish_reason": "stop" if chunk.get("status", "COMPLETED") else None
+                        "finish_reason": "stop"
+                        if chunk.get("status", "COMPLETED")
+                        else None,
                     }
-                ]
+                ],
             }
 
             yield stream_chunk
@@ -109,21 +115,18 @@ def create_app(server_args):
                 usage = response.get("usage", {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0})
                 # Format the response
                 response = {
-                    "id": f"chatcmpl-{request_id[:8]}",
+                    "id": request_id,
                     "object": "chat.completion",
                     "created": int(time.time()),
                     "model": request_data.get("model"),
                     "choices": [
                         {
                             "index": 0,
-                            "message": {
-                                "role": "assistant",
-                                "content": response_text
-                            },
-                            "finish_reason": "stop"
+                            "message": {"role": "assistant", "content": response_text},
+                            "finish_reason": "stop",
                         }
                     ],
-                    "usage": usage
+                    "usage": usage,
                 }
 
                 return response
@@ -186,7 +189,7 @@ if __name__ == "__main__":
     # Parse command line arguments
     parser = argparse.ArgumentParser()
     ServerArgs.add_cli_args(parser)
-    parser.add_argument("--port", type=int, default=8080, help="Port number")
+    parser.add_argument("--port", type=int, default=8081, help="Port number")
     args = parser.parse_args()
     server_args = ServerArgs.from_cli_args(args)
     app = create_app(server_args)

@@ -5,7 +5,7 @@ from typing import Dict, Any, List, Tuple
 from sfllm.engine.model_runner import ModelRunner
 from sfllm.engine.scheduler import Scheduler
 from sfllm.engine.sampling_params import SamplingParams
-from sfllm.engine.sequence import Sequence,SequenceGroup
+from sfllm.engine.sequence import Sequence,SequenceGroup, SequenceStatus
 from sfllm.server_args import ServerArgs
 from sfllm.utils import configure_logger
 import multiprocessing
@@ -34,34 +34,42 @@ class InferenceEngine:
             idx += 1
 
             if len(sequence.tokens) - sequence.prompt_token_len < sequence.sampling_params.max_new_tokens:
-                sequence.status = "RUNNING"
+                sequence.status = SequenceStatus.RUNNING
                 self.scheduler.running_queue.put(sequence)
             else:
-                sequence.status = "COMPLETED"
+                sequence.status = SequenceStatus.COMPLETED
                 self.finished_sequences.append(sequence)
                 self.scheduler.free_sequence_resources(sequence)
             
         for sequence in failed_sequences:
-            sequence.status = "FAILED"
+            sequence.status = SequenceStatus.FAILED
             self.finished_sequences.append(sequence)
             self.scheduler.free_sequence_resources(sequence)
 
 
-    def add_request(self, prompt: str|Tuple[str, List[int]], sampling_params: SamplingParams) -> int:
-        """Add a new inference request to the queue."""
+    def new_request(self, prompt: str|Tuple[str, List[int]], sampling_params: SamplingParams) -> int:
         if isinstance(prompt, str):
             sequence = Sequence(prompt, sampling_params)
             sequence.tokens = self.model_runner.tokenize(prompt)
+            sequence.new_tokens = sequence.tokens
+            sequence.prompt_token_len = len(sequence.tokens)
         else:
             assert isinstance(prompt, tuple), "Prompt must be a string or a tuple of (str, List[int])"
-            sequence = Sequence(prompt[0], sampling_params)
-            sequence.tokens = prompt[1]
-        sequence.new_tokens = sequence.tokens
-        sequence.prompt_token_len = len(sequence.tokens)
+            sequence = Sequence(prompt[0], sampling_params, input_ids=prompt[1])
+
+        return sequence
+
+    def add_request(
+        self,
+        prompt: str | Tuple[str, List[int]] | Sequence,
+        sampling_params: SamplingParams = SamplingParams(),
+    ) -> int:
+        """Add a new inference request to the queue."""
+        if isinstance(prompt, Sequence):
+            sequence = prompt
+        else:
+            sequence = self.new_request(prompt, sampling_params)
         self.scheduler.add_request(sequence)
-        logger.info(f"waiting req size: {self.scheduler.waiting_queue.qsize()}. "
-                    f"running req size: {self.scheduler.running_queue.qsize()}. "
-                    f"finished req size: {len(self.finished_sequences)}")
         return sequence.sequence_id
     
     def step(self):
@@ -86,7 +94,7 @@ class InferenceEngine:
             if stream:
                 seq_outputs = {}
                 for sequence in seq_group:
-                    if sequence.status == "RUNNING":
+                    if sequence.status == SequenceStatus.RUNNING:
                         generated_text = self.model_runner.detokenize(
                             sequence.new_tokens,
                         )
