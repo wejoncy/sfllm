@@ -12,7 +12,7 @@ curl -X POST "http://localhost:6006/v1/chat/completions" \
       {"role": "user", "content": "Hello, how are you?"}
     ],
     "temperature": 0.7,
-    "max_tokens": 1024
+    "max_new_tokens": 1024
   }'
 ```
 

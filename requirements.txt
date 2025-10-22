@@ -1,13 +1,8 @@
 fastapi>=0.95.0
-uvicorn>=0.22.0
 pydantic>=2.0.0,<3.0.0  # Using Pydantic v2 with RootModel
 transformers>=4.39.0
 torch>=2.0.1  # Ensure CUDA graph support is available
-sentencepiece>=0.1.99
-accelerate>=0.20.0
-python-multipart>=0.0.6
+# sentencepiece>=0.1.99
+# python-multipart>=0.0.6
 aiohttp>=3.8.4
-pillow>=9.5.0
 safetensors>=0.4.0
-uvloop
-sglang

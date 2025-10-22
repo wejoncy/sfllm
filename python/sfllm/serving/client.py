@@ -9,7 +9,7 @@ class Client:
     def __init__(self, host: str):
         self.host = host
 
-    def generate_chat(self, prompt: str, model: str = "gemma-3-4b-it", max_tokens: int = 64,
+    def generate_chat(self, prompt: str, model: str = "gemma-3-4b-it", max_new_tokens: int = 64,
                  temperature: float = 0.8, top_p: float = 0.95, stream: bool = False) -> Dict:
         payload = {
             "model": model,
@@ -27,7 +27,7 @@ class Client:
             ],
             "temperature": temperature,
             "top_p": top_p,
-            "max_tokens": max_tokens,
+            "max_new_tokens": max_new_tokens,
             "stream": stream
         }
         session = requests.Session()
@@ -39,14 +39,14 @@ class Client:
         result = response.json()
         return result.get("message", "")
 
-    def generate(self, prompt: str, model: str = "gemma-3-4b-it", max_tokens: int = 64,
+    def generate(self, prompt: str, model: str = "gemma-3-4b-it", max_new_tokens: int = 64,
                  temperature: float = 0.8, top_p: float = 0.95, stream: bool = False) -> Dict:
         payload = {
             "model": model,
             "prompt": prompt,
             "temperature": temperature,
             "top_p": top_p,
-            "max_tokens": max_tokens,
+            "max_new_tokens": max_new_tokens,
             "stream": stream
         }
         session = requests.Session()
