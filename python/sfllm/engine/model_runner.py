@@ -21,7 +21,6 @@ class ModelRunner:
         self.model = ForwardModel(server_args.model_path, server_args.dtype)
         self.device_id = device_id
         self.stream = torch.cuda.Stream(device=device_id)
-        self.graph = None
         self.forward_metadata = None
         self.cuda_graph_max_bs = server_args.cuda_graph_max_bs
         self.capture_batch_size = [1, 2, 3, 4, 6, 8, 10, 12, 14, self.cuda_graph_max_bs]

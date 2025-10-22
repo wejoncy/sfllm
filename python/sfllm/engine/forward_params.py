@@ -48,7 +48,7 @@ class ForwardBatch:
             dtype=torch.float32,
             device="cuda",
         )
-
+        self.max_running_tokens = 0
         self.past_key_values = self.create_past_kv(config)
         self.forward_mode = ForwardMode.EXTEND
 
@@ -60,7 +60,7 @@ class ForwardBatch:
         )
         n_heads = config.num_key_value_heads
         free, total = torch.cuda.mem_get_info("cuda:0")
-        one_token_size = n_heads * dim * 2 * 2  # key + value, float16
+        one_token_size = n_heads * dim * self.dtype.itemsize * 2  # key + value
         max_length = min(max_length, int(free*0.85) // one_token_size // config.num_hidden_layers)
         logger.info(
             f"GPU memory free: {free / (1024**3):.2f} GB, total: {total / (1024**3):.2f} GB"
@@ -73,6 +73,7 @@ class ForwardBatch:
                     torch.zeros(max_length, n_heads, dim, dtype=self.dtype).cuda(),
                 )
             )
+        self.max_running_tokens = max_length
         return past_key_values
 
     # for compatibility only, not used in current implementation

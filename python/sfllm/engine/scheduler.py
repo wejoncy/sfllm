@@ -89,10 +89,10 @@ class SchedulerPolicy:
         return self.total_remain_tokens >= token_len + sequence.sampling_params.max_new_tokens
 
 class Scheduler:
-    def __init__(self, max_context_length: int = 4096):
+    def __init__(self, max_context_length: int = 4096, max_running_tokens: int = 10240):
         self.waiting_queue = queue.Queue()
         self.running_queue = queue.Queue()
-        self.block_memory_manager = BlockMemoryManager(num_blocks=10240)
+        self.block_memory_manager = BlockMemoryManager(num_blocks=max_running_tokens)
         self.metrics = RunningMetrics(self.waiting_queue, self.running_queue, self.block_memory_manager)
         self.max_context_length = max_context_length
         self.max_prefill_tokens = min(max_context_length, 4096)

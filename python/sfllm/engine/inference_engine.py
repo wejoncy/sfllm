@@ -25,7 +25,7 @@ class InferenceEngine:
         self.model_runner = ModelRunner(server_args)
         self.server_args = server_args
         self.running = False
-        self.scheduler = Scheduler(self.model_runner.get_max_context_length())
+        self.scheduler = Scheduler(self.model_runner.get_max_context_length(), self.model_runner.forward_metadata.max_running_tokens)
         self.finished_sequences = []
 
     def post_forward(self, sequence_group: SequenceGroup, token_ids: List[int], failed_sequences: List[Sequence]) -> None:
@@ -131,13 +131,9 @@ if __name__ == "__main__":
         "The president of the United States is",
         "The capital of France is",
         "The future of AI is",
-        "The future of AI is",
-        # "The future of AI is",
-        # "The future of AI is",
-        # "The future of AI is",
     ]
     # engine.add_request("Hello, world!", SamplingParams())
-    outputs = engine.generate(prompts, SamplingParams(max_new_tokens=200, top_k=1), stream=False)
+    outputs = engine.generate(prompts, SamplingParams(max_new_tokens=2000, top_k=1), stream=False)
     for output in outputs:
         for _, output_d in output.items():
             v = (f"Prompt: {output_d['prompt']}\nGenerated text: {output_d['text']}")
