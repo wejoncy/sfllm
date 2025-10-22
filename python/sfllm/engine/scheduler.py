@@ -25,6 +25,7 @@ class RunningMetrics:
         current_time = time.perf_counter()
         elapsed = current_time - self.last_prefill_refresh_time
         self.last_prefill_refresh_time = current_time
+        log_interval = 4.0  # seconds
         if self.prefill_tokens == 0:
             self.prefill_tokens = cur_prefill_tokens
             return
@@ -34,7 +35,8 @@ class RunningMetrics:
             f"gen throughput (token/s): {self.prefill_tokens / elapsed:.2f}, "
             f"#queue-req p+d: {self.waiting_queue.qsize()}+{self.running_queue.qsize()}, "
         )
-        logger.info(msg)
+        if current_time - self.last_refresh_time > log_interval:
+            logger.info(msg)
         self.prefill_tokens = cur_prefill_tokens
 
     def log_decode_metrics(self, seq_group: List[Sequence]):
