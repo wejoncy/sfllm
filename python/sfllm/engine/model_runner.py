@@ -14,7 +14,7 @@ from sfllm.server_args import ServerArgs
 
 
 logger = logging.getLogger(__name__)
-
+DEFAULT_CUDA_GRAPH_BATCH_SIZES = [1, 2, 3, 4, 6, 8, 10, 12, 14, 16]+list(range(20, 2048+1, 4))
 
 class ModelRunner:
     def __init__(self, server_args: ServerArgs, device_id: int = 0):
@@ -23,7 +23,9 @@ class ModelRunner:
         self.stream = torch.cuda.Stream(device=device_id)
         self.forward_metadata = None
         self.cuda_graph_max_bs = server_args.cuda_graph_max_bs
-        self.capture_batch_size = [1, 2, 3, 4, 6, 8, 10, 12, 14, 16]+list(range(20, self.cuda_graph_max_bs+1, 4))
+        ind = bisect.bisect_right(DEFAULT_CUDA_GRAPH_BATCH_SIZES, self.cuda_graph_max_bs)+1
+        self.capture_batch_size = DEFAULT_CUDA_GRAPH_BATCH_SIZES[:ind]
+        self.capture_batch_size = self.capture_batch_size[:ind]
         self.sampler = Sampler(self.model.config)
         self.rank = 0
         self.server_args = server_args
