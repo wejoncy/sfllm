@@ -68,7 +68,7 @@ class ModelRunner:
             and batch_size < self.cuda_graph_max_bs
         ):
             padded_batch_size = self.capture_batch_size[
-                bisect.bisect_right(self.capture_batch_size, batch_size)
+                bisect.bisect_left(self.capture_batch_size, batch_size)
             ]
             padded_token = padded_batch_size - batch_size
 
