@@ -18,7 +18,7 @@ class ForwardMode(IntEnum):
 
 MAX_PROCESSED_TOKENS = 1024*200
 
-class ForwardMetaData:
+class ForwardBatch:
     def __init__(self, config, dtype="auto"):
         # need to inilialize during prepare inputs
         self.max_extend_len = 0

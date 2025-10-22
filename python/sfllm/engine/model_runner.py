@@ -8,7 +8,7 @@ from typing import Dict, List, Any
 from sfllm.engine.model_loader import TorchDefaultDtype, _load_check_point, ForwardModel
 from sfllm.models.modeling_qwen3 import Qwen3ForCausalLM
 from sfllm.engine.sequence import SequenceGroup
-from sfllm.engine.forward_params import ForwardMode, ForwardMetaData
+from sfllm.engine.forward_params import ForwardMode, ForwardBatch
 from sfllm.layers.sampler import Sampler, SamplingBatchInfo
 from sfllm.server_args import ServerArgs
 
@@ -45,7 +45,7 @@ class ModelRunner:
         return self.model.config.max_position_embeddings
     
     def alloc_kv_cache(self):
-        self.forward_metadata = ForwardMetaData(self.model.config, self.server_args.dtype)
+        self.forward_metadata = ForwardBatch(self.model.config, self.server_args.dtype)
     
     def prepare_inputs(self, sequence_group: SequenceGroup) -> Dict[str, Any]:
         cur_seq_lens_list = []
@@ -341,7 +341,7 @@ if __name__ == "__main__":
     model_path = r"D:\\work\\Qwen3-0.6B"
 
     config = transformers.AutoConfig.from_pretrained(model_path)
-    forward_metadata = ForwardMetaData(config)
+    forward_metadata = ForwardBatch(config)
     tokenizer = transformers.AutoTokenizer.from_pretrained(model_path)
     with TorchDefaultDtype(config.dtype):
         model = Qwen3ForCausalLM(config).cuda()

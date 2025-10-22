@@ -6,7 +6,7 @@ from torch import nn
 from torch import Tensor
 from sfllm.layers.triton_attention import RaggedAttention
 from sfllm.kernels.rope import rope_forward
-from sfllm.engine.forward_params import ForwardMode, ForwardMetaData
+from sfllm.engine.forward_params import ForwardMode, ForwardBatch
 
 
 class Cache:
@@ -495,7 +495,7 @@ if __name__ == "__main__":
     model_path = r"D:\\work\\Qwen3-0.6B"
 
     config = transformers.AutoConfig.from_pretrained(model_path)
-    forward_metadata = ForwardMetaData(config)
+    forward_metadata = ForwardBatch(config)
     tokenizer = transformers.AutoTokenizer.from_pretrained(model_path, use_fast=False)
     with TorchDefaultDtype(config.dtype):
         model = Qwen3ForCausalLM(config).cuda()
