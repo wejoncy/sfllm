@@ -23,7 +23,7 @@ class ModelRunner:
         self.graph = None
         self.forward_metadata = None
         self.capture_batch_size = [1, 2, 3, 4, 8, 16]
-        self.sampler = Sampler()
+        self.sampler = Sampler(self.model.config)
         self.rank = 0
         self.server_args = server_args
 
@@ -39,6 +39,9 @@ class ModelRunner:
             self.capture_graph()
         # self.attention_mask = torch.empty((max(self.capture_batch_size), 1), dtype=torch.long, device=self.device_id)
 
+    def get_max_context_length(self):
+        return self.model.config.max_position_embeddings
+    
     def alloc_kv_cache(self):
         self.forward_metadata = ForwardMetaData(self.model.config)
     

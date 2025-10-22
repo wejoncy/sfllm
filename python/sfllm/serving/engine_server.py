@@ -49,15 +49,16 @@ class EngineServer:
 
     async def get_stream_response(self, request_id: str, timeout: int = 30) -> Any:
         """Get the response for a submitted inference request."""
-        while self.req_to_state[request_id]["status"] != "COMPLETED":
+        while self.req_to_state[request_id]["status"] not in ["COMPLETED", "FAILED"]:
             await asyncio.wait_for(
                 self.req_to_state[request_id]["event"].wait(), timeout=timeout
             )
             self.req_to_state[request_id]["event"].clear()
             yield self.req_to_state[request_id]["response"]
+        print(f"Request {request_id} completed with status {self.req_to_state[request_id]['status']}")
 
     @staticmethod
-    def worker_loop(self):
+    def event_run_loop(self):
         self.inference_engine = InferenceEngine(self.server_args)
         self.ready_flag.value = True
         import json
@@ -70,18 +71,30 @@ class EngineServer:
                 prompt = request["prompt"]
                 input_ids = request["input_ids"]
                 sampling_params = SamplingParams.from_dict(request["sampling_params"])
-                self.inference_engine.add_request((prompt, input_ids), sampling_params)
+                sequence_id = self.inference_engine.add_request((prompt, input_ids), sampling_params)
+                request["sequence_id"] = sequence_id
             except:
                 pass
 
-            seq_group = self.inference_engine.step()
+            seq_group, failed_sequences = self.inference_engine.step()
+            if failed_sequences:
+                for sequence in failed_sequences:
+                    seq_outputs = {}
+                    seq_outputs[request["sequence_id"]] = {
+                        "request_id": request["request_id"],
+                        # "prompt": sequence.prompt,
+                        "tokens": [],
+                        "status": "FAILED",
+                    }
+                    self.worker_2_token_queue.put(json.dumps(seq_outputs))
             if len(seq_group) == 0:
                 time.sleep(0.1)
                 continue
 
             seq_outputs = {}
             for sequence in seq_group:
-                seq_outputs[request["request_id"]] = {
+                seq_outputs[request["sequence_id"]] = {
+                    "request_id": request["request_id"],
                     # "prompt": sequence.prompt,
                     "tokens": sequence.new_tokens,
                     "status": sequence.status,
@@ -102,13 +115,16 @@ class EngineServer:
                 await asyncio.sleep(0.1)
                 continue
             response = json.loads(msg)
-            for request_id, output in response.items():
+            for sequence_id, output in response.items():
+                request_id = output["request_id"]
                 if request_id in self.req_to_state:
                     if "text" not in self.req_to_state[request_id]["response"]:
                         self.req_to_state[request_id]["response"]["text"] = ""
-                    if None in output["tokens"]:
-                        print('debug')
-                    generated_text = tokenizer.decode(output["tokens"])
+                    try:
+                        generated_text = tokenizer.decode(output["tokens"],skip_special_tokens=True)
+                    except:
+                        print("Decoding error, exiting.")
+                        exit(-1)
                     self.req_to_state[request_id]["response"]["text"] += generated_text
                     self.req_to_state[request_id]["status"] = output["status"]
                     self.req_to_state[request_id]["event"].set()
@@ -119,7 +135,7 @@ class EngineServer:
         multiprocessing.set_start_method("spawn", force=True)
         self.running = True
         # Start worker tasks
-        worker = multiprocessing.Process(target=self.worker_loop, args=(self,))
+        worker = multiprocessing.Process(target=self.event_run_loop, args=(self,))
         worker.start()
         self.worker_threads.append(worker)
     

@@ -238,7 +238,12 @@ async def main():
 
     # Check server health before starting
     try:
-        async with aiohttp.ClientSession() as session:
+        connector = aiohttp.TCPConnector(
+            limit=0,
+            limit_per_host=args.concurrency,
+            ttl_dns_cache=300
+        )
+        async with aiohttp.ClientSession(connector=connector) as session:
             async with session.get(f"{args.url}/health", timeout=5) as response:
                 health = await response.json()
                 print(f"Server health check: {health}")

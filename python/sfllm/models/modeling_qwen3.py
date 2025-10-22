@@ -463,7 +463,7 @@ class Qwen3ForCausalLM(Qwen3PreTrainedModel):
         else:
             logits = self.lm_head(hidden_states[0])
 
-        return logits
+        return logits[:,:self.vocab_size]
 
 def generate_greedy(model, tokenizer, prompt, max_new_tokens=50, device='cuda'):
     model.eval()

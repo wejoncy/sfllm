@@ -3,7 +3,7 @@
 Usage: python app.py --model <model_name_or_path> [--port <port_number>]
 Starts the FastAPI server for LLM serving.
 in the client
- curl -Uri "http://127.0.0.1:8080/v1/completions" `   \
+curl -Uri "http://127.0.0.1:8080/v1/completions" `   \
       -Method POST `    -Headers @{ "Content-Type" = "application/json" } `  \
       -Body '{"prompt": "how are you?","model":"1", "max_new_tokens":100}'
 """

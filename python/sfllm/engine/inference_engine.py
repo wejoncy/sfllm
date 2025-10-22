@@ -22,10 +22,10 @@ class InferenceEngine:
         self.model_runner = ModelRunner(server_args)
         self.server_args = server_args
         self.running = False
-        self.scheduler = Scheduler()
+        self.scheduler = Scheduler(self.model_runner.get_max_context_length())
         self.finished_sequences = []
 
-    def post_forward(self, sequence_group: SequenceGroup, token_ids: List[int]) -> None:
+    def post_forward(self, sequence_group: SequenceGroup, token_ids: List[int], failed_sequences: List[Sequence]) -> None:
         """Post-process the model outputs and update the sequences."""
         idx = 0
         for sequence in sequence_group:
@@ -40,9 +40,14 @@ class InferenceEngine:
                 sequence.status = "COMPLETED"
                 self.finished_sequences.append(sequence)
                 self.scheduler.free_sequence_resources(sequence)
+            
+        for sequence in failed_sequences:
+            sequence.status = "FAILED"
+            self.finished_sequences.append(sequence)
+            self.scheduler.free_sequence_resources(sequence)
 
 
-    def add_request(self, prompt: str|Tuple[str, List[int]], sampling_params: SamplingParams) -> None:
+    def add_request(self, prompt: str|Tuple[str, List[int]], sampling_params: SamplingParams) -> int:
         """Add a new inference request to the queue."""
         if isinstance(prompt, str):
             sequence = Sequence(prompt, sampling_params)
@@ -54,16 +59,20 @@ class InferenceEngine:
         sequence.new_tokens = sequence.tokens
         sequence.prompt_token_len = len(sequence.tokens)
         self.scheduler.add_request(sequence)
+        logger.info(f"waiting req size: {self.scheduler.waiting_queue.qsize()}. "
+                    f"running req size: {self.scheduler.running_queue.qsize()}. "
+                    f"finished req size: {len(self.finished_sequences)}")
+        return sequence.sequence_id
     
     def step(self):
         """Process a single inference request."""
-        seq_group = self.scheduler.schedule()
+        seq_group, failed_sequences = self.scheduler.schedule()
         self.scheduler.metrics.refresh(seq_group)
-        if seq_group.empty():
-            return []
-        token_ids = self.model_runner.forward(seq_group)
-        self.post_forward(seq_group, token_ids)
-        return seq_group
+        token_ids = []
+        if not seq_group.empty():
+            token_ids = self.model_runner.forward(seq_group)        
+        self.post_forward(seq_group, token_ids, failed_sequences)
+        return seq_group, failed_sequences
 
     def generate(self, prompt: List[str]|str, sampling_params: SamplingParams, stream:bool=False) -> Dict[str, Any]:
         """Generate text for inference requests."""
@@ -73,7 +82,7 @@ class InferenceEngine:
         for p in prompt:
             self.add_request(p, sampling_params)
         while not self.scheduler.is_done():
-            seq_group = self.step()
+            seq_group, failed_sequences = self.step()
             if stream:
                 seq_outputs = {}
                 for sequence in seq_group:
