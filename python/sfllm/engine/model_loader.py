@@ -108,7 +108,7 @@ class TorchDefaultDtype(ContextDecorator):
         return False
 
 class ForwardModel:
-    def __init__(self, model_name:str):
+    def __init__(self, model_name:str, dtype:str="auto"):
         """
         Initialize the ForwardModel with the model name or path.
         
@@ -116,9 +116,11 @@ class ForwardModel:
             model_name: The name or path of the model to load
         """
         self.model = None
-        self.config = None
+        self.config = transformers.AutoConfig.from_pretrained(model_name)
+
         self.tokenizer = None
-        
+        self.dtype = self.config.dtype if dtype == "auto" else getattr(torch, dtype)
+
         # Load the model and tokenizer
         self.load_model(model_name)
 
@@ -134,8 +136,7 @@ class ForwardModel:
         """
         print(f"Loading model: {model_name}")
         before_avail_memory, _ = torch.cuda.mem_get_info(0)
-        self.config = transformers.AutoConfig.from_pretrained(model_name)
-        with TorchDefaultDtype(self.config.dtype):
+        with TorchDefaultDtype(self.dtype):
             model = Qwen3ForCausalLM(self.config).cuda()
             _load_check_point(model, model_name)
         self.model = model.eval()
@@ -145,9 +146,9 @@ class ForwardModel:
         logger.info(
             f"Load weight end. "
             f"type={type(self.model).__name__}, "
-            f"dtype={self.config.dtype}, "
-            f"avail mem={after_avail_memory:.2f} GB, "
-            f"mem usage={self.weight_load_mem_usage:.2f} GB."
+            f"dtype={self.dtype}, "
+            f"avail mem={after_avail_memory / 1024 ** 3:.2f} GB, "
+            f"weight load={self.weight_load_mem_usage / 1024 ** 3:.2f} GB."
         )
 
     def __call__(self, *args, **kwargs):

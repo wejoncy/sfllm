@@ -67,6 +67,9 @@ class Sampler(nn.Module):
         else:
             logits = logits[:,:self.vocab_size].float().div_(sampling_batch_info.temperatures.unsqueeze(dim=1))
             probs = torch.softmax(logits, dim=-1)
+            if probs.shape[-1] > self.vocab_size:
+                print("self.vocab_size", self.vocab_size, "probs.shape", probs.shape)
+                probs = probs[:,:self.vocab_size]
             return self.top_k_top_p_min_p_sampling_from_probs_torch(
                 probs,
                 sampling_batch_info.top_ks,

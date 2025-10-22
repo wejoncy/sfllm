@@ -1,16 +1,9 @@
 from collections.abc import Callable
-import glob
-import json
-from pathlib import Path
 from typing import Optional, Union
 
-import concurrent
-import safetensors
 import torch
 from torch import nn
 from torch import Tensor
-from tqdm import tqdm
-from contextlib import ContextDecorator
 from sfllm.layers.triton_attention import RaggedAttention
 from sfllm.kernels.rope import rope_forward
 from sfllm.engine.forward_params import ForwardMode, ForwardMetaData
@@ -117,7 +110,7 @@ def rotate_half(x):
     x2 = x[..., x.shape[-1] // 2 :]
     return torch.cat((-x2, x1), dim=-1)
 
-
+# @torch.compile
 def apply_rotary_pos_emb(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
     q = q.transpose(1, 2)
     k = k.transpose(1, 2)

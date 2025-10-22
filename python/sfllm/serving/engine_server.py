@@ -67,8 +67,7 @@ class EngineServer:
             except:  # noqa: E722
                 pass
 
-            seq_group, failed_sequences = self.inference_engine.step()
-            seq_group.append(failed_sequences)
+            seq_group = self.inference_engine.step()
             if len(seq_group) == 0:
                 time.sleep(0.1)
                 continue

@@ -19,7 +19,7 @@ class ForwardMode(IntEnum):
 MAX_PROCESSED_TOKENS = 1024*200
 
 class ForwardMetaData:
-    def __init__(self, config):
+    def __init__(self, config, dtype="auto"):
         # need to inilialize during prepare inputs
         self.max_extend_len = 0
         self.num_kv_splits_buffer = torch.zeros((MAX_PROCESSED_TOKENS,), dtype=torch.int32, device="cuda")+2
@@ -35,6 +35,8 @@ class ForwardMetaData:
         self.mask_indptr = None
         self.max_kv_splits = 16
         self.sampling_batch_info = None
+        self.dtype = config.dtype if dtype == "auto" else getattr(torch, dtype)
+        self.padded_token = 0
 
         self.attn_logits = torch.empty(
             (128, config.num_attention_heads, self.max_kv_splits, config.head_dim),
@@ -67,8 +69,8 @@ class ForwardMetaData:
         for _ in range(config.num_hidden_layers):
             past_key_values.append(
                 (
-                    torch.zeros(max_length, n_heads, dim, dtype=config.dtype).cuda(),
-                    torch.zeros(max_length, n_heads, dim, dtype=config.dtype).cuda(),
+                    torch.zeros(max_length, n_heads, dim, dtype=self.dtype).cuda(),
+                    torch.zeros(max_length, n_heads, dim, dtype=self.dtype).cuda(),
                 )
             )
         return past_key_values
