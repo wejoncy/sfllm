@@ -25,7 +25,9 @@ class InferenceEngine:
         self.model_runner = ModelRunner(server_args)
         self.server_args = server_args
         self.running = False
-        self.scheduler = Scheduler(self.model_runner.get_max_context_length(), self.model_runner.forward_metadata.max_running_tokens)
+        self.scheduler = Scheduler(server_args,
+                                   self.model_runner.get_max_context_length(), 
+                                   self.model_runner.forward_metadata.max_running_tokens)
         self.finished_sequences = []
 
     def post_forward(self, sequence_group: SequenceGroup, token_ids: List[int], failed_sequences: List[Sequence]) -> None:

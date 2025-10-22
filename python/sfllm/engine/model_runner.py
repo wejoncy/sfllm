@@ -23,7 +23,7 @@ class ModelRunner:
         self.stream = torch.cuda.Stream(device=device_id)
         self.forward_metadata = None
         self.cuda_graph_max_bs = server_args.cuda_graph_max_bs
-        self.capture_batch_size = [1, 2, 3, 4, 6, 8, 10, 12, 14, self.cuda_graph_max_bs]
+        self.capture_batch_size = [1, 2, 3, 4, 6, 8, 10, 12, 14, 16]+list(range(20, self.cuda_graph_max_bs+1, 4))
         self.sampler = Sampler(self.model.config)
         self.rank = 0
         self.server_args = server_args

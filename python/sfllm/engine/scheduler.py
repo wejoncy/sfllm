@@ -89,14 +89,17 @@ class SchedulerPolicy:
         return self.total_remain_tokens >= token_len + sequence.sampling_params.max_new_tokens
 
 class Scheduler:
-    def __init__(self, max_context_length: int = 4096, max_running_tokens: int = 10240):
+    def __init__(self, server_args,
+                 max_context_length: int = 4096, 
+                 max_running_tokens: int = 10240,
+                 ):
         self.waiting_queue = queue.Queue()
         self.running_queue = queue.Queue()
         self.block_memory_manager = BlockMemoryManager(num_blocks=max_running_tokens)
         self.metrics = RunningMetrics(self.waiting_queue, self.running_queue, self.block_memory_manager)
         self.max_context_length = max_context_length
         self.max_prefill_tokens = min(max_context_length, 4096)
-        self.max_decode_tokens = 16
+        self.max_decode_tokens = server_args.cuda_graph_max_bs
         self.scheduler_policy = SchedulerPolicy(self.block_memory_manager)
 
     
@@ -130,7 +133,7 @@ class Scheduler:
             prefill_tokens += len(tokens)
         # if there is no prefill request, schedule decode requests
         if len(running_sequences) == 0:
-            while not self.running_queue.empty():
+            while not self.running_queue.empty() and len(running_sequences) < self.max_decode_tokens:
                 assert self.block_memory_manager.can_alloc(1)  # the future token ids are unknown
                 self.scheduler_policy.add_decode_req(self.running_queue.queue[0])
                 running_sequences.append(self.running_queue.get())

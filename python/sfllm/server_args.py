@@ -13,7 +13,7 @@ class ServerArgs:
     dtype: Literal["float16", "bfloat16", "float32", "auto"] = "auto"
     
     # Optimization/debug options
-    cuda_graph_max_bs: Optional[int] = 16
+    cuda_graph_max_bs: Optional[int] = 32
     cuda_graph_bs: Optional[List[int]] = None
     disable_cuda_graph: bool = False
 
