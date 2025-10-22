@@ -75,7 +75,6 @@ class InferenceEngine:
     def step(self):
         """Process a single inference request."""
         seq_group, failed_sequences = self.scheduler.schedule()
-        self.scheduler.metrics.refresh(seq_group)
         token_ids = []
         if not seq_group.empty():
             token_ids = self.model_runner.forward(seq_group)        

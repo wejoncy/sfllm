@@ -19,7 +19,7 @@ class RunningMetrics:
         self.running_queue = running_queue
         self.block_memory_manager = block_memory_manager
 
-    def refresh(self, seq_group: SequenceGroup):
+    def refresh(self, seq_group: List[Sequence], prefill_tokens: int):
         current_time = time.perf_counter()
         elapsed = current_time - self.last_refresh_time
         refresh_interval = 4.0  # seconds
@@ -97,8 +97,8 @@ class Scheduler:
                 logger.warning(f"the request's token is too long. has tokens: {len(sequence.tokens)}, max context length: {self.max_context_length}. Marking as FAILED.")
                 sequence.status = "FAILED"
                 failed_sequences.append(sequence)
-            # exit(-1)
-        return SequenceGroup(running_sequences),failed_sequences
+        self.metrics.refresh(running_sequences, prefill_tokens)
+        return SequenceGroup(running_sequences), failed_sequences
 
     def free_sequence_resources(self, sequence: Sequence):
         self.block_memory_manager.free_block(sequence.cache_loc_ids)
