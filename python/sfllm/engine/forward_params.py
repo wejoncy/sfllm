@@ -64,7 +64,7 @@ class ForwardBatch:
         max_length = min(max_length, int(free*0.85) // one_token_size // config.num_hidden_layers)
         logger.info(
             f"GPU memory free: {free / (1024**3):.2f} GB, total: {total / (1024**3):.2f} GB"
-            f", max kv length per layer: {max_length}"
+            f", max tokens per layer: {max_length}"
         )
         for _ in range(config.num_hidden_layers):
             past_key_values.append(
