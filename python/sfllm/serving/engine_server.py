@@ -16,9 +16,7 @@ class EngineServer:
         self.server_args = server_args
         self.ready_flag = multiprocessing.Value("b", False)
         self.worker_threads = []
-        self.tokenizer = transformers.AutoTokenizer.from_pretrained(
-            server_args.model_path, use_fast=False
-        )
+        self.tokenizer = transformers.AutoTokenizer.from_pretrained(server_args.model_path)
         self.inference_engine = None
 
     async def submit_request(self, request_data: Dict[str, Any]) -> str:

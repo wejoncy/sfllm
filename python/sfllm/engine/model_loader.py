@@ -140,7 +140,7 @@ class ForwardModel:
             model = Qwen3ForCausalLM(self.config).cuda()
             _load_check_point(model, model_name)
         self.model = model.eval()
-        self.tokenizer = transformers.AutoTokenizer.from_pretrained(model_name, use_fast=False)
+        self.tokenizer = transformers.AutoTokenizer.from_pretrained(model_name)
         after_avail_memory,_ = torch.cuda.mem_get_info(0)
         self.weight_load_mem_usage = before_avail_memory - after_avail_memory
         logger.info(
