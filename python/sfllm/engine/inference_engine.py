@@ -1,3 +1,7 @@
+
+"""
+nsys profile  --force-overwrite=true  -o baseline-report  --trace=cuda,nvtx,osrt,cudnn --cuda-graph-trace=node  python python/sfllm/engine/inference_engine.py
+"""
 import logging
 import argparse
 from typing import Dict, Any, List, Tuple
@@ -8,7 +12,6 @@ from sfllm.engine.sampling_params import SamplingParams
 from sfllm.engine.sequence import Sequence,SequenceGroup, SequenceStatus
 from sfllm.server_args import ServerArgs
 from sfllm.utils import configure_logger
-import multiprocessing
 
 logger = logging.getLogger(__name__)
 class InferenceEngine:
@@ -22,7 +25,9 @@ class InferenceEngine:
         self.model_runner = ModelRunner(server_args)
         self.server_args = server_args
         self.running = False
-        self.scheduler = Scheduler(self.model_runner.get_max_context_length())
+        self.scheduler = Scheduler(server_args,
+                                   self.model_runner.get_max_context_length(), 
+                                   self.model_runner.forward_metadata.max_running_tokens)
         self.finished_sequences = []
 
     def post_forward(self, sequence_group: SequenceGroup, token_ids: List[int], failed_sequences: List[Sequence]) -> None:
@@ -79,7 +84,8 @@ class InferenceEngine:
         if not seq_group.empty():
             token_ids = self.model_runner.forward(seq_group)        
         self.post_forward(seq_group, token_ids, failed_sequences)
-        return seq_group, failed_sequences
+        seq_group.append(failed_sequences)
+        return seq_group
 
     def generate(self, prompt: List[str]|str, sampling_params: SamplingParams, stream:bool=False) -> Dict[str, Any]:
         """Generate text for inference requests."""
@@ -88,37 +94,34 @@ class InferenceEngine:
             prompt = [prompt]
         for p in prompt:
             self.add_request(p, sampling_params)
+
         while not self.scheduler.is_done():
-            seq_group, failed_sequences = self.step()
-            if stream:
-                seq_outputs = {}
-                for sequence in seq_group:
+            seq_group = self.step()
+            seq_outputs = {}
+            for sequence in seq_group:
+                if stream:
                     if sequence.status == SequenceStatus.RUNNING:
                         generated_text = self.model_runner.detokenize(
                             sequence.new_tokens,
                         )
                         seq_outputs[sequence.sequence_id] = {"prompt": sequence.prompt, "text": generated_text}
                         yield seq_outputs
-
-        if not stream:
-            seq_outputs = {}
-            for sequence in self.finished_sequences:
-                sequence.generated_text = self.model_runner.detokenize(
-                    sequence.tokens[sequence.prompt_token_len:],
-                )
-                seq_outputs[sequence.sequence_id] = {
-                    "prompt": sequence.prompt,
-                    "text": sequence.generated_text,
-                }
-            return seq_outputs
-
-
+                elif sequence.status in [SequenceStatus.COMPLETED, SequenceStatus.FAILED]:
+                    sequence.generated_text = self.model_runner.detokenize(
+                        sequence.tokens[sequence.prompt_token_len:],
+                    )
+                    yield {
+                        sequence.sequence_id: {
+                            "prompt": sequence.prompt,
+                            "text": sequence.generated_text,
+                        }
+                    }
 
 
 if __name__ == "__main__":
     # Example usage
     import sys
-    sys.argv = ["", "--model", "/home/jicwen/work/Qwen3-0.6B/"]
+    sys.argv = ["", "--model", "/home/jicwen/work/Qwen3-0.6B/", "--dtype", "float16"]
     parser = argparse.ArgumentParser()
     ServerArgs.add_cli_args(parser)
     args = parser.parse_args()
@@ -132,8 +135,8 @@ if __name__ == "__main__":
         "The future of AI is",
     ]
     # engine.add_request("Hello, world!", SamplingParams())
-    outputs = engine.generate(prompts, SamplingParams(max_new_tokens=30, top_k=1), stream=True)
+    outputs = engine.generate(prompts, SamplingParams(max_new_tokens=2000, top_k=1), stream=False)
     for output in outputs:
         for _, output_d in output.items():
-            print(f"Prompt: {output_d['prompt']}\nGenerated text: {output_d['text']}")
+            v = (f"Prompt: {output_d['prompt']}\nGenerated text: {output_d['text']}")
     print("Inference step completed.")

@@ -1,19 +1,12 @@
 from collections.abc import Callable
-import glob
-import json
-from pathlib import Path
 from typing import Optional, Union
 
-import concurrent
-import safetensors
 import torch
 from torch import nn
 from torch import Tensor
-from tqdm import tqdm
-from contextlib import ContextDecorator
 from sfllm.layers.triton_attention import RaggedAttention
 from sfllm.kernels.rope import rope_forward
-from sfllm.engine.forward_params import ForwardMode, ForwardMetaData
+from sfllm.engine.forward_params import ForwardMode, ForwardBatch
 
 
 class Cache:
@@ -117,7 +110,7 @@ def rotate_half(x):
     x2 = x[..., x.shape[-1] // 2 :]
     return torch.cat((-x2, x1), dim=-1)
 
-
+# @torch.compile
 def apply_rotary_pos_emb(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
     q = q.transpose(1, 2)
     k = k.transpose(1, 2)
@@ -463,7 +456,7 @@ class Qwen3ForCausalLM(Qwen3PreTrainedModel):
         else:
             logits = self.lm_head(hidden_states[0])
 
-        return logits[:,:self.vocab_size]
+        return logits
 
 def generate_greedy(model, tokenizer, prompt, max_new_tokens=50, device='cuda'):
     model.eval()
@@ -502,7 +495,7 @@ if __name__ == "__main__":
     model_path = r"D:\\work\\Qwen3-0.6B"
 
     config = transformers.AutoConfig.from_pretrained(model_path)
-    forward_metadata = ForwardMetaData(config)
+    forward_metadata = ForwardBatch(config)
     tokenizer = transformers.AutoTokenizer.from_pretrained(model_path, use_fast=False)
     with TorchDefaultDtype(config.dtype):
         model = Qwen3ForCausalLM(config).cuda()

@@ -54,9 +54,6 @@ class Sampler(nn.Module):
         # int32 range is enough to represent the token ids
         probs_idx = probs_idx.to(torch.int32)
         batch_next_token_ids = torch.gather(probs_idx, dim=1, index=sampled_index).view(-1)
-        if batch_next_token_ids.max() > 151643:
-            print("errrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr", probs.shape)
-            exit(-1)
         return batch_next_token_ids
 
 
@@ -65,7 +62,7 @@ class Sampler(nn.Module):
         if sampling_batch_info.is_all_greedy:
             return torch.argmax(logits, dim=-1)
         else:
-            logits = logits[:,:self.vocab_size].float().div_(sampling_batch_info.temperatures.unsqueeze(dim=1))
+            logits = logits.float().div_(sampling_batch_info.temperatures.unsqueeze(dim=1))
             probs = torch.softmax(logits, dim=-1)
             return self.top_k_top_p_min_p_sampling_from_probs_torch(
                 probs,

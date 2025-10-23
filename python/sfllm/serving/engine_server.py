@@ -16,9 +16,7 @@ class EngineServer:
         self.server_args = server_args
         self.ready_flag = multiprocessing.Value("b", False)
         self.worker_threads = []
-        self.tokenizer = transformers.AutoTokenizer.from_pretrained(
-            server_args.model_path, use_fast=False
-        )
+        self.tokenizer = transformers.AutoTokenizer.from_pretrained(server_args.model_path)
         self.inference_engine = None
 
     async def submit_request(self, request_data: Dict[str, Any]) -> str:
@@ -67,8 +65,7 @@ class EngineServer:
             except:  # noqa: E722
                 pass
 
-            seq_group, failed_sequences = self.inference_engine.step()
-            seq_group.append(failed_sequences)
+            seq_group = self.inference_engine.step()
             if len(seq_group) == 0:
                 time.sleep(0.1)
                 continue

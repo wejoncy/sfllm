@@ -170,8 +170,11 @@ def print_results(results_tuple):
 async def main():
     parser = argparse.ArgumentParser(description="Benchmark the LLM serving system")
     parser.add_argument("--url", default="http://localhost:8080", help="Server URL")
-    parser.add_argument("--concurrency", type=int, default=1, help="Concurrent requests")
-    parser.add_argument("--requests", type=int, default=3, help="Total number of requests")
+    parser.add_argument("--concurrency", type=int, default=2, help="Concurrent requests")
+    parser.add_argument("--requests", type=int, default=100, help="Total number of requests")
+    parser.add_argument(
+        "--stream", action="store_true", default=True, help="Enable streaming mode"
+    )
     args = parser.parse_args()
 
     try:

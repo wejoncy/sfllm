@@ -31,7 +31,8 @@ class BlockMemoryManager:
         self.num_blocks = num_blocks
         self.blocks = [BlockMemory(i) for i in range(num_blocks)]
         self.free_block_ids = deque(range(num_blocks))
-        self.used_block_ids = set()
+        self.free_block_ids.popleft()  # reserve block 0
+        self.used_block_ids = set([0])
 
     def _alloc_block_by_id(self, block_id: int, token_id: int, hashv: int) -> BlockMemory:
         """Allocate a block of memory by block ID."""

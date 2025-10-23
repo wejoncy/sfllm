@@ -1,6 +1,6 @@
 import dataclasses
 import argparse
-from typing import List, Literal, Optional, Union
+from typing import List, Literal, Optional
 
 
 @dataclasses.dataclass
@@ -10,9 +10,10 @@ class ServerArgs:
     tokenizer_path: Optional[str] = None
     tokenizer_mode: str = "auto"
     tokenizer_worker_num: int = 1
+    dtype: Literal["float16", "bfloat16", "float32", "auto"] = "auto"
     
     # Optimization/debug options
-    cuda_graph_max_bs: Optional[int] = None
+    cuda_graph_max_bs: Optional[int] = 128
     cuda_graph_bs: Optional[List[int]] = None
     disable_cuda_graph: bool = False
 
@@ -28,6 +29,13 @@ class ServerArgs:
             type=str,
             help="The path of the model weights. This can be a local folder or a Hugging Face repo ID.",
             required=True,
+        )
+        parser.add_argument(
+            "--dtype",
+            type=str,
+            default=ServerArgs.dtype,
+            choices=["float16", "bfloat16", "float32"],
+            help="The data type for model weights and computations.",
         )
         parser.add_argument(
             "--tokenizer-path",
