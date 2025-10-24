@@ -13,7 +13,6 @@ class EngineServer:
         self.tokenizer_input_queue = multiprocessing.Queue()
         self.tokenizer_output_queue = multiprocessing.Queue()
         self.req_to_state: Dict[str, Any] = {}
-        self.shared_event = multiprocessing.Manager().Event()
         self.server_args = server_args
         self.ready_flag = multiprocessing.Value("b", False)
         self.worker_threads = []
@@ -51,18 +50,22 @@ class EngineServer:
         self.tokenizer_input_queue.put(sequence)
         return sequence.sequence_id
 
-    async def get_response(self, sequence_id: str, timeout: int = -1, streaming: bool = False) -> Any:
+    async def get_response(self, sequence_id: int, timeout: int = 40, streaming: bool = False) -> Any:
         """Get the response for a submitted inference request."""
-        while self.req_to_state[sequence_id]["status"] not in [SequenceStatus.COMPLETED, SequenceStatus.FAILED]:
-            await asyncio.wait_for(
-                self.req_to_state[sequence_id]["event"].wait(), timeout=timeout
-            )
-            self.req_to_state[sequence_id]["event"].clear()
-            response = self.req_to_state[sequence_id]["response"]
+        state = self.req_to_state[sequence_id]
+        while state["status"] not in [SequenceStatus.COMPLETED, SequenceStatus.FAILED]:
+            try:
+                await asyncio.wait_for(state["event"].wait(), timeout=timeout)
+            except asyncio.TimeoutError:
+                self.abort_request(sequence_id)
+                raise ValueError(
+                    f"Request is disconnected from the client side (type 1). Abort request {sequence_id}"
+                )
+            response = state["response"].copy()
+            state["event"].clear()
             if streaming:
-                self.req_to_state[sequence_id]["response"]["output_ids"] = []
+                state["response"]["output_ids"] = []
                 yield response
-        response = self.req_to_state[sequence_id]["response"]
         self.req_to_state.pop(sequence_id)
         yield response
 
@@ -106,6 +109,7 @@ class EngineServer:
     def abort_request(self, rid: int):
         if rid not in self.req_to_state:
             return
+        self.req_to_state.pop(rid)
         abort_req = AbortSequence(rid)
         self.tokenizer_input_queue.put(abort_req)
 

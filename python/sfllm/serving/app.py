@@ -11,6 +11,12 @@ curl -Uri "http://127.0.0.1:8080/v1/completions" `   \
 bash
 `curl -X POST "http://127.0.0.1:8080/v1/completions"      -H "Content-Type: application/json"      -d '{"prompt": "how are you?", "model": "1", "max_new_tok
 ens": 100}'`
+
+streaming
+bash
+`
+curl http://localhost:30000/generate   -H "Content-Type: application/json"   -d '{"text": "how are you?","stream": true,"sampling_params": { "max_new_tokens": 160, "temperature": 1 }}'
+`
 """
 import multiprocessing as mp
 from contextlib import asynccontextmanager
@@ -27,6 +33,7 @@ import argparse
 from sfllm.serving.req_protocol import ChatRequest, CompletionRequest, GenerateReqInput
 from sfllm.serving.engine_server import EngineServer
 from sfllm.server_args import ServerArgs
+from sfllm import __version__
 from typing import AsyncIterator
 
 def create_app(server_args):
@@ -80,7 +87,7 @@ def create_app(server_args):
         return stream_chunk
 
     async def generate_response(worker, req: GenerateReqInput, endpoint: str):
-        request_id = await worker.submit_request(req)
+        request_id:int = await worker.submit_request(req)
 
         if req.stream:
             async def stream_results() -> AsyncIterator[bytes]:
@@ -106,9 +113,12 @@ def create_app(server_args):
                 background=worker.create_abort_task(request_id, background_tasks),
             )
         else:
-            # Non-streaming response
-            async for _v in worker.get_response(request_id):
-                response = _v
+            try:
+                # Non-streaming response
+                async for _v in worker.get_response(request_id):
+                    response = _v
+            except ValueError as e:
+                response = {"error": {"message": str(e)}}
             if endpoint == "/v1/chat/completions" or endpoint == "/v1/completions":
                 response = format_OPENAI_complete(request_id, response)
             return response
@@ -148,6 +158,15 @@ def create_app(server_args):
             "model_path": server_args.model_path,
         }
         return result
+
+    @app.get("/get_server_info")
+    async def get_server_info():
+        # Returns interna states per DP.
+        internal_states= [{}]
+        return {
+            "internal_states": internal_states,
+            "version": __version__,
+        }
 
     return app
 
