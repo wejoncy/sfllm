@@ -51,7 +51,7 @@ class EngineServer:
         self.tokenizer_input_queue.put(sequence)
         return sequence.sequence_id
 
-    async def get_response(self, sequence_id: str, timeout: int = 300, streaming: bool = False) -> Any:
+    async def get_response(self, sequence_id: str, timeout: int = -1, streaming: bool = False) -> Any:
         """Get the response for a submitted inference request."""
         while self.req_to_state[sequence_id]["status"] not in [SequenceStatus.COMPLETED, SequenceStatus.FAILED]:
             await asyncio.wait_for(
@@ -63,8 +63,21 @@ class EngineServer:
                 self.req_to_state[sequence_id]["response"]["output_ids"] = []
                 yield response
         response = self.req_to_state[sequence_id]["response"]
-        self.req_to_state[sequence_id] = None
+        self.req_to_state.pop(sequence_id)
         yield response
+
+    async def auto_clean_resource_loop(self):
+        while self.running:
+            await asyncio.sleep(600)  # Clean every 10 minutes
+            to_delete = []
+            for sequence_id, state in self.req_to_state.items():
+                if (
+                    state["status"] in [SequenceStatus.COMPLETED, SequenceStatus.FAILED]
+                    and state["finished_time"] + 60 < time.time()
+                ):
+                    to_delete.append(sequence_id)
+            for sequence_id in to_delete:
+                self.req_to_state.pop(sequence_id)
 
     async def worker_response_loop(self):
         while self.running:
@@ -87,6 +100,8 @@ class EngineServer:
 
                 self.req_to_state[sequence_id]["status"] = output["status"]
                 self.req_to_state[sequence_id]["event"].set()
+                self.req_to_state[sequence_id]["finished_time"] = time.time()
+
 
     def abort_request(self, rid: int):
         if rid not in self.req_to_state:

@@ -38,6 +38,7 @@ def create_app(server_args):
 
         inference_worker.start()
         asyncio.get_running_loop().create_task(inference_worker.worker_response_loop())
+        asyncio.get_running_loop().create_task(inference_worker.auto_clean_resource_loop())
 
         while not inference_worker.is_ready():
             await asyncio.sleep(0.1)
