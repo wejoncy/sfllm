@@ -65,12 +65,12 @@ async def warm_up(session, url, prompts, stream=False):
     print("Warm-up complete.\n")
 
 
-async def run_benchmark(url, concurrency, num_requests, stream=False, prompts=None):
+async def run_benchmark(url, concurrency, num_requests, stream=False, prompts=None, max_new_tokens=64):
     if not prompts:
         prompts = SAMPLE_PROMPTS
 
     print(
-        f"Running benchmark: concurrency={concurrency}, requests={num_requests}, stream={stream}"
+        f"Running benchmark: concurrency={concurrency}, requests={num_requests}, stream={stream}, max_new_tokens={max_new_tokens}"
     )
 
     timeout = aiohttp.ClientTimeout(total=150)
@@ -96,7 +96,7 @@ async def run_benchmark(url, concurrency, num_requests, stream=False, prompts=No
                 except asyncio.CancelledError:
                     break
                 result = await send_request(
-                    session, f"{url}/v1/completions", prompt, stream=stream
+                    session, f"{url}/v1/completions", prompt, stream=stream, max_new_tokens=max_new_tokens
                 )
                 results.append(result)
                 progress.update(1)
@@ -172,6 +172,7 @@ async def main():
     parser.add_argument("--url", default="http://localhost:8080", help="Server URL")
     parser.add_argument("--concurrency", type=int, default=20, help="Concurrent requests")
     parser.add_argument("--requests", type=int, default=100, help="Total number of requests")
+    parser.add_argument("--max_new_tokens", type=int, default=640, help="Max new tokens per request")
     parser.add_argument(
         "--stream", action="store_true", default=True, help="Enable streaming mode"
     )
@@ -188,7 +189,7 @@ async def main():
 
     try:
         results = await run_benchmark(
-            args.url, args.concurrency, args.requests, stream=args.stream
+            args.url, args.concurrency, args.requests, stream=args.stream, max_new_tokens=args.max_new_tokens
         )
         print_results(results)
     except KeyboardInterrupt:

@@ -25,30 +25,33 @@ class RunningMetrics:
         current_time = time.perf_counter()
         elapsed = current_time - self.last_prefill_refresh_time
         self.last_prefill_refresh_time = current_time
-        log_interval = 4.0  # seconds
+        log_interval = 1.0  # seconds
         if self.prefill_tokens == 0:
             self.prefill_tokens = cur_prefill_tokens
             return
-
-        msg = f"Prefill batch. #prefill_tokens: {self.prefill_tokens}. "
-        msg += (
-            f"gen throughput (token/s): {self.prefill_tokens / elapsed:.2f}, "
-            f"#queue-req p+d: {self.waiting_queue.qsize()}+{self.running_queue.qsize()}, "
-        )
         if current_time - self.last_refresh_time > log_interval:
+            msg = f"Prefill batch. #prefill_tokens: {self.prefill_tokens}. "
+            msg += (
+                f"gen throughput (token/s): {self.prefill_tokens / elapsed:.2f}, "
+                f"#queue-req p+d: {self.waiting_queue.qsize()}+{self.running_queue.qsize()}, "
+            )
             logger.info(msg)
         self.prefill_tokens = cur_prefill_tokens
 
-    def log_decode_metrics(self, seq_group: List[RequestSequence]):
-        current_time = time.perf_counter()
+    def log_decode_metrics(self, seq_group: List[RequestSequence], is_prefill: bool=False):
+        current_time = time.perf_counter()            
         elapsed = current_time - self.last_refresh_time
         refresh_interval = 2.0  # seconds
-        self.tokens_generated += len(seq_group)
+        self.tokens_generated += len(seq_group)*int(not is_prefill)
 
-        if elapsed < refresh_interval:
+        if self.tokens_generated == 0:
+            self.last_refresh_time = current_time
+            return
+
+        if elapsed < refresh_interval and not is_prefill:
             return
         msg = f"Decode batch. #running-req: {len(seq_group)}. "
-        tps = self.tokens_generated / elapsed if elapsed > 0 else 0.0
+        tps = self.tokens_generated / elapsed
         self.tokens_generated = 0
         self.last_refresh_time = current_time
         cache_usage = self.block_memory_manager.get_usage()
@@ -166,9 +169,9 @@ class Scheduler:
                 sequence.status = "FAILED"
                 failed_sequences.append(sequence)
                 self.free_sequence_resources(sequence)
-                
-        self.metrics.log_decode_metrics(running_sequences)
+
         self.metrics.log_prefill_metrics(prefill_tokens)
+        self.metrics.log_decode_metrics(running_sequences, is_prefill=prefill_tokens>0)
         return SequenceGroup(running_sequences), failed_sequences
 
     def free_sequence_resources(self, sequence: RequestSequence):
