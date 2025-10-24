@@ -41,14 +41,14 @@ class InferenceEngine:
             if len(sequence.tokens) - sequence.prompt_token_len < sequence.sampling_params.max_new_tokens:
                 sequence.status = SequenceStatus.RUNNING
                 self.scheduler.running_queue.put(sequence)
+            else:
+                self.scheduler.free_sequence_resources(sequence)
+                sequence.status = SequenceStatus.COMPLETED
                 # abort request may have req_id added after completed, so we need to check again
                 sid = next(iter(self.scheduler.abort_requests), None)
                 # 100 should be safe to set as buffer
                 if sid is not None and sid + 100 < sequence.sequence_id:
                     self.scheduler.abort_requests.remove(sid)
-            else:
-                self.scheduler.free_sequence_resources(sequence)
-                sequence.status = SequenceStatus.COMPLETED
 
 
     def new_request(self, prompt: str|Tuple[str, List[int]], sampling_params: SamplingParams) -> int:
