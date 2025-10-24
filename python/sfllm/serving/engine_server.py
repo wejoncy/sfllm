@@ -79,6 +79,8 @@ class EngineServer:
                     and state["finished_time"] + 60 < time.time()
                 ):
                     to_delete.append(sequence_id)
+            if to_delete:
+                print(f"Auto cleaning {len(to_delete)} finished requests...")
             for sequence_id in to_delete:
                 self.req_to_state.pop(sequence_id)
 
@@ -95,15 +97,17 @@ class EngineServer:
                 await asyncio.sleep(0.1)
                 continue
             for sequence_id, output in response.items():
-                assert sequence_id in self.req_to_state
-                this_response = self.req_to_state[sequence_id]["response"]
-                this_response["text"] += output["text"]
-                this_response["output_ids"].append(output["output_ids"])
-                this_response["meta_info"]["completion_tokens"] = output["completion_tokens"]
+                if sequence_id in self.req_to_state:
+                    this_response = self.req_to_state[sequence_id]["response"]
+                    this_response["text"] += output["text"]
+                    this_response["output_ids"].append(output["output_ids"])
+                    this_response["meta_info"]["completion_tokens"] = output["completion_tokens"]
 
-                self.req_to_state[sequence_id]["status"] = output["status"]
-                self.req_to_state[sequence_id]["event"].set()
-                self.req_to_state[sequence_id]["finished_time"] = time.time()
+                    self.req_to_state[sequence_id]["status"] = output["status"]
+                    self.req_to_state[sequence_id]["event"].set()
+                    self.req_to_state[sequence_id]["finished_time"] = time.time()
+                else:
+                    pass  # The request has been aborted already
 
 
     def abort_request(self, rid: int):
