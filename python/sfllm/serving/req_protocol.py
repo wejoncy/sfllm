@@ -89,7 +89,7 @@ class GenerateReqInput:
     # For background responses (OpenAI responses API)
     background: bool = False
 
-    @staticmethod
+    @classmethod
     def from_basemodel(cls, base_model: BaseModel):
         obj = cls()
         obj.sampling_params = {

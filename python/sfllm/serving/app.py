@@ -66,10 +66,10 @@ def create_app(server_args):
         allow_headers=["*"],
     )
 
-    def format_OPENAI_complete(request_id, response):
+    def format_OPENAI_complete(response):
         # Format streaming response according to OpenAI format
         stream_chunk = {
-            "id": request_id,
+            "id": response['request_id'],
             "object": "text_completion",
             "choices": [
                 {
@@ -95,7 +95,7 @@ def create_app(server_args):
                     async for out in worker.get_response(request_id, streaming=True):
                         yield (b"data: " + json.dumps(out).encode("utf-8") + b"\n\n")
                 except ValueError as e:
-                    out = {"error": {"message": str(e)}}
+                    out = {"error": {"message": str(e)}, 'request_id': request_id}
                     if endpoint == "/v1/chat/completions" or endpoint == "/v1/completions":
                         yield (
                             b"data: "
@@ -118,9 +118,9 @@ def create_app(server_args):
                 async for _v in worker.get_response(request_id):
                     response = _v
             except ValueError as e:
-                response = {"error": {"message": str(e)}}
+                    response = {"error": {"message": str(e)}, 'request_id': request_id}
             if endpoint == "/v1/chat/completions" or endpoint == "/v1/completions":
-                response = format_OPENAI_complete(request_id, response)
+                response = format_OPENAI_complete(response)
             return response
 
 
@@ -133,7 +133,7 @@ def create_app(server_args):
     @app.post("/v1/chat/completions")
     async def chat_completions(request: fastapi.Request, body: ChatRequest):
         # Format messages into a prompt with processed images
-        req = GenerateReqInput().from_basemodel(body)
+        req = GenerateReqInput.from_basemodel(body)
         inference_worker = app.state.inference_worker
         # Submit to queue and wait for response
 
@@ -143,7 +143,7 @@ def create_app(server_args):
     async def completions(request: fastapi.Request, body: CompletionRequest):
         # Submit to queue and wait for response
         inference_worker = app.state.inference_worker
-        req = GenerateReqInput().from_basemodel(body)
+        req = GenerateReqInput.from_basemodel(base_model=body)
 
         return await generate_response(inference_worker, req, "/v1/completions")
 

@@ -43,9 +43,9 @@ class EngineServer:
                     "prompt_length": sequence.prompt_token_len,
                     "completion_tokens": 0,
                 },
+            "request_id": request_id,
             },
             "status": "PENDING",
-            "request_id": request_id,
         }
         self.tokenizer_input_queue.put(sequence)
         return sequence.sequence_id
