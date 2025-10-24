@@ -29,7 +29,7 @@ class RunningMetrics:
         if self.prefill_tokens == 0:
             self.prefill_tokens = cur_prefill_tokens
             return
-        if current_time - self.last_refresh_time > log_interval or cur_prefill_tokens == 0:
+        if elapsed > log_interval or cur_prefill_tokens == 0:
             msg = f"Prefill batch. #prefill_tokens: {self.prefill_tokens}. "
             msg += (
                 f"Prefill throughput (token/s): {self.prefill_tokens / elapsed:.2f}, "
@@ -52,7 +52,7 @@ class RunningMetrics:
             return
 
         tps = self.tokens_generated / elapsed
-        if (tps > 0 and elapsed < refresh_interval) or (tps == 0 and elapsed > refresh_interval * 10) or is_prefill:
+        if (tps > 0 and elapsed > refresh_interval) or (tps == 0 and elapsed > refresh_interval * 10) or is_prefill:
             msg = f"Decode batch. #running-req: {len(seq_group)}. "
             self.tokens_generated = 0
             cache_usage = self.block_memory_manager.get_usage()
