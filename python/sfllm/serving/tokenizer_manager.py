@@ -38,14 +38,12 @@ class TokenizerManager:
         while True:
             if not self.running:
                 break
-            for i in range(300):
-                try:
+            try:
+                for i in range(10):
                     req_sequence = self.inferengine_input_queue.get_nowait()
                     self.inference_engine.add_request(req_sequence)
-                except queue.Empty:  # noqa: E722
-                    if self.inferengine_input_queue.qsize() == 0:
-                        break
-                    pass
+            except queue.Empty:  # noqa: E722
+                pass
 
             seq_group = self.inference_engine.step()
             if len(seq_group) == 0:
