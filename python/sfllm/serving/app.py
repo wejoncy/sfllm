@@ -33,7 +33,7 @@ import argparse
 from sfllm.serving.req_protocol import ChatRequest, CompletionRequest, GenerateReqInput
 from sfllm.serving.engine_server import EngineServer
 from sfllm.server_args import ServerArgs
-from sfllm import __version__
+from sfllm.version import __version__
 from typing import AsyncIterator
 
 def create_app(server_args):
