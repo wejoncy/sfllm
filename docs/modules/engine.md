@@ -26,7 +26,7 @@ The Engine module provides a high-performance inference runtime that maximizes G
 │  └─────────────┘  └─────────────┘  └─────────────┘        │
 │            │              │              │                 │
 │  ┌─────────────────────────────────────────────────────────┤
-│  │                 Sequence Management                     │
+│  │                 RequestSequence Management                     │
 │  │  • Request tracking  • State persistence  • Cleanup    │
 │  └─────────────────────────────────────────────────────────┘
 └─────────────────────────────────────────────────────────────┘
@@ -220,7 +220,7 @@ class BatchScheduler:
         self.pending_requests = deque()
         self.running_requests = {}
     
-    def create_batch(self) -> Optional[List[Sequence]]:
+    def create_batch(self) -> Optional[List[RequestSequence]]:
         """Create an optimal batch from pending requests.
         
         Strategy:
@@ -250,7 +250,7 @@ class BatchScheduler:
 
 **Priority Scheduling:**
 ```python
-def schedule_next_batch(self) -> List[Sequence]:
+def schedule_next_batch(self) -> List[RequestSequence]:
     """Schedule the next batch considering priorities.
     
     Priority levels:
@@ -349,13 +349,13 @@ def deallocate_blocks(self, sequence_id: str) -> None:
         self.free_blocks.update(blocks)
 ```
 
-### Sequence
+### RequestSequence
 
 Tracks individual request state throughout generation.
 
 **State Management:**
 ```python
-class Sequence:
+class RequestSequence:
     def __init__(
         self,
         request_id: str,

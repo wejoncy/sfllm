@@ -11,6 +11,8 @@ class ServerArgs:
     tokenizer_mode: str = "auto"
     tokenizer_worker_num: int = 1
     dtype: Literal["float16", "bfloat16", "float32", "auto"] = "auto"
+    mem_fraction: float = 0.85
+    max_context_length: int = 4096
     
     # Optimization/debug options
     cuda_graph_max_bs: Optional[int] = 128
@@ -74,6 +76,18 @@ class ServerArgs:
             help="Tokenizer mode. 'auto' will use the fast "
             "tokenizer if available, and 'slow' will "
             "always use the slow tokenizer.",
+        )
+        parser.add_argument(
+            "--mem-fraction",
+            type=float,
+            default=ServerArgs.mem_fraction,
+            help="The fraction of GPU memory to allocate for the model.",
+        )
+        parser.add_argument(
+            "--max-context-length",
+            type=int,
+            default=ServerArgs.max_context_length,
+            help="The maximum context length for the model.",
         )
 
         # Logging

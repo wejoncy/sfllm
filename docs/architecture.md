@@ -30,7 +30,7 @@ SFLLM is designed as a high-performance, scalable serving framework with a multi
 ┌─────────────────┴───────────────────────────────────────────────────────┐
 │                      InferenceEngine                                    │
 │  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────────────┐ │
-│  │   Scheduler     │  │   Batch         │  │     Sequence            │ │
+│  │   Scheduler     │  │   Batch         │  │     RequestSequence            │ │
 │  │   & Queue       │  │   Formation     │  │     Management          │ │
 │  └─────────────────┘  └─────────────────┘  └─────────────────────────┘ │
 └─────────────────┬───────────────────────────────────────────────────────┘
@@ -87,7 +87,7 @@ async def completions(request: CompletionRequest)
 ```python
 class EngineServer:
     async def submit_request(self, request_data) -> str
-    async def get_stream_response(self, sequence_id) -> AsyncGenerator
+    async def get_response(self, sequence_id) -> AsyncGenerator
     def start(self) -> None
     async def stop(self) -> None
 ```
@@ -96,7 +96,7 @@ class EngineServer:
 
 **Responsibilities:**
 - Request scheduling and batching
-- Sequence lifecycle management
+- RequestSequence lifecycle management
 - Model inference coordination
 - Resource optimization
 
@@ -108,8 +108,8 @@ class EngineServer:
 
 ```python
 class InferenceEngine:
-    def add_request(self, sequence: Sequence) -> int
-    def step(self) -> Tuple[SequenceGroup, List[Sequence]]
+    def add_request(self, sequence: RequestSequence) -> int
+    def step(self) -> Tuple[SequenceGroup, List[RequestSequence]]
     def generate(self, prompts: List[str]) -> Generator
 ```
 

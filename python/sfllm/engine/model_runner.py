@@ -1,12 +1,10 @@
 import logging
 import torch
-import asyncio
 import bisect
 import tqdm
 from typing import Dict, List, Any
 
-from sfllm.engine.model_loader import TorchDefaultDtype, _load_check_point, ForwardModel
-from sfllm.models.modeling_qwen3 import Qwen3ForCausalLM
+from sfllm.engine.model_loader import ForwardModel
 from sfllm.engine.sequence import SequenceGroup
 from sfllm.engine.forward_params import ForwardMode, ForwardBatch
 from sfllm.layers.sampler import Sampler, SamplingBatchInfo
@@ -17,11 +15,11 @@ logger = logging.getLogger(__name__)
 DEFAULT_CUDA_GRAPH_BATCH_SIZES = [1, 2, 3, 4, 6, 8, 10, 12, 14, 16]+list(range(20, 2048+1, 4))
 
 class ModelRunner:
-    def __init__(self, server_args: ServerArgs, device_id: int = 0):
+    def __init__(self, server_args: ServerArgs, device_id: int = 0, mem_pool=None):
         self.model = ForwardModel(server_args.model_path, server_args.dtype)
+        server_args.model_config = self.model.config
         self.device_id = device_id
         self.stream = torch.cuda.Stream(device=device_id)
-        self.forward_metadata = None
         self.cuda_graph_max_bs = server_args.cuda_graph_max_bs
         ind = bisect.bisect_right(DEFAULT_CUDA_GRAPH_BATCH_SIZES, self.cuda_graph_max_bs)
         self.capture_batch_size = DEFAULT_CUDA_GRAPH_BATCH_SIZES[:ind]
@@ -37,16 +35,18 @@ class ModelRunner:
         self.output_logits = {}
         self.cuda_graphs = {}
         self.graph_pool = torch.cuda.graph_pool_handle()
-        self.alloc_kv_cache()
-        if server_args.disable_cuda_graph is False:
+        self.forward_metadata = ForwardBatch(self.model.config, self.server_args.dtype)
+
+    def capture_graph(self):
+        if self.server_args.disable_cuda_graph is False:
             self.capture_graph()
-        # self.attention_mask = torch.empty((max(self.capture_batch_size), 1), dtype=torch.long, device=self.device_id)
+
+
+    def set_mem_pool(self, mem_pool):
+        self.forward_metadata.past_key_values = mem_pool
 
     def get_max_context_length(self):
         return self.model.config.max_position_embeddings
-    
-    def alloc_kv_cache(self):
-        self.forward_metadata = ForwardBatch(self.model.config, self.server_args.dtype)
     
     def prepare_inputs(self, sequence_group: SequenceGroup) -> Dict[str, Any]:
         cur_seq_lens_list = []
@@ -245,17 +245,3 @@ class ModelRunner:
         return self.model.tokenizer.decode(
             tokens, skip_special_tokens=True, spaces_between_special_tokens=True
         )
-
-if __name__ == "__main__":
-    import transformers
-    model_path = r"D:\\work\\Qwen3-0.6B"
-
-    config = transformers.AutoConfig.from_pretrained(model_path)
-    forward_metadata = ForwardBatch(config)
-    tokenizer = transformers.AutoTokenizer.from_pretrained(model_path)
-    with TorchDefaultDtype(config.dtype):
-        model = Qwen3ForCausalLM(config).cuda()
-        _load_check_point(model, model_path)
-    model.eval()
-    model_runner = ModelRunner(model)
-    model_runner.capture_graph()

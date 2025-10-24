@@ -1,7 +1,7 @@
 import time
 import queue
 import logging
-from sfllm.engine.sequence import Sequence,SequenceGroup
+from sfllm.engine.sequence import RequestSequence,SequenceGroup
 from sfllm.engine.memory_pool import BlockMemoryManager
 from typing import List, Tuple
 
@@ -39,10 +39,10 @@ class RunningMetrics:
             logger.info(msg)
         self.prefill_tokens = cur_prefill_tokens
 
-    def log_decode_metrics(self, seq_group: List[Sequence]):
+    def log_decode_metrics(self, seq_group: List[RequestSequence]):
         current_time = time.perf_counter()
         elapsed = current_time - self.last_refresh_time
-        refresh_interval = 4.0  # seconds
+        refresh_interval = 2.0  # seconds
         self.tokens_generated += len(seq_group)
 
         if elapsed < refresh_interval:
@@ -57,7 +57,8 @@ class RunningMetrics:
             f"#queue-req p+d: {self.waiting_queue.qsize()}+{self.running_queue.qsize()}, "
             f"cache usage: {cache_usage:.2f}%"
         )
-        logger.info(msg)
+        if tps > 0 or elapsed > refresh_interval * 10:
+            logger.info(msg)
 
 class SchedulerPolicy:
     def __init__(self, memory_pool: BlockMemoryManager):
@@ -73,60 +74,70 @@ class SchedulerPolicy:
     def cur_remain_tokens(self) -> int:
         return len(self.memory_pool.free_block_ids) - self.cur_token_used
 
-    def add_prefill_req(self, sequence: Sequence):
+    def add_prefill_req(self, sequence: RequestSequence):
         token_len = len(sequence.tokens)
-        self.total_token_used += token_len + sequence.sampling_params.max_new_tokens
+        self.total_token_used += sequence.max_possible_length
         self.cur_token_used += token_len
 
-    def add_decode_req(self, sequence: Sequence):
+    def add_decode_req(self, sequence: RequestSequence):
         self.cur_token_used += 1
     
-    def release_req(self, sequence: Sequence):
+    def release_req(self, sequence: RequestSequence):
         token_len = len(sequence.tokens)
         self.cur_token_used -= token_len
-        self.total_token_used -= token_len
+        self.total_token_used -= sequence.max_possible_length
 
-    def can_add_prefill_req(self, sequence: Sequence) -> bool:
+    def can_add_prefill_req(self, sequence: RequestSequence) -> bool:
         token_len = len(sequence.tokens)
         return self.total_remain_tokens >= token_len + sequence.sampling_params.max_new_tokens
 
 class Scheduler:
-    def __init__(self, server_args,
-                 max_context_length: int = 4096, 
-                 max_running_tokens: int = 10240,
-                 ):
+    def __init__(self, server_args):
         self.waiting_queue = queue.Queue()
         self.running_queue = queue.Queue()
-        self.block_memory_manager = BlockMemoryManager(num_blocks=max_running_tokens)
+        self.block_memory_manager = BlockMemoryManager(server_args)
         self.metrics = RunningMetrics(self.waiting_queue, self.running_queue, self.block_memory_manager)
-        self.max_context_length = max_context_length
-        self.max_prefill_tokens = min(max_context_length, 4096)
+        self.max_context_length = server_args.max_context_length
+        self.max_prefill_tokens = min(self.max_context_length, 4096)
         self.max_decode_tokens = server_args.cuda_graph_max_bs
         self.scheduler_policy = SchedulerPolicy(self.block_memory_manager)
+        self.abort_requests = set()
 
     
-    def add_request(self, sequence: Sequence):
+    def add_request(self, sequence: RequestSequence):
         self.waiting_queue.put(sequence)
 
-    def swap_req_to_waiting(self, sequence: Sequence):
+    def swap_req_to_waiting(self, sequence: RequestSequence):
         self.free_sequence_resources(sequence)
         sequence.cache_loc_ids = []
         sequence.status = "WAITING"
         sequence.new_tokens = sequence.tokens.copy()
         self.waiting_queue.put(sequence)
 
-    def schedule(self) -> Tuple[SequenceGroup, List[Sequence]]:
+    def add_abort_request(self, sequence_id: int):
+        self.abort_requests.add(sequence_id)
+
+    def schedule(self) -> Tuple[SequenceGroup, List[RequestSequence]]:
         running_sequences = []
         failed_sequences = []
         # schedule prefill first
         running_size = self.running_queue.qsize()  # reserve some blocks for running sequences
         prefill_tokens = 0
+
         while not self.waiting_queue.empty() and running_size < self.max_decode_tokens:
+            # check abort requests first
+            if self.waiting_queue.queue[0].sequence_id in self.abort_requests:
+                sequence = self.waiting_queue.get()
+                logger.info(f"Aborting request {sequence.sequence_id}.")
+                self.abort_requests.remove(sequence.sequence_id)
+                self.free_sequence_resources(sequence)
+                continue
             tokens = self.waiting_queue.queue[0].tokens
             if not self.scheduler_policy.can_add_prefill_req(self.waiting_queue.queue[0]): 
                 break
             if prefill_tokens + len(tokens) > self.max_prefill_tokens:
                 break
+            assert self.block_memory_manager.can_alloc(len(tokens))
             self.scheduler_policy.add_prefill_req(self.waiting_queue.queue[0])
             running_sequences.append(self.waiting_queue.get())
             running_sequences[-1].cache_loc_ids.extend(self.block_memory_manager.alloc_block(
@@ -136,6 +147,12 @@ class Scheduler:
         # if there is no prefill request, schedule decode requests
         if len(running_sequences) == 0:
             while not self.running_queue.empty() and len(running_sequences) < self.max_decode_tokens:
+                if self.running_queue.queue[0].sequence_id in self.abort_requests:
+                    sequence = self.running_queue.get()
+                    logger.info(f"Aborting request {sequence.sequence_id}.")
+                    self.abort_requests.remove(sequence.sequence_id)
+                    self.free_sequence_resources(sequence)
+                    continue
                 assert self.block_memory_manager.can_alloc(1)  # the future token ids are unknown
                 self.scheduler_policy.add_decode_req(self.running_queue.queue[0])
                 running_sequences.append(self.running_queue.get())
@@ -152,11 +169,12 @@ class Scheduler:
                 logger.warning(f"the request's token is too long. has tokens: {len(sequence.tokens)}, max context length: {self.max_context_length}. Marking as FAILED.")
                 sequence.status = "FAILED"
                 failed_sequences.append(sequence)
+                self.free_sequence_resources(sequence)
         self.metrics.log_decode_metrics(running_sequences)
         self.metrics.log_prefill_metrics(prefill_tokens)
         return SequenceGroup(running_sequences), failed_sequences
 
-    def free_sequence_resources(self, sequence: Sequence):
+    def free_sequence_resources(self, sequence: RequestSequence):
         self.block_memory_manager.free_block(sequence.cache_loc_ids)
         self.scheduler_policy.release_req(sequence)
 

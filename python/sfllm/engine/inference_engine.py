@@ -9,7 +9,7 @@ from typing import Dict, Any, List, Tuple
 from sfllm.engine.model_runner import ModelRunner
 from sfllm.engine.scheduler import Scheduler
 from sfllm.engine.sampling_params import SamplingParams
-from sfllm.engine.sequence import Sequence,SequenceGroup, SequenceStatus
+from sfllm.engine.sequence import RequestSequence, SequenceGroup, SequenceStatus, AbortSequence
 from sfllm.server_args import ServerArgs
 from sfllm.utils import configure_logger
 
@@ -25,12 +25,14 @@ class InferenceEngine:
         self.model_runner = ModelRunner(server_args)
         self.server_args = server_args
         self.running = False
-        self.scheduler = Scheduler(server_args,
-                                   self.model_runner.get_max_context_length(), 
-                                   self.model_runner.forward_metadata.max_running_tokens)
+        self.scheduler = Scheduler(server_args)
         self.finished_sequences = []
+        self.model_runner.set_mem_pool(
+            self.scheduler.block_memory_manager.physical_memory_pool
+        )
+        self.model_runner.capture_graph()
 
-    def post_forward(self, sequence_group: SequenceGroup, token_ids: List[int], failed_sequences: List[Sequence]) -> None:
+    def post_forward(self, sequence_group: SequenceGroup, token_ids: List[int], failed_sequences: List[RequestSequence]) -> None:
         """Post-process the model outputs and update the sequences."""
         idx = 0
         for sequence in sequence_group:
@@ -54,24 +56,24 @@ class InferenceEngine:
 
     def new_request(self, prompt: str|Tuple[str, List[int]], sampling_params: SamplingParams) -> int:
         if isinstance(prompt, str):
-            sequence = Sequence(prompt, sampling_params)
-            sequence.tokens = self.model_runner.tokenize(prompt)
-            sequence.new_tokens = sequence.tokens
-            sequence.prompt_token_len = len(sequence.tokens)
+            sequence = RequestSequence(prompt, sampling_params)
+            sequence.init(self.model_runner.tokenize)
         else:
             assert isinstance(prompt, tuple), "Prompt must be a string or a tuple of (str, List[int])"
-            sequence = Sequence(prompt[0], sampling_params, input_ids=prompt[1])
+            sequence = RequestSequence(prompt[0], sampling_params, input_ids=prompt[1])
 
         return sequence
 
     def add_request(
         self,
-        prompt: str | Tuple[str, List[int]] | Sequence,
+        prompt: str | Tuple[str, List[int]] | RequestSequence,
         sampling_params: SamplingParams = SamplingParams(),
     ) -> int:
         """Add a new inference request to the queue."""
-        if isinstance(prompt, Sequence):
+        if isinstance(prompt, RequestSequence):
             sequence = prompt
+        elif isinstance(prompt, AbortSequence):
+            self.scheduler.add_abort_request(prompt.sequence_id)
         else:
             sequence = self.new_request(prompt, sampling_params)
         self.scheduler.add_request(sequence)
@@ -116,27 +118,3 @@ class InferenceEngine:
                             "text": sequence.generated_text,
                         }
                     }
-
-
-if __name__ == "__main__":
-    # Example usage
-    import sys
-    sys.argv = ["", "--model", "/home/jicwen/work/Qwen3-0.6B/", "--dtype", "float16"]
-    parser = argparse.ArgumentParser()
-    ServerArgs.add_cli_args(parser)
-    args = parser.parse_args()
-    server_args = ServerArgs.from_cli_args(args)
-    # server_args.disable_cuda_graph = True
-    engine = InferenceEngine(server_args)
-    prompts = [
-        "Hello, my name is",
-        "The president of the United States is",
-        "The capital of France is",
-        "The future of AI is",
-    ]
-    # engine.add_request("Hello, world!", SamplingParams())
-    outputs = engine.generate(prompts, SamplingParams(max_new_tokens=2000, top_k=1), stream=False)
-    for output in outputs:
-        for _, output_d in output.items():
-            v = (f"Prompt: {output_d['prompt']}\nGenerated text: {output_d['text']}")
-    print("Inference step completed.")
