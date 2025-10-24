@@ -24,10 +24,10 @@ class RunningMetrics:
     def log_prefill_metrics(self, cur_prefill_tokens: int):
         current_time = time.perf_counter()
         elapsed = current_time - self.last_prefill_refresh_time
-        self.last_prefill_refresh_time = current_time
         log_interval = 1.0  # seconds
         if self.prefill_tokens == 0:
             self.prefill_tokens = cur_prefill_tokens
+            self.last_prefill_refresh_time = current_time
             return
         if elapsed > log_interval or cur_prefill_tokens == 0:
             msg = f"Prefill batch. #prefill_tokens: {self.prefill_tokens}. "
@@ -37,24 +37,24 @@ class RunningMetrics:
             )
             logger.info(msg)
             self.prefill_tokens = 0
+            self.last_prefill_refresh_time = current_time
 
         self.prefill_tokens += cur_prefill_tokens
 
     def log_decode_metrics(self, seq_group: List[RequestSequence], is_prefill: bool=False):
         current_time = time.perf_counter()            
         elapsed = current_time - self.last_refresh_time
-        self.last_refresh_time = current_time
 
         refresh_interval = 2.0  # seconds
 
         if self.tokens_generated == 0:
-            self.tokens_generated += len(seq_group)*int(not is_prefill)
+            self.last_refresh_time = current_time
+            self.tokens_generated = len(seq_group)*int(not is_prefill)
             return
 
         tps = self.tokens_generated / elapsed
         if (tps > 0 and elapsed > refresh_interval) or (tps == 0 and elapsed > refresh_interval * 10) or is_prefill:
             msg = f"Decode batch. #running-req: {len(seq_group)}. "
-            self.tokens_generated = 0
             cache_usage = self.block_memory_manager.get_usage()
             msg += (
                 f"gen throughput (token/s): {tps:.2f}, "
@@ -62,6 +62,8 @@ class RunningMetrics:
                 f"cache usage: {cache_usage:.2f}%"
             )
             logger.info(msg)
+            self.last_refresh_time = current_time
+            self.tokens_generated = 0
 
         self.tokens_generated += len(seq_group)*int(not is_prefill)
 
