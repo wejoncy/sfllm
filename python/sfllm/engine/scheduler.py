@@ -29,39 +29,42 @@ class RunningMetrics:
         if self.prefill_tokens == 0:
             self.prefill_tokens = cur_prefill_tokens
             return
-        if current_time - self.last_refresh_time > log_interval:
+        if current_time - self.last_refresh_time > log_interval or cur_prefill_tokens == 0:
             msg = f"Prefill batch. #prefill_tokens: {self.prefill_tokens}. "
             msg += (
-                f"gen throughput (token/s): {self.prefill_tokens / elapsed:.2f}, "
+                f"Prefill throughput (token/s): {self.prefill_tokens / elapsed:.2f}, "
                 f"#queue-req p+d: {self.waiting_queue.qsize()}+{self.running_queue.qsize()}, "
             )
             logger.info(msg)
-        self.prefill_tokens = cur_prefill_tokens
+            self.prefill_tokens = 0
+
+        self.prefill_tokens += cur_prefill_tokens
 
     def log_decode_metrics(self, seq_group: List[RequestSequence], is_prefill: bool=False):
         current_time = time.perf_counter()            
         elapsed = current_time - self.last_refresh_time
+        self.last_refresh_time = current_time
+
         refresh_interval = 2.0  # seconds
-        self.tokens_generated += len(seq_group)*int(not is_prefill)
 
         if self.tokens_generated == 0:
-            self.last_refresh_time = current_time
+            self.tokens_generated += len(seq_group)*int(not is_prefill)
             return
 
-        if elapsed < refresh_interval and not is_prefill:
-            return
-        msg = f"Decode batch. #running-req: {len(seq_group)}. "
         tps = self.tokens_generated / elapsed
-        self.tokens_generated = 0
-        self.last_refresh_time = current_time
-        cache_usage = self.block_memory_manager.get_usage()
-        msg += (
-            f"gen throughput (token/s): {tps:.2f}, "
-            f"#queue-req p+d: {self.waiting_queue.qsize()}+{self.running_queue.qsize()}, "
-            f"cache usage: {cache_usage:.2f}%"
-        )
-        if tps > 0 or elapsed > refresh_interval * 10:
+        if (tps > 0 and elapsed < refresh_interval) or (tps == 0 and elapsed > refresh_interval * 10) or is_prefill:
+            msg = f"Decode batch. #running-req: {len(seq_group)}. "
+            self.tokens_generated = 0
+            cache_usage = self.block_memory_manager.get_usage()
+            msg += (
+                f"gen throughput (token/s): {tps:.2f}, "
+                f"#queue-req p+d: {self.waiting_queue.qsize()}+{self.running_queue.qsize()}, "
+                f"cache usage: {cache_usage:.2f}%"
+            )
             logger.info(msg)
+
+        self.tokens_generated += len(seq_group)*int(not is_prefill)
+
 
 class SchedulerPolicy:
     def __init__(self, memory_pool: BlockMemoryManager):
