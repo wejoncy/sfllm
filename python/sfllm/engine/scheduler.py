@@ -83,7 +83,7 @@ class SchedulerPolicy:
         self.cur_token_used += 1
     
     def release_req(self, sequence: RequestSequence):
-        token_len = len(sequence.tokens)
+        token_len = len(sequence.cache_loc_ids)
         self.cur_token_used -= token_len
         self.total_token_used -= sequence.max_possible_length
 
@@ -128,8 +128,6 @@ class Scheduler:
             # check abort requests first
             if self.waiting_queue.queue[0].sequence_id in self.abort_requests:
                 sequence = self.waiting_queue.get()
-                logger.info(f"Aborting request {sequence.sequence_id}.")
-                self.abort_requests.remove(sequence.sequence_id)
                 self.free_sequence_resources(sequence)
                 continue
             tokens = self.waiting_queue.queue[0].tokens
@@ -149,8 +147,6 @@ class Scheduler:
             while not self.running_queue.empty() and len(running_sequences) < self.max_decode_tokens:
                 if self.running_queue.queue[0].sequence_id in self.abort_requests:
                     sequence = self.running_queue.get()
-                    logger.info(f"Aborting request {sequence.sequence_id}.")
-                    self.abort_requests.remove(sequence.sequence_id)
                     self.free_sequence_resources(sequence)
                     continue
                 assert self.block_memory_manager.can_alloc(1)  # the future token ids are unknown
@@ -170,11 +166,17 @@ class Scheduler:
                 sequence.status = "FAILED"
                 failed_sequences.append(sequence)
                 self.free_sequence_resources(sequence)
+                
         self.metrics.log_decode_metrics(running_sequences)
         self.metrics.log_prefill_metrics(prefill_tokens)
         return SequenceGroup(running_sequences), failed_sequences
 
     def free_sequence_resources(self, sequence: RequestSequence):
+        if sequence.sequence_id in self.abort_requests:
+            self.abort_requests.remove(sequence.sequence_id)
+
+        if not len(sequence.cache_loc_ids):
+            return
         self.block_memory_manager.free_block(sequence.cache_loc_ids)
         self.scheduler_policy.release_req(sequence)
 

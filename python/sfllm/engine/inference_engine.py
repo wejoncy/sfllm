@@ -3,7 +3,6 @@
 nsys profile  --force-overwrite=true  -o baseline-report  --trace=cuda,nvtx,osrt,cudnn --cuda-graph-trace=node  python python/sfllm/engine/inference_engine.py
 """
 import logging
-import argparse
 from typing import Dict, Any, List, Tuple
 
 from sfllm.engine.model_runner import ModelRunner
@@ -26,7 +25,6 @@ class InferenceEngine:
         self.server_args = server_args
         self.running = False
         self.scheduler = Scheduler(server_args)
-        self.finished_sequences = []
         self.model_runner.set_mem_pool(
             self.scheduler.block_memory_manager.physical_memory_pool
         )
@@ -44,14 +42,8 @@ class InferenceEngine:
                 sequence.status = SequenceStatus.RUNNING
                 self.scheduler.running_queue.put(sequence)
             else:
-                sequence.status = SequenceStatus.COMPLETED
-                self.finished_sequences.append(sequence)
                 self.scheduler.free_sequence_resources(sequence)
-            
-        for sequence in failed_sequences:
-            sequence.status = SequenceStatus.FAILED
-            self.finished_sequences.append(sequence)
-            self.scheduler.free_sequence_resources(sequence)
+                sequence.status = SequenceStatus.COMPLETED
 
 
     def new_request(self, prompt: str|Tuple[str, List[int]], sampling_params: SamplingParams) -> int:
@@ -74,6 +66,7 @@ class InferenceEngine:
             sequence = prompt
         elif isinstance(prompt, AbortSequence):
             self.scheduler.add_abort_request(prompt.sequence_id)
+            return prompt.sequence_id
         else:
             sequence = self.new_request(prompt, sampling_params)
         self.scheduler.add_request(sequence)

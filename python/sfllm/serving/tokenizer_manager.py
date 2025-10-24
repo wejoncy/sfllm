@@ -34,14 +34,18 @@ class TokenizerManager:
     def inferengine_event_run_loop(self):
         self.inference_engine = InferenceEngine(self.server_args)
         self.ready_flag.value = True
+        import queue
         while True:
             if not self.running:
                 break
-            try:
-                req_sequence = self.inferengine_input_queue.get(block=False)
-                self.inference_engine.add_request(req_sequence)
-            except:  # noqa: E722
-                pass
+            for i in range(300):
+                try:
+                    req_sequence = self.inferengine_input_queue.get_nowait()
+                    self.inference_engine.add_request(req_sequence)
+                except queue.Empty:  # noqa: E722
+                    if self.inferengine_input_queue.qsize() == 0:
+                        break
+                    pass
 
             seq_group = self.inference_engine.step()
             if len(seq_group) == 0:
