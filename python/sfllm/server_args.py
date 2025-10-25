@@ -11,7 +11,7 @@ class ServerArgs:
     tokenizer_mode: str = "auto"
     tokenizer_worker_num: int = 1
     dtype: Literal["float16", "bfloat16", "float32", "auto"] = "auto"
-    mem_fraction: float = 0.85
+    mem_fraction: float = 0.7
     max_context_length: int = 4096
     
     # Optimization/debug options

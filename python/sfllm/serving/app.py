@@ -18,7 +18,7 @@ bash
 curl http://localhost:30000/generate   -H "Content-Type: application/json"   -d '{"text": "how are you?","stream": true,"sampling_params": { "max_new_tokens": 160, "temperature": 1 }}'
 `
 """
-import multiprocessing as mp
+import torch.multiprocessing as mp
 from contextlib import asynccontextmanager
 import fastapi
 from fastapi import FastAPI, HTTPException

@@ -1,6 +1,6 @@
 import asyncio
 import time
-import multiprocessing
+import torch.multiprocessing as multiprocessing
 from sfllm.engine.sequence import AbortSequence, DecodeSequence, RequestSequence
 from sfllm.engine.sampling_params import SamplingParams
 from sfllm.serving.req_protocol import GenerateReqInput

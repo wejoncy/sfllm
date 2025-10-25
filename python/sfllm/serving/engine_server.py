@@ -1,4 +1,4 @@
-import multiprocessing
+import torch.multiprocessing as multiprocessing
 import asyncio
 import time
 from typing import Dict, Any
