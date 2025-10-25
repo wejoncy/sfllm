@@ -1,7 +1,7 @@
 import argparse
 from sfllm.engine.inference_engine import InferenceEngine
 from sfllm.engine.sampling_params import SamplingParams
-from sfllm.engine.server_args import ServerArgs
+from sfllm.server_args import ServerArgs
 
 if __name__ == "__main__":
     # Example usage
@@ -13,8 +13,14 @@ if __name__ == "__main__":
     engine = InferenceEngine(server_args)
     prompts = [
         "Hello, my name is",
+        "Hello, my name is",
+        "Hello, my name is",
+        "The president of the United States is",
         "The president of the United States is",
         "The capital of France is",
+        "The capital of France is",
+        "The future of AI is",
+        "The future of AI is",
         "The future of AI is",
     ]
     # engine.add_request("Hello, world!", SamplingParams())

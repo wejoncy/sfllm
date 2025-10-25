@@ -54,7 +54,7 @@ class InferenceEngine:
     def new_request(self, prompt: str|Tuple[str, List[int]], sampling_params: SamplingParams) -> int:
         if isinstance(prompt, str):
             sequence = RequestSequence(prompt, sampling_params)
-            sequence.init(self.model_runner.tokenize)
+            sequence.init(self.model_runner.model.tokenizer)
         else:
             assert isinstance(prompt, tuple), "Prompt must be a string or a tuple of (str, List[int])"
             sequence = RequestSequence(prompt[0], sampling_params, input_ids=prompt[1])

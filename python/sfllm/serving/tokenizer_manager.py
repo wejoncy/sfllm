@@ -39,7 +39,7 @@ class TokenizerManager:
             if not self.running:
                 break
             try:
-                for i in range(10):
+                for i in range(2):
                     req_sequence = self.inferengine_input_queue.get_nowait()
                     self.inference_engine.add_request(req_sequence)
             except queue.Empty:  # noqa: E722
