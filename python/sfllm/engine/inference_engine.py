@@ -10,7 +10,7 @@ from sfllm.engine.scheduler import Scheduler
 from sfllm.engine.sampling_params import SamplingParams
 from sfllm.engine.sequence import RequestSequence, SequenceGroup, SequenceStatus, AbortSequence
 from sfllm.server_args import ServerArgs
-from sfllm.utils import configure_logger
+from sfllm.utils.nutils import configure_logger
 
 logger = logging.getLogger(__name__)
 class InferenceEngine:

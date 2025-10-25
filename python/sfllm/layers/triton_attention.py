@@ -5,7 +5,7 @@ from sfllm.kernels.decode_attention import (
 from sfllm.kernels.extend_attention import (
     extend_attention_fwd,
 )
-from sfllm.utils import get_device_core_count
+from sfllm.utils.nutils import get_device_core_count
 import triton
 
 class RaggedAttention:
