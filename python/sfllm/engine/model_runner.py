@@ -19,7 +19,7 @@ class ModelRunner:
         self.model = ForwardModel(server_args.model_path, server_args.dtype)
         server_args.model_config = self.model.config
         self.device_id = device_id
-        self.stream = torch.cuda.Stream(device=device_id)
+        self.compute_stream = torch.cuda.Stream(device=device_id)
         self.cuda_graph_max_bs = server_args.cuda_graph_max_bs
         ind = bisect.bisect_right(DEFAULT_CUDA_GRAPH_BATCH_SIZES, self.cuda_graph_max_bs)
         self.capture_batch_size = DEFAULT_CUDA_GRAPH_BATCH_SIZES[:ind]
@@ -210,7 +210,7 @@ class ModelRunner:
         self.forward_metadata.num_kv_splits = self.forward_metadata.num_kv_splits_buffer[:batch_size]
         self.forward_metadata.forward_mode = ForwardMode.DECODE
         self.forward_metadata.out_cache_loc = self.forward_metadata.kv_indices
-        self.stream.synchronize()
+        self.compute_stream.synchronize()
 
         with torch.no_grad():
             self.model(
@@ -225,7 +225,7 @@ class ModelRunner:
             torch.cuda.synchronize()
             cudagraph = torch.cuda.CUDAGraph()
             # attention_mask = torch.empty((batch_size), dtype=torch.long, device=self.device_id)
-            with torch.cuda.graph(cudagraph, stream=self.stream, pool=self.graph_pool):
+            with torch.cuda.graph(cudagraph, stream=self.compute_stream, pool=self.graph_pool):
                 output = self.model(
                     self.input_ids[:batch_size],
                     position_ids=self.position_ids[:batch_size],

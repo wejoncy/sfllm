@@ -3,6 +3,7 @@
 nsys profile  --force-overwrite=true  -o baseline-report  --trace=cuda,nvtx,osrt,cudnn --cuda-graph-trace=node  python python/sfllm/engine/inference_engine.py
 """
 import logging
+import torch
 import queue
 from typing import Dict, Any, List, Tuple, Generator
 
@@ -105,6 +106,8 @@ class InferenceEngine:
         future_output_list = [None, None]
         future_batch_idx = 0
         import time
+        copy_stream = torch.cuda.Stream()
+        compute_stream = self.model_runner.compute_stream
         def notified():
             if event is not None:
                 return event.is_set()
@@ -119,13 +122,21 @@ class InferenceEngine:
 
             if not new_batch.empty():
                 new_batch.future_batch_idx = future_batch_idx
-                future_output_list[future_batch_idx] = self.model_runner.forward(new_batch)
+                with torch.cuda.stream(compute_stream):
+                    model_output = self.model_runner.forward(new_batch)
+                copy_stream.wait_stream(compute_stream)
+                with torch.cuda.stream(copy_stream):
+                        future_cpu_output = model_output.to("cpu", non_blocking=True)
+                        e_copy = torch.cuda.Event()
+                        e_copy.record(copy_stream)
+                        future_output_list[future_batch_idx] = (e_copy, future_cpu_output)
                 future_batch_idx = 1 - future_batch_idx
 
             if not last_batch.empty():
                 cur_idx = last_batch.future_batch_idx
                 if future_output_list[cur_idx] is not None:
-                    token_ids = future_output_list[cur_idx].tolist()
+                    future_output_list[cur_idx][0].synchronize()
+                    token_ids = future_output_list[cur_idx][1].tolist()
                     self.post_forward(last_batch, token_ids, failed_sequences)
                     self.output_batch_queue.put(last_batch)
                     future_output_list[cur_idx] = None

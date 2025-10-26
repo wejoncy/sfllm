@@ -16,7 +16,7 @@ class ServerArgs:
     disable_overlap: bool = False
     
     # Optimization/debug options
-    cuda_graph_max_bs: Optional[int] = 16
+    cuda_graph_max_bs: Optional[int] = 64
     cuda_graph_bs: Optional[List[int]] = None
     disable_cuda_graph: bool = False
 
