@@ -35,17 +35,25 @@ class TokenizerManager:
         self.inference_engine = InferenceEngine(self.server_args)
         self.ready_flag.value = True
         import queue
+        import threading
+        if not self.server_args.disable_overlap:
+            th_event = threading.Event()
+            thread = threading.Thread(target=self.inference_engine.event_loop_overlap, args=(th_event,))
+            thread.start()
         while True:
             if not self.running:
                 break
             try:
-                for i in range(2):
+                for i in range(10):
                     req_sequence = self.inferengine_input_queue.get_nowait()
                     self.inference_engine.add_request(req_sequence)
             except queue.Empty:  # noqa: E722
                 pass
-
-            seq_group = self.inference_engine.step()
+            
+            if not self.server_args.disable_overlap:
+                seq_group = self.inference_engine.step_overlap(timeout=0.1)
+            else:
+                seq_group = self.inference_engine.step()
             if len(seq_group) == 0:
                 time.sleep(0.1)
                 continue
@@ -55,6 +63,9 @@ class TokenizerManager:
                 decode_seq = DecodeSequence(sequence)
                 seq_outputs.append(decode_seq)
             self.tokenizer_input_queue.put(seq_outputs)
+        if not self.server_args.disable_overlap:
+            th_event.set()
+            thread.join()
 
 
     @staticmethod

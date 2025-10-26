@@ -3,12 +3,14 @@
 nsys profile  --force-overwrite=true  -o baseline-report  --trace=cuda,nvtx,osrt,cudnn --cuda-graph-trace=node  python python/sfllm/engine/inference_engine.py
 """
 import logging
-from typing import Dict, Any, List, Tuple
+import queue
+from typing import Dict, Any, List, Tuple, Generator
 
 from sfllm.engine.model_runner import ModelRunner
 from sfllm.engine.scheduler import Scheduler
 from sfllm.engine.sampling_params import SamplingParams
-from sfllm.engine.sequence import RequestSequence, SequenceGroup, SequenceStatus, AbortSequence
+from sfllm.engine.sequence import RequestSequence, SequenceStatus, AbortSequence
+from sfllm.engine.shedule_batch import ScheduleBatch
 from sfllm.server_args import ServerArgs
 from sfllm.utils.nutils import configure_logger
 
@@ -25,15 +27,16 @@ class InferenceEngine:
         self.server_args = server_args
         self.running = False
         self.scheduler = Scheduler(server_args)
+        self.output_batch_queue = queue.Queue()
         self.model_runner.set_mem_pool(
             self.scheduler.block_memory_manager.physical_memory_pool
         )
         self.model_runner.capture_graph()
 
-    def post_forward(self, sequence_group: SequenceGroup, token_ids: List[int], failed_sequences: List[RequestSequence]) -> None:
+    def post_forward(self, schedule_batch: ScheduleBatch, token_ids: List[int], failed_sequences: List[RequestSequence]) -> None:
         """Post-process the model outputs and update the sequences."""
         idx = 0
-        for sequence in sequence_group:
+        for sequence in schedule_batch:
             sequence.new_tokens = token_ids[idx: idx + 1]
             sequence.tokens.extend(sequence.new_tokens)
             idx += 1
@@ -79,15 +82,82 @@ class InferenceEngine:
     
     def step(self):
         """Process a single inference request."""
-        seq_group, failed_sequences = self.scheduler.schedule()
+        new_batch, failed_sequences = self.scheduler.get_next_batch()
         token_ids = []
-        if not seq_group.empty():
-            token_ids = self.model_runner.forward(seq_group)        
-        self.post_forward(seq_group, token_ids, failed_sequences)
-        seq_group.append(failed_sequences)
-        return seq_group
+        if not new_batch.empty():
+            token_ids = self.model_runner.forward(new_batch).tolist()
+        self.post_forward(new_batch, token_ids, failed_sequences)
+        new_batch.extend(failed_sequences)
+        return new_batch
 
-    def generate(self, prompt: List[str]|str, sampling_params: SamplingParams, stream:bool=False) -> Dict[str, Any]:
+    def step_overlap(self, timeout: float=None) -> Generator[Dict[str, Any], Any, Any]:
+        try:
+            new_batch = self.output_batch_queue.get(timeout=timeout)
+            return new_batch
+        except queue.Empty:
+            return []
+
+    def event_loop_overlap(self, event=None):
+        """Process a single inference request with overlap."""
+        failed_sequences = []
+        cur_batch = None
+        last_batch = ScheduleBatch([])
+        future_output_list = [None, None]
+        future_batch_idx = 0
+        import time
+        def notified():
+            if event is not None:
+                return event.is_set()
+            return False
+        while not self.scheduler.is_done() or not notified():
+            new_batch, failed_seq = self.scheduler.get_next_batch()
+            failed_sequences.extend(failed_seq)
+            if new_batch.empty() and last_batch.empty():
+                time.sleep(0.1)
+                continue
+            cur_batch = new_batch
+
+            if not new_batch.empty():
+                new_batch.future_batch_idx = future_batch_idx
+                future_output_list[future_batch_idx] = self.model_runner.forward(new_batch)
+                future_batch_idx = 1 - future_batch_idx
+
+            if not last_batch.empty():
+                cur_idx = last_batch.future_batch_idx
+                if future_output_list[cur_idx] is not None:
+                    token_ids = future_output_list[cur_idx].tolist()
+                    self.post_forward(last_batch, token_ids, failed_sequences)
+                    self.output_batch_queue.put(last_batch)
+                    future_output_list[cur_idx] = None
+
+            last_batch = cur_batch
+
+
+        logger.info("Inference engine event loop exited.")
+
+    def response(self, new_batch: ScheduleBatch, stream: bool) -> List[Dict[str, Any]]:
+        seq_outputs = {}
+        for sequence in new_batch:
+            if stream:
+                if sequence.status == SequenceStatus.RUNNING:
+                    generated_text = self.model_runner.detokenize(
+                        sequence.new_tokens,
+                    )
+                    seq_outputs[sequence.sequence_id] = {"prompt": sequence.prompt, "text": generated_text}
+                    yield seq_outputs
+            elif sequence.status in [SequenceStatus.COMPLETED, SequenceStatus.FAILED]:
+                sequence.generated_text = self.model_runner.detokenize(
+                    sequence.tokens[sequence.prompt_token_len:],
+                )
+                yield {
+                    sequence.sequence_id: {
+                        "prompt": sequence.prompt,
+                        "text": sequence.generated_text,
+                    }
+                }
+
+    def generate(self, prompt: List[str]|str, sampling_params: SamplingParams,
+                 stream:bool=False) -> Generator[Dict[str, Any], Any, Any]:
         """Generate text for inference requests."""
         
         if isinstance(prompt, str):
@@ -96,23 +166,24 @@ class InferenceEngine:
             self.add_request(p, sampling_params)
 
         while not self.scheduler.is_done():
-            seq_group = self.step()
-            seq_outputs = {}
-            for sequence in seq_group:
-                if stream:
-                    if sequence.status == SequenceStatus.RUNNING:
-                        generated_text = self.model_runner.detokenize(
-                            sequence.new_tokens,
-                        )
-                        seq_outputs[sequence.sequence_id] = {"prompt": sequence.prompt, "text": generated_text}
-                        yield seq_outputs
-                elif sequence.status in [SequenceStatus.COMPLETED, SequenceStatus.FAILED]:
-                    sequence.generated_text = self.model_runner.detokenize(
-                        sequence.tokens[sequence.prompt_token_len:],
-                    )
-                    yield {
-                        sequence.sequence_id: {
-                            "prompt": sequence.prompt,
-                            "text": sequence.generated_text,
-                        }
-                    }
+            yield from self.response(self.step(), stream=stream)
+            
+
+    def generate_overlap(self, prompt: List[str]|str, sampling_params: SamplingParams,
+                 stream:bool=False) -> Generator[Dict[str, Any], Any, Any]:
+        """Generate text for inference requests with overlap."""
+
+        if isinstance(prompt, str):
+            prompt = [prompt]
+        for p in prompt:
+            self.add_request(p, sampling_params)
+
+        import threading
+        thread = threading.Thread(target=self.event_loop_overlap)
+        thread.start()
+        
+        while thread.is_alive() or not self.output_batch_queue.empty():
+            new_batch = self.step_overlap(timeout=1)
+            yield from self.response(new_batch, stream=stream)
+        
+        thread.join()

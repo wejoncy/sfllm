@@ -1,7 +1,8 @@
 import time
 import queue
 import logging
-from sfllm.engine.sequence import RequestSequence,SequenceGroup
+from sfllm.engine.sequence import RequestSequence
+from sfllm.engine.shedule_batch import ScheduleBatch
 from sfllm.engine.memory_pool import BlockMemoryManager
 from typing import List, Tuple
 
@@ -76,11 +77,11 @@ class SchedulerPolicy:
     
     @property
     def total_remain_tokens(self) -> int:
-        return len(self.memory_pool.free_block_ids) - self.total_token_used
+        return self.memory_pool.num_available_blocks() - self.total_token_used
     
     @property
     def cur_remain_tokens(self) -> int:
-        return len(self.memory_pool.free_block_ids) - self.cur_token_used
+        return self.memory_pool.num_available_blocks() - self.cur_token_used
 
     def add_prefill_req(self, sequence: RequestSequence):
         token_len = len(sequence.tokens)
@@ -103,6 +104,7 @@ class Scheduler:
     def __init__(self, server_args):
         self.waiting_queue = queue.Queue()
         self.running_queue = queue.Queue()
+        self.flying_queue = []
         self.block_memory_manager = BlockMemoryManager(server_args)
         self.metrics = RunningMetrics(self.waiting_queue, self.running_queue, self.block_memory_manager)
         self.max_context_length = server_args.max_context_length
@@ -110,6 +112,7 @@ class Scheduler:
         self.max_decode_tokens = server_args.cuda_graph_max_bs
         self.scheduler_policy = SchedulerPolicy(self.block_memory_manager)
         self.abort_requests = set()
+        self.enable_overlap = not server_args.disable_overlap
 
     
     def add_request(self, sequence: RequestSequence):
@@ -125,23 +128,29 @@ class Scheduler:
     def add_abort_request(self, sequence_id: int):
         self.abort_requests.add(sequence_id)
 
-    def schedule(self) -> Tuple[SequenceGroup, List[RequestSequence]]:
+    def get_next_batch(self) -> Tuple[ScheduleBatch, List[RequestSequence]]:
         running_sequences = []
         failed_sequences = []
         # schedule prefill first
         running_size = self.running_queue.qsize()  # reserve some blocks for running sequences
         prefill_tokens = 0
 
-        while not self.waiting_queue.empty() and running_size < self.max_decode_tokens:
+        max_decode_tokens = self.max_decode_tokens
+        max_prefill_tokens = self.max_prefill_tokens
+        if self.enable_overlap:
+            max_decode_tokens = self.max_decode_tokens//2
+            max_prefill_tokens = self.max_prefill_tokens//2
+
+        while not self.waiting_queue.empty() and running_size < max_decode_tokens:
             # check abort requests first
             if self.waiting_queue.queue[0].sequence_id in self.abort_requests:
                 sequence = self.waiting_queue.get()
                 self.free_sequence_resources(sequence)
                 continue
             tokens = self.waiting_queue.queue[0].tokens
-            if not self.scheduler_policy.can_add_prefill_req(self.waiting_queue.queue[0]): 
+            if not self.scheduler_policy.can_add_prefill_req(self.waiting_queue.queue[0]):
                 break
-            if prefill_tokens + len(tokens) > self.max_prefill_tokens:
+            if prefill_tokens + len(tokens) > max_prefill_tokens:
                 break
             assert self.block_memory_manager.can_alloc(len(tokens))
             self.scheduler_policy.add_prefill_req(self.waiting_queue.queue[0])
@@ -152,7 +161,7 @@ class Scheduler:
             prefill_tokens += len(tokens)
         # if there is no prefill request, schedule decode requests
         if len(running_sequences) == 0:
-            while not self.running_queue.empty() and len(running_sequences) < self.max_decode_tokens:
+            while not self.running_queue.empty() and len(running_sequences) < max_decode_tokens:
                 if self.running_queue.queue[0].sequence_id in self.abort_requests:
                     sequence = self.running_queue.get()
                     self.free_sequence_resources(sequence)
@@ -168,7 +177,7 @@ class Scheduler:
             if not self.running_queue.empty():
                 logger.warning("swapping one running req to waiting for free memory.")
                 self.swap_req_to_waiting(self.running_queue.get())
-            elif not self.waiting_queue.empty():
+            elif not self.waiting_queue.empty() and not self.enable_overlap:
                 sequence = self.waiting_queue.get()
                 logger.warning(f"the request's token is too long. has tokens: {len(sequence.tokens)}, max context length: {self.max_context_length}. Marking as FAILED.")
                 sequence.status = "FAILED"
@@ -177,7 +186,8 @@ class Scheduler:
 
         self.metrics.log_prefill_metrics(prefill_tokens)
         self.metrics.log_decode_metrics(running_sequences, is_prefill=prefill_tokens>0)
-        return SequenceGroup(running_sequences), failed_sequences
+        self.flying_queue = running_sequences
+        return ScheduleBatch(running_sequences), failed_sequences
 
     def free_sequence_resources(self, sequence: RequestSequence):
         if sequence.sequence_id in self.abort_requests:

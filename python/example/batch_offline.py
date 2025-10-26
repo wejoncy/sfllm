@@ -27,6 +27,9 @@ if __name__ == "__main__":
     outputs = engine.generate(
         prompts, SamplingParams(max_new_tokens=2000, top_k=1), stream=False
     )
+    # outputs = engine.generate_overlap(
+    #     prompts, SamplingParams(max_new_tokens=2000, top_k=1), stream=False
+    # )
     for output in outputs:
         for _, output_d in output.items():
             v = f"Prompt: {output_d['prompt']}\nGenerated text: {output_d['text']}"

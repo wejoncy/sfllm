@@ -79,22 +79,3 @@ class RequestSequence:
         self.prompt_token_len = len(self.tokens)
         self.new_tokens = self.tokens.copy()
         self.max_possible_length = self.sampling_params.max_new_tokens + self.prompt_token_len
-
-class SequenceGroup:
-    def __init__(self, sequences: list[RequestSequence]):
-        self.sequences = sequences
-    
-    def __iter__(self):
-        return iter(self.sequences)
-    
-    def __getitem__(self, idx):
-        return self.sequences[idx]
-    
-    def __len__(self) -> int:
-        return len(self.sequences)
-    
-    def empty(self) -> bool:
-        return len(self.sequences) == 0
-
-    def append(self, sequence_list: list[RequestSequence]) -> None:
-        self.sequences.extend(sequence_list)

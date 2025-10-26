@@ -4,13 +4,12 @@ Usage: python app.py --model <model_name_or_path> [--port <port_number>]
 Starts the FastAPI server for LLM serving.
 in the client
 powershell
-curl -Uri "http://127.0.0.1:8080/v1/completions" `   \
-      -Method POST `    -Headers @{ "Content-Type" = "application/json" } `  \
+curl -Uri "http://127.0.0.1:8080/v1/completions"    \
+      -Method POST `    -Headers @{ "Content-Type" = "application/json" }   \
       -Body '{"prompt": "how are you?","model":"1", "max_new_tokens":100}'
 
 bash
-`curl -X POST "http://127.0.0.1:8080/v1/completions"      -H "Content-Type: application/json"      -d '{"prompt": "how are you?", "model": "1", "max_new_tok
-ens": 100}'`
+`curl -X POST "http://127.0.0.1:8080/v1/completions"      -H "Content-Type: application/json"      -d '{"prompt": "how are you?", "model": "1", "max_new_tokens": 100}'`
 
 streaming
 bash

@@ -5,7 +5,7 @@ import tqdm
 from typing import Dict, List, Any
 
 from sfllm.engine.model_loader import ForwardModel
-from sfllm.engine.sequence import SequenceGroup
+from sfllm.engine.shedule_batch import ScheduleBatch
 from sfllm.engine.forward_params import ForwardMode, ForwardBatch
 from sfllm.layers.sampler import Sampler, SamplingBatchInfo
 from sfllm.server_args import ServerArgs
@@ -48,7 +48,7 @@ class ModelRunner:
     def get_max_context_length(self):
         return self.model.config.max_position_embeddings
     
-    def prepare_inputs(self, sequence_group: SequenceGroup) -> Dict[str, Any]:
+    def prepare_inputs(self, sequence_group: ScheduleBatch) -> Dict[str, Any]:
         cur_seq_lens_list = []
         input_ids_list = []
         position_ids_list = []
@@ -146,7 +146,7 @@ class ModelRunner:
             "forward_metadata": self.forward_metadata,
         }
 
-    def prepare_sample(self, seqs: SequenceGroup) -> torch.Tensor:
+    def prepare_sample(self, seqs: ScheduleBatch) -> torch.Tensor:
         # if self.forward_metadata.sampling_batch_info is not None:
         #     return
         temperatures = []
@@ -167,7 +167,7 @@ class ModelRunner:
             is_all_greedy=all(seq.sampling_params.is_greedy for seq in seqs),
         )
 
-    def prepare_replay(self, inputs: Dict[str, Any], sequence_group: SequenceGroup):
+    def prepare_replay(self, inputs: Dict[str, Any], sequence_group: ScheduleBatch):
         bs_size = len(sequence_group)
         padded_bs_size = bs_size + self.forward_metadata.padded_token
         self.input_ids[:padded_bs_size].copy_(inputs["input_ids"], non_blocking=True)
@@ -180,7 +180,7 @@ class ModelRunner:
         # self.attention_mask[:bs_size].copy_(inputs["attention_mask"], non_blocking=True)
 
 
-    def forward(self, sequence_group: SequenceGroup):
+    def forward(self, sequence_group: ScheduleBatch):
         inputs = self.prepare_inputs(sequence_group)
         self.prepare_sample(sequence_group) if self.rank == 0 else None
         bs_size = len(sequence_group)
@@ -196,7 +196,7 @@ class ModelRunner:
             logits = self.model(**inputs)[:bs_size]
 
         token_ids = (
-            self.sampler(logits, self.forward_metadata.sampling_batch_info).tolist() if self.rank == 0 else None
+            self.sampler(logits, self.forward_metadata.sampling_batch_info) if self.rank == 0 else None
         )
         return token_ids
 

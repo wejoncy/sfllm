@@ -39,6 +39,7 @@ class BlockMemoryManager:
         self.blocks = [BlockMemory(i) for i in range(self.num_blocks)]
         self.free_block_ids = deque(range(self.num_blocks))
         self.free_block_ids.popleft()  # reserve block 0
+        self.release_block_ids = []
         self.used_block_ids = set([0])
         self.physical_memory_pool = []
         self.create_physical_memory_pool(server_args)
@@ -88,10 +89,16 @@ class BlockMemoryManager:
         block = self.blocks[block_id]
         block.free()
         self.used_block_ids.remove(block_id)
-        self.free_block_ids.append(block_id)
+        self.release_block_ids.append(block_id)
 
     def can_alloc(self, token_len: int) -> bool:
         """Check if a block of memory can be allocated."""
+        if len(self.free_block_ids) < token_len:
+            self.release_block_ids.extend(self.free_block_ids)
+            self.free_block_ids.clear()
+            self.release_block_ids.sort()
+            self.free_block_ids.extend(self.release_block_ids)
+            self.release_block_ids.clear()
         return len(self.free_block_ids) >= token_len
 
     def alloc_block(self, token_ids: list[int], hashv: int) -> BlockMemory:
@@ -107,7 +114,11 @@ class BlockMemoryManager:
         """Free a block of memory."""
         for block_id in block_ids:
             self._free_block_by_id(block_id)
-        
+    
+    def num_available_blocks(self) -> int:
+        """Get the number of available blocks."""
+        return len(self.free_block_ids)+len(self.release_block_ids)
+
     def get_usage(self) -> float:
         """Get the memory usage percentage."""
         used_blocks = len(self.used_block_ids)
