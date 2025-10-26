@@ -135,13 +135,11 @@ class Scheduler:
         running_size = self.running_queue.qsize()  # reserve some blocks for running sequences
         prefill_tokens = 0
 
-        max_decode_tokens = self.max_decode_tokens
-        max_prefill_tokens = self.max_prefill_tokens
+        overlap_running_size = self.max_decode_tokens
         if self.enable_overlap:
-            max_decode_tokens = self.max_decode_tokens//2
-            max_prefill_tokens = self.max_prefill_tokens//2
+            overlap_running_size = min(overlap_running_size, max([1, running_size//2]))
 
-        while not self.waiting_queue.empty() and running_size < max_decode_tokens:
+        while not self.waiting_queue.empty():
             # check abort requests first
             if self.waiting_queue.queue[0].sequence_id in self.abort_requests:
                 sequence = self.waiting_queue.get()
@@ -150,7 +148,7 @@ class Scheduler:
             tokens = self.waiting_queue.queue[0].tokens
             if not self.scheduler_policy.can_add_prefill_req(self.waiting_queue.queue[0]):
                 break
-            if prefill_tokens + len(tokens) > max_prefill_tokens:
+            if prefill_tokens + len(tokens) > self.max_prefill_tokens:
                 break
             assert self.block_memory_manager.can_alloc(len(tokens))
             self.scheduler_policy.add_prefill_req(self.waiting_queue.queue[0])
@@ -161,7 +159,7 @@ class Scheduler:
             prefill_tokens += len(tokens)
         # if there is no prefill request, schedule decode requests
         if len(running_sequences) == 0:
-            while not self.running_queue.empty() and len(running_sequences) < max_decode_tokens:
+            while not self.running_queue.empty() and len(running_sequences) < overlap_running_size:
                 if self.running_queue.queue[0].sequence_id in self.abort_requests:
                     sequence = self.running_queue.get()
                     self.free_sequence_resources(sequence)
