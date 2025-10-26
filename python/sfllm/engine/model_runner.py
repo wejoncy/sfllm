@@ -20,6 +20,7 @@ class ModelRunner:
         server_args.model_config = self.model.config
         self.device_id = device_id
         self.compute_stream = torch.cuda.Stream(device=device_id)
+        self.copy_in_stream = torch.cuda.Stream(device=device_id)
         self.cuda_graph_max_bs = server_args.cuda_graph_max_bs
         ind = bisect.bisect_right(DEFAULT_CUDA_GRAPH_BATCH_SIZES, self.cuda_graph_max_bs)
         self.capture_batch_size = DEFAULT_CUDA_GRAPH_BATCH_SIZES[:ind]
@@ -92,16 +93,13 @@ class ModelRunner:
             kv_indices_list.extend([0]*padded_token)
             prefix_lens_list.extend([0]*padded_token)
 
-        input_ids = torch.tensor(
-            input_ids_list, dtype=torch.long, device=self.device_id
-        )
+        input_ids = torch.tensor(input_ids_list, dtype=torch.long, pin_memory=True).to(self.device_id, non_blocking=True)
         position_ids = torch.tensor(
-            position_ids_list, dtype=torch.long, device=self.device_id
-        )
-        cur_seq_lens = torch.tensor(cur_seq_lens_list, dtype=torch.int32)
-        cache_loc_ids = torch.tensor(cache_loc_ids_list, dtype=torch.int64)
-        kv_indices = torch.tensor(kv_indices_list, dtype=torch.int64)
-        prefix_lens = torch.tensor(prefix_lens_list, dtype=torch.int32)
+            position_ids_list, dtype=torch.long, pin_memory=True).to(self.device_id, non_blocking=True)
+        cur_seq_lens = torch.tensor(cur_seq_lens_list, dtype=torch.int32, pin_memory=True)
+        cache_loc_ids = torch.tensor(cache_loc_ids_list, dtype=torch.int64, pin_memory=True)
+        kv_indices = torch.tensor(kv_indices_list, dtype=torch.int64, pin_memory=True)
+        prefix_lens = torch.tensor(prefix_lens_list, dtype=torch.int32, pin_memory=True)
 
         total_seq_len = kv_indices.shape[0]
         if self.forward_metadata.forward_mode == ForwardMode.EXTEND:
@@ -181,18 +179,22 @@ class ModelRunner:
 
 
     def forward(self, sequence_group: ScheduleBatch):
-        inputs = self.prepare_inputs(sequence_group)
-        self.prepare_sample(sequence_group) if self.rank == 0 else None
+        with torch.cuda.stream(self.copy_in_stream):
+            inputs = self.prepare_inputs(sequence_group)
+            self.prepare_sample(sequence_group) if self.rank == 0 else None
         bs_size = len(sequence_group)
         pad_bs_size = self.forward_metadata.padded_token + bs_size
         if (
             self.forward_metadata.forward_mode == ForwardMode.DECODE
             and self.cuda_graphs.get(pad_bs_size) is not None
         ):
-            self.prepare_replay(inputs, sequence_group)
+            with torch.cuda.stream(self.copy_in_stream):
+                self.prepare_replay(inputs, sequence_group)
+            self.compute_stream.wait_stream(self.copy_in_stream)
             self.cuda_graphs[pad_bs_size].replay()
             logits = self.output_logits[pad_bs_size][:bs_size]
         else:
+            self.compute_stream.wait_stream(self.copy_in_stream)
             logits = self.model(**inputs)[:bs_size]
 
         token_ids = (

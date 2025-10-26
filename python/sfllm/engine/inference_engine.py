@@ -100,13 +100,14 @@ class InferenceEngine:
 
     def event_loop_overlap(self, event=None):
         """Process a single inference request with overlap."""
+        logger.info("Inference engine event loop started.============")
         failed_sequences = []
         cur_batch = None
         last_batch = ScheduleBatch([])
         future_output_list = [None, None]
         future_batch_idx = 0
         import time
-        copy_stream = torch.cuda.Stream()
+        copy_out_stream = torch.cuda.Stream()
         compute_stream = self.model_runner.compute_stream
         def notified():
             if event is not None:
@@ -124,11 +125,11 @@ class InferenceEngine:
                 new_batch.future_batch_idx = future_batch_idx
                 with torch.cuda.stream(compute_stream):
                     model_output = self.model_runner.forward(new_batch)
-                copy_stream.wait_stream(compute_stream)
-                with torch.cuda.stream(copy_stream):
+                copy_out_stream.wait_stream(compute_stream)
+                with torch.cuda.stream(copy_out_stream):
                         future_cpu_output = model_output.to("cpu", non_blocking=True)
                         e_copy = torch.cuda.Event()
-                        e_copy.record(copy_stream)
+                        e_copy.record(copy_out_stream)
                         future_output_list[future_batch_idx] = (e_copy, future_cpu_output)
                 future_batch_idx = 1 - future_batch_idx
 
