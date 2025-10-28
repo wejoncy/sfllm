@@ -137,7 +137,7 @@ class Scheduler:
 
         overlap_running_size = self.max_decode_tokens
         if self.enable_overlap:
-            overlap_running_size = min(overlap_running_size, max([1, running_size//2]))
+            overlap_running_size = min(overlap_running_size, max([1, (running_size + len(self.flying_queue)) // 2]))
 
         while not self.waiting_queue.empty():
             # check abort requests first
