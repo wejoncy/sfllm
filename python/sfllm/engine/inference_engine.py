@@ -139,7 +139,6 @@ class InferenceEngine:
                 assert future_output_list[cur_idx] is not None
                 copy_done.synchronize()
                 token_ids = last_result.tolist()
-                # token_ids = [1]*len(last_batch)  # dummy
                 self.post_forward(last_batch, token_ids, failed_sequences)
                 self.output_batch_queue.put(last_batch)
                 future_output_list[cur_idx] = None
