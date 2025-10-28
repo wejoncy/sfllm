@@ -83,6 +83,8 @@ class InferenceEngine:
         new_batch, failed_sequences = self.scheduler.get_next_batch()
         token_ids = []
         if not new_batch.empty():
+            new_batch.prepare_inputs()
+            new_batch.prepare_sample()
             token_ids = self.model_runner.forward(new_batch).tolist()
         self.post_forward(new_batch, token_ids, failed_sequences)
         new_batch.extend(failed_sequences)
