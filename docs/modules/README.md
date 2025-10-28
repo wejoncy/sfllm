@@ -12,7 +12,7 @@ Core inference engine with intelligent batching, scheduling, and CUDA graph opti
 - `ModelRunner`: CUDA-optimized model execution  
 - `Scheduler`: Request batching and prioritization
 - `MemoryPool`: KV-cache management
-- `Sequence`: Request state tracking
+- `RequestSequence`: Request state tracking
 
 ### [Serving](modules/serving.md)
 FastAPI-based web server with OpenAI-compatible REST APIs and streaming support.

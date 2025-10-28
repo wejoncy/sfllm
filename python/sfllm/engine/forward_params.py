@@ -19,62 +19,23 @@ class ForwardMode(IntEnum):
 MAX_PROCESSED_TOKENS = 1024*200
 
 class ForwardBatch:
-    def __init__(self, config, dtype="auto"):
+    def __init__(self, mem_pool):
         # need to inilialize during prepare inputs
         self.max_extend_len = 0
-        self.num_kv_splits_buffer = torch.zeros((MAX_PROCESSED_TOKENS,), dtype=torch.int32, device="cuda")+2
         self.num_kv_splits = None
-        self.kv_indptr_buffer = torch.zeros((MAX_PROCESSED_TOKENS,), dtype=torch.int32, device="cuda")
         self.kv_indptr = None
-        self.kv_indices_buffer = torch.zeros((MAX_PROCESSED_TOKENS,), dtype=torch.int64, device="cuda")
         self.kv_indices = None
-        self.qo_indptr_buffer = torch.zeros((MAX_PROCESSED_TOKENS,), dtype=torch.int32, device="cuda")
         self.qo_indptr = None
         self.out_cache_loc = None
         self.custom_mask = None
         self.mask_indptr = None
         self.max_kv_splits = 16
         self.sampling_batch_info = None
-        self.dtype = config.dtype if dtype == "auto" else getattr(torch, dtype)
         self.padded_token = 0
 
-        self.attn_logits = torch.empty(
-            (128, config.num_attention_heads, self.max_kv_splits, config.head_dim),
-            dtype=torch.float32,
-            device="cuda",
-        )
-        self.attn_lse = torch.empty(
-            (128, config.num_attention_heads, self.max_kv_splits),
-            dtype=torch.float32,
-            device="cuda",
-        )
-        self.max_running_tokens = 0
-        self.past_key_values = self.create_past_kv(config)
+        self.past_key_values = mem_pool
         self.forward_mode = ForwardMode.EXTEND
 
-    def create_past_kv(self, config, max_length=1024000):
-        past_key_values = []
-        dim = (
-            getattr(config, "head_dim", None)
-            or config.hidden_size // config.num_attention_heads
-        )
-        n_heads = config.num_key_value_heads
-        free, total = torch.cuda.mem_get_info("cuda:0")
-        one_token_size = n_heads * dim * self.dtype.itemsize * 2  # key + value
-        max_length = min(max_length, int(free*0.85) // one_token_size // config.num_hidden_layers)
-        logger.info(
-            f"GPU memory free: {free / (1024**3):.2f} GB, total: {total / (1024**3):.2f} GB"
-            f", max tokens per layer: {max_length}"
-        )
-        for _ in range(config.num_hidden_layers):
-            past_key_values.append(
-                (
-                    torch.zeros(max_length, n_heads, dim, dtype=self.dtype).cuda(),
-                    torch.zeros(max_length, n_heads, dim, dtype=self.dtype).cuda(),
-                )
-            )
-        self.max_running_tokens = max_length
-        return past_key_values
 
     # for compatibility only, not used in current implementation
     def get_seq_length(self):

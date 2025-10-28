@@ -7,10 +7,11 @@ import statistics
 import tqdm
 from dataclasses import dataclass
 from typing import Optional, List
+import json
 
 SAMPLE_PROMPTS = [
-    "a " * 512,
-    "a " * 1024,
+    "a " * 64,
+    "a " * 128,
 ]
 
 
@@ -45,8 +46,11 @@ async def send_request(session, url, prompt, stream=False, max_new_tokens=64):
                 async for line in response.content:
                     if not line.strip():
                         continue
+                    line = line.decode()[6:].strip()
+                    if line == '[DONE]':
+                        continue
                     now = time.time()
-                    token_count += 1
+                    token_count += len(json.loads(line).get("output_ids", []))
                     if ttft is None:
                         ttft = now - start_time
 
@@ -54,35 +58,33 @@ async def send_request(session, url, prompt, stream=False, max_new_tokens=64):
         return RequestMetrics(True, total_latency, ttft, token_count)
 
     except Exception as e:
+        print(e)
         return RequestMetrics(False, time.time() - start_time, None, None, str(e))
 
 
 async def warm_up(session, url, prompts, stream=False):
     print("Warming up the server...")
-    for _ in tqdm.tqdm(range(5)):
-        prompt = random.choice(prompts)
-        await send_request(session, f"{url}/v1/completions", prompt, stream=stream)
+    prompt = random.choice(prompts)
+    await send_request(session, f"{url}/v1/completions", prompt, stream=stream)
     print("Warm-up complete.\n")
 
 
-async def run_benchmark(url, concurrency, num_requests, stream=False, prompts=None):
+async def run_benchmark(url, concurrency, num_requests, stream=False, prompts=None, max_new_tokens=64):
     if not prompts:
         prompts = SAMPLE_PROMPTS
 
     print(
-        f"Running benchmark: concurrency={concurrency}, requests={num_requests}, stream={stream}"
+        f"Running benchmark: concurrency={concurrency}, requests={num_requests}, stream={stream}, max_new_tokens={max_new_tokens}"
     )
 
+    async with aiohttp.ClientSession() as session:
+        await warm_up(session, url, prompts, stream=stream)
     timeout = aiohttp.ClientTimeout(total=150)
     results = []
-    progress = tqdm.tqdm(total=num_requests)
+    progress = tqdm.tqdm(total=num_requests, desc="Benchmark Progress")
 
     connector = aiohttp.TCPConnector(limit=0, limit_per_host=concurrency)
     async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
-        await warm_up(session, url, prompts, stream=stream)
-
-        print("Starting main benchmark...")
-
         start_time = time.time()
         queue = asyncio.Queue()
 
@@ -96,7 +98,7 @@ async def run_benchmark(url, concurrency, num_requests, stream=False, prompts=No
                 except asyncio.CancelledError:
                     break
                 result = await send_request(
-                    session, f"{url}/v1/completions", prompt, stream=stream
+                    session, f"{url}/v1/completions", prompt, stream=stream, max_new_tokens=max_new_tokens
                 )
                 results.append(result)
                 progress.update(1)
@@ -169,9 +171,10 @@ def print_results(results_tuple):
 
 async def main():
     parser = argparse.ArgumentParser(description="Benchmark the LLM serving system")
-    parser.add_argument("--url", default="http://localhost:8080", help="Server URL")
-    parser.add_argument("--concurrency", type=int, default=2, help="Concurrent requests")
-    parser.add_argument("--requests", type=int, default=100, help="Total number of requests")
+    parser.add_argument("--url", default="http://localhost:8081", help="Server URL")
+    parser.add_argument("--concurrency", type=int, default=20, help="Concurrent requests")
+    parser.add_argument("--requests", type=int, default=10, help="Total number of requests")
+    parser.add_argument("--max_new_tokens", type=int, default=640, help="Max new tokens per request")
     parser.add_argument(
         "--stream", action="store_true", default=True, help="Enable streaming mode"
     )
@@ -188,7 +191,7 @@ async def main():
 
     try:
         results = await run_benchmark(
-            args.url, args.concurrency, args.requests, stream=args.stream
+            args.url, args.concurrency, args.requests, stream=args.stream, max_new_tokens=args.max_new_tokens
         )
         print_results(results)
     except KeyboardInterrupt:

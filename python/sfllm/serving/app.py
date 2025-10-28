@@ -4,15 +4,20 @@ Usage: python app.py --model <model_name_or_path> [--port <port_number>]
 Starts the FastAPI server for LLM serving.
 in the client
 powershell
-curl -Uri "http://127.0.0.1:8080/v1/completions" `   \
-      -Method POST `    -Headers @{ "Content-Type" = "application/json" } `  \
+curl -Uri "http://127.0.0.1:8080/v1/completions"    \
+      -Method POST `    -Headers @{ "Content-Type" = "application/json" }   \
       -Body '{"prompt": "how are you?","model":"1", "max_new_tokens":100}'
 
 bash
-`curl -X POST "http://127.0.0.1:8080/v1/completions"      -H "Content-Type: application/json"      -d '{"prompt": "how are you?", "model": "1", "max_new_tok
-ens": 100}'`
+`curl -X POST "http://127.0.0.1:8080/v1/completions"      -H "Content-Type: application/json"      -d '{"prompt": "how are you?", "model": "1", "max_new_tokens": 100}'`
+
+streaming
+bash
+`
+curl http://localhost:30000/generate   -H "Content-Type: application/json"   -d '{"text": "how are you?","stream": true,"sampling_params": { "max_new_tokens": 160, "temperature": 1 }}'
+`
 """
-import multiprocessing as mp
+import torch.multiprocessing as mp
 from contextlib import asynccontextmanager
 import fastapi
 from fastapi import FastAPI, HTTPException
@@ -20,14 +25,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 import uvicorn
 import asyncio
-import time
+import json
+
 import argparse
 
-from sfllm.serving.req_protocol import ChatRequest, CompletionRequest
+from sfllm.serving.req_protocol import ChatRequest, CompletionRequest, GenerateReqInput
 from sfllm.serving.engine_server import EngineServer
-from message_formatter import format_chat_messages
-from config import REQUEST_TIMEOUT
 from sfllm.server_args import ServerArgs
+from sfllm.version import __version__
+from typing import AsyncIterator
 
 def create_app(server_args):
     @asynccontextmanager
@@ -38,6 +44,7 @@ def create_app(server_args):
 
         inference_worker.start()
         asyncio.get_running_loop().create_task(inference_worker.worker_response_loop())
+        asyncio.get_running_loop().create_task(inference_worker.auto_clean_resource_loop())
 
         while not inference_worker.is_ready():
             await asyncio.sleep(0.1)
@@ -58,116 +65,108 @@ def create_app(server_args):
         allow_headers=["*"],
     )
 
-    # Streaming response
-    async def generate_stream(request_id, generator):
-        import json
-        async for chunk in generator:
-            # Format streaming response according to OpenAI format
-            stream_chunk = {
-                "id": request_id,
-                "object": "text_completion",
-                "choices": [
-                    {
-                        "text": chunk.get("text", ""),
-                        "index": 0,
-                        "logprobs": None,
-                        "finish_reason": "stop"
-                        if chunk.get("status", "RUNNING") in ["COMPLETED", "FAILED"]
-                        else None,
-                    }
-                ],
-            }
+    def format_OPENAI_complete(response):
+        # Format streaming response according to OpenAI format
+        stream_chunk = {
+            "id": response['request_id'],
+            "object": "text_completion",
+            "choices": [
+                {
+                    "text": response.get("text", ""),
+                    "index": 0,
+                    "logprobs": None,
+                    "finish_reason": "stop"
+                    if response.get("status", "RUNNING") in ["COMPLETED", "FAILED"]
+                    else None,
+                }
+            ],
+        }
 
-            # Convert to JSON string and add newline for proper streaming
-            yield json.dumps(stream_chunk) + "\n\n"
+        # Convert to JSON string and add newline for proper streaming
+        return stream_chunk
+
+    async def generate_response(worker, req: GenerateReqInput, endpoint: str):
+        request_id:int = await worker.submit_request(req)
+
+        if req.stream:
+            async def stream_results() -> AsyncIterator[bytes]:
+                try:
+                    async for out in worker.get_response(request_id, streaming=True):
+                        yield (b"data: " + json.dumps(out).encode("utf-8") + b"\n\n")
+                except ValueError as e:
+                    out = {"error": {"message": str(e)}, 'request_id': request_id}
+                    if endpoint == "/v1/chat/completions" or endpoint == "/v1/completions":
+                        yield (
+                            b"data: "
+                            + json.dumps(format_OPENAI_complete(out)).encode("utf-8")
+                            + b"\n\n"
+                        )
+                    else:
+                        yield (b"data: " + json.dumps(out).encode("utf-8") + b"\n\n")
+                yield b"data: [DONE]\n\n"
+
+            background_tasks = fastapi.BackgroundTasks()
+            return StreamingResponse(
+                stream_results(),
+                media_type="text/event-stream",
+                background=worker.create_abort_task(request_id, background_tasks),
+            )
+        else:
+            try:
+                # Non-streaming response
+                async for _v in worker.get_response(request_id):
+                    response = _v
+            except ValueError as e:
+                    response = {"error": {"message": str(e)}, 'request_id': request_id}
+            if endpoint == "/v1/chat/completions" or endpoint == "/v1/completions":
+                response = format_OPENAI_complete(response)
+            return response
+
+
+    @app.api_route("/generate", methods=["POST", "PUT"])
+    async def generate_request(request: fastapi.Request, body: GenerateReqInput):
+        """Handle a generate request."""
+        inference_worker = app.state.inference_worker
+        return await generate_response(inference_worker, body, "/generate")
 
     @app.post("/v1/chat/completions")
     async def chat_completions(request: fastapi.Request, body: ChatRequest):
         # Format messages into a prompt with processed images
-        prompt = format_chat_messages(body.messages)
-        
-        # Prepare request data for the queue
-        request_data = {
-            "type": "chat",
-            "prompt": prompt,
-            "messages": body.messages,
-            "temperature": body.temperature,
-            "top_p": body.top_p,
-            "max_new_tokens": body.max_new_tokens,
-            "model": body.model,
-            "stream": body.stream,
-        }
+        req = GenerateReqInput.from_basemodel(body)
         inference_worker = app.state.inference_worker
-        
         # Submit to queue and wait for response
-        request_id = await inference_worker.submit_request(request_data)
 
-        try:
-            if body.stream:
-                return StreamingResponse(generate_stream(request_id, inference_worker.get_stream_response(request_id)), media_type="text/plain")
-            else:
-                # Non-streaming response
-                async for _v in generate_stream(
-                    request_id,
-                    inference_worker.get_stream_response(
-                        request_id, timeout=REQUEST_TIMEOUT
-                    ),
-                ):
-                    response = _v
-
-                return response
-            
-        except TimeoutError:
-            raise HTTPException(
-                status_code=504,
-                detail="Request timed out. The model may be overloaded."
-            )
+        return await generate_response(inference_worker, req, "/v1/chat/completions")
 
     @app.post("/v1/completions")
     async def completions(request: fastapi.Request, body: CompletionRequest):
-        # Prepare request data for the queue
-        request_data = {
-            "type": "completion",
-            "prompt": body.prompt,
-            "temperature": body.temperature,
-            "top_p": body.top_p,
-            "max_new_tokens": body.max_new_tokens,
-            "model": body.model,
-            "stream": body.stream,
-        }
-        
         # Submit to queue and wait for response
-        try:
-            inference_worker = app.state.inference_worker
-            request_id = await inference_worker.submit_request(request_data)
+        inference_worker = app.state.inference_worker
+        req = GenerateReqInput.from_basemodel(base_model=body)
 
-            if body.stream:
-                return StreamingResponse(
-                    generate_stream(request_id,
-                        inference_worker.get_stream_response(request_id, timeout=REQUEST_TIMEOUT),
-                    ),
-                    media_type="text/json",
-                )
-            else:
-                # Non-streaming response
-                async for _v in generate_stream(request_id,
-                        inference_worker.get_stream_response(request_id, timeout=REQUEST_TIMEOUT),
-                    ):
-                    response = _v
-                return response
-            
-        except TimeoutError:
-            raise HTTPException(
-                status_code=504,
-                detail="Request timed out. The model may be overloaded."
-            )
+        return await generate_response(inference_worker, req, "/v1/completions")
 
     @app.get("/health")
     async def health():
-        return {
-            "status": "healthy",
-            "timestamp": int(time.time())
+        return fastapi.responses.Response(status_code=200)
+
+    @app.get("/get_model_info")
+    async def get_model_info():
+        """Get the model information."""
+        result = {
+            "model_path": server_args.model_path,
         }
+        return result
+
+    @app.get("/get_server_info")
+    async def get_server_info():
+        # Returns interna states per DP.
+        internal_states= [{}]
+        return {
+            "internal_states": internal_states,
+            "version": __version__,
+        }
+
     return app
 
 if __name__ == "__main__":

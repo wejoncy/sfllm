@@ -2,7 +2,7 @@
 from sfllm.engine.sampling_params import SamplingParams
 from enum import IntEnum, auto
 import threading
-from typing import List, Tuple
+from typing import List, Callable
 
 
 class SequenceStatus(IntEnum):
@@ -28,7 +28,22 @@ strict_counter = StrictCounter()
 def _get_next_sequence_id():
     return strict_counter.next()
 
-class Sequence:
+
+class AbortSequence:
+    def __init__(self, sequence_id: int):
+        self.sequence_id = sequence_id
+
+class DecodeSequence:
+    def __init__(self, request_sequence: 'RequestSequence'):
+        self.sequence_id = request_sequence.sequence_id
+        self.tokens = request_sequence.new_tokens
+        self.text = ""
+        self.status = request_sequence.status
+        self.completion_tokens = (
+            len(request_sequence.tokens) - request_sequence.prompt_token_len
+        )
+
+class RequestSequence:
     def __init__(
         self,
         prompt: str,
@@ -38,6 +53,7 @@ class Sequence:
         self.sequence_id = _get_next_sequence_id()
         self.prompt = prompt
         self.prompt_token_len = 0
+        self.max_possible_length = 0
         self.sampling_params = sampling_params
         self.tokens = []
         self.new_tokens = []
@@ -48,22 +64,18 @@ class Sequence:
             self.tokens = input_ids
             self.prompt_token_len = len(input_ids)
             self.new_tokens = input_ids.copy()
-
-class SequenceGroup:
-    def __init__(self, sequences: list[Sequence]):
-        self.sequences = sequences
+            self.max_possible_length = sampling_params.max_new_tokens + self.prompt_token_len
     
-    def __iter__(self):
-        return iter(self.sequences)
-    
-    def __getitem__(self, idx):
-        return self.sequences[idx]
-    
-    def __len__(self) -> int:
-        return len(self.sequences)
-    
-    def empty(self) -> bool:
-        return len(self.sequences) == 0
-
-    def append(self, sequence_list: list[Sequence]) -> None:
-        self.sequences.extend(sequence_list)
+    def init(self, tokenizer_or_ids: Callable | list):
+        if isinstance(tokenizer_or_ids, list):
+            self.tokens = tokenizer_or_ids
+            self.prompt_token_len = len(tokenizer_or_ids)
+            self.new_tokens = tokenizer_or_ids.copy()
+            self.max_possible_length = self.sampling_params.max_new_tokens + self.prompt_token_len
+            return
+        if self.tokens:
+            return
+        self.tokens = tokenizer_or_ids.encode(self.prompt)
+        self.prompt_token_len = len(self.tokens)
+        self.new_tokens = self.tokens.copy()
+        self.max_possible_length = self.sampling_params.max_new_tokens + self.prompt_token_len

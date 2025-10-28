@@ -5,9 +5,8 @@ A high-performance serving framework that follows the OpenAI API protocol
 with support for both text and image inputs.
 """
 
-__version__ = "0.1.0"
 __author__ = "wejoncy"
-
+from .version import __version__
 from . import engine
 from . import serving
 from . import models
@@ -20,4 +19,5 @@ __all__ = [
     "models",
     "layers",
     "kernels",
+    "__version__",
 ]

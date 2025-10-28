@@ -3,15 +3,17 @@
 nsys profile  --force-overwrite=true  -o baseline-report  --trace=cuda,nvtx,osrt,cudnn --cuda-graph-trace=node  python python/sfllm/engine/inference_engine.py
 """
 import logging
-import argparse
-from typing import Dict, Any, List, Tuple
+import torch
+import queue
+from typing import Dict, Any, List, Tuple, Generator
 
 from sfllm.engine.model_runner import ModelRunner
 from sfllm.engine.scheduler import Scheduler
 from sfllm.engine.sampling_params import SamplingParams
-from sfllm.engine.sequence import Sequence,SequenceGroup, SequenceStatus
+from sfllm.engine.sequence import RequestSequence, SequenceStatus, AbortSequence
+from sfllm.engine.shedule_batch import ScheduleBatch
 from sfllm.server_args import ServerArgs
-from sfllm.utils import configure_logger
+from sfllm.utils.nutils import configure_logger
 
 logger = logging.getLogger(__name__)
 class InferenceEngine:
@@ -25,15 +27,14 @@ class InferenceEngine:
         self.model_runner = ModelRunner(server_args)
         self.server_args = server_args
         self.running = False
-        self.scheduler = Scheduler(server_args,
-                                   self.model_runner.get_max_context_length(), 
-                                   self.model_runner.forward_metadata.max_running_tokens)
-        self.finished_sequences = []
+        self.scheduler = Scheduler(server_args)
+        self.output_batch_queue = queue.Queue()
+        self.model_runner.init_capture_graph(self.scheduler.block_memory_manager.physical_memory_pool)
 
-    def post_forward(self, sequence_group: SequenceGroup, token_ids: List[int], failed_sequences: List[Sequence]) -> None:
+    def post_forward(self, schedule_batch: ScheduleBatch, token_ids: List[int], failed_sequences: List[RequestSequence]) -> None:
         """Post-process the model outputs and update the sequences."""
         idx = 0
-        for sequence in sequence_group:
+        for sequence in schedule_batch:
             sequence.new_tokens = token_ids[idx: idx + 1]
             sequence.tokens.extend(sequence.new_tokens)
             idx += 1
@@ -42,36 +43,36 @@ class InferenceEngine:
                 sequence.status = SequenceStatus.RUNNING
                 self.scheduler.running_queue.put(sequence)
             else:
-                sequence.status = SequenceStatus.COMPLETED
-                self.finished_sequences.append(sequence)
                 self.scheduler.free_sequence_resources(sequence)
-            
-        for sequence in failed_sequences:
-            sequence.status = SequenceStatus.FAILED
-            self.finished_sequences.append(sequence)
-            self.scheduler.free_sequence_resources(sequence)
+                sequence.status = SequenceStatus.COMPLETED
+                # abort request may have req_id added after completed, so we need to check again
+                sid = next(iter(self.scheduler.abort_requests), None)
+                # 100 should be safe to set as buffer
+                if sid is not None and sid + 100 < sequence.sequence_id:
+                    self.scheduler.abort_requests.remove(sid)
 
 
     def new_request(self, prompt: str|Tuple[str, List[int]], sampling_params: SamplingParams) -> int:
         if isinstance(prompt, str):
-            sequence = Sequence(prompt, sampling_params)
-            sequence.tokens = self.model_runner.tokenize(prompt)
-            sequence.new_tokens = sequence.tokens
-            sequence.prompt_token_len = len(sequence.tokens)
+            sequence = RequestSequence(prompt, sampling_params)
+            sequence.init(self.model_runner.model.tokenizer)
         else:
             assert isinstance(prompt, tuple), "Prompt must be a string or a tuple of (str, List[int])"
-            sequence = Sequence(prompt[0], sampling_params, input_ids=prompt[1])
+            sequence = RequestSequence(prompt[0], sampling_params, input_ids=prompt[1])
 
         return sequence
 
     def add_request(
         self,
-        prompt: str | Tuple[str, List[int]] | Sequence,
+        prompt: str | Tuple[str, List[int]] | RequestSequence,
         sampling_params: SamplingParams = SamplingParams(),
     ) -> int:
         """Add a new inference request to the queue."""
-        if isinstance(prompt, Sequence):
+        if isinstance(prompt, RequestSequence):
             sequence = prompt
+        elif isinstance(prompt, AbortSequence):
+            self.scheduler.add_abort_request(prompt.sequence_id)
+            return prompt.sequence_id
         else:
             sequence = self.new_request(prompt, sampling_params)
         self.scheduler.add_request(sequence)
@@ -79,15 +80,99 @@ class InferenceEngine:
     
     def step(self):
         """Process a single inference request."""
-        seq_group, failed_sequences = self.scheduler.schedule()
+        new_batch, failed_sequences = self.scheduler.get_next_batch()
         token_ids = []
-        if not seq_group.empty():
-            token_ids = self.model_runner.forward(seq_group)        
-        self.post_forward(seq_group, token_ids, failed_sequences)
-        seq_group.append(failed_sequences)
-        return seq_group
+        if not new_batch.empty():
+            new_batch.prepare_inputs()
+            new_batch.prepare_sample()
+            token_ids = self.model_runner.forward(new_batch).tolist()
+        self.post_forward(new_batch, token_ids, failed_sequences)
+        new_batch.extend(failed_sequences)
+        return new_batch
 
-    def generate(self, prompt: List[str]|str, sampling_params: SamplingParams, stream:bool=False) -> Dict[str, Any]:
+    def step_overlap(self, timeout: float=None) -> Generator[Dict[str, Any], Any, Any]:
+        try:
+            new_batch = self.output_batch_queue.get(timeout=timeout)
+            return new_batch
+        except queue.Empty:
+            return []
+
+    def event_loop_overlap(self, event=None):
+        """Process a single inference request with overlap."""
+        logger.info("Inference engine event loop started.============")
+        failed_sequences = []
+        cur_batch = None
+        last_batch = ScheduleBatch([], None)
+        future_output_list = [None, None]
+        future_batch_idx = 0
+        import time
+        compute_stream = self.model_runner.compute_stream
+        copy_in_stream = self.model_runner.copy_in_stream
+        def notified():
+            if event is not None:
+                return event.is_set()
+            return False
+        while not notified():
+            new_batch, failed_seq = self.scheduler.get_next_batch()
+            failed_sequences.extend(failed_seq)
+            if new_batch.empty() and last_batch.empty():
+                time.sleep(0.1)
+                continue
+            cur_batch = new_batch
+
+            if not cur_batch.empty():
+                cur_batch.future_batch_idx = future_batch_idx
+                with torch.cuda.stream(copy_in_stream):
+                    cur_batch.prepare_inputs()
+                    cur_batch.prepare_sample()
+                with torch.cuda.stream(compute_stream):
+                    compute_stream.wait_stream(copy_in_stream)
+                    model_output = self.model_runner.forward(cur_batch)
+                    future_cpu_output = model_output.to("cpu", non_blocking=True)
+                    copy_done = torch.cuda.Event()
+                    copy_done.record(compute_stream)
+                    future_output_list[future_batch_idx] = (copy_done, future_cpu_output)
+                future_batch_idx = 1 - future_batch_idx
+
+
+            if not last_batch.empty():
+                cur_idx = last_batch.future_batch_idx
+                copy_done, last_result = future_output_list[cur_idx]
+                assert future_output_list[cur_idx] is not None
+                copy_done.synchronize()
+                token_ids = last_result.tolist()
+                self.post_forward(last_batch, token_ids, failed_sequences)
+                self.output_batch_queue.put(last_batch)
+                future_output_list[cur_idx] = None
+
+            last_batch = cur_batch
+
+
+        logger.info("Inference engine event loop exited.")
+
+    def response(self, new_batch: ScheduleBatch, stream: bool) -> List[Dict[str, Any]]:
+        seq_outputs = {}
+        for sequence in new_batch:
+            if stream:
+                if sequence.status == SequenceStatus.RUNNING:
+                    generated_text = self.model_runner.detokenize(
+                        sequence.new_tokens,
+                    )
+                    seq_outputs[sequence.sequence_id] = {"prompt": sequence.prompt, "text": generated_text}
+                    yield seq_outputs
+            elif sequence.status in [SequenceStatus.COMPLETED, SequenceStatus.FAILED]:
+                sequence.generated_text = self.model_runner.detokenize(
+                    sequence.tokens[sequence.prompt_token_len:],
+                )
+                yield {
+                    sequence.sequence_id: {
+                        "prompt": sequence.prompt,
+                        "text": sequence.generated_text,
+                    }
+                }
+
+    def generate(self, prompt: List[str]|str, sampling_params: SamplingParams,
+                 stream:bool=False) -> Generator[Dict[str, Any], Any, Any]:
         """Generate text for inference requests."""
         
         if isinstance(prompt, str):
@@ -96,47 +181,24 @@ class InferenceEngine:
             self.add_request(p, sampling_params)
 
         while not self.scheduler.is_done():
-            seq_group = self.step()
-            seq_outputs = {}
-            for sequence in seq_group:
-                if stream:
-                    if sequence.status == SequenceStatus.RUNNING:
-                        generated_text = self.model_runner.detokenize(
-                            sequence.new_tokens,
-                        )
-                        seq_outputs[sequence.sequence_id] = {"prompt": sequence.prompt, "text": generated_text}
-                        yield seq_outputs
-                elif sequence.status in [SequenceStatus.COMPLETED, SequenceStatus.FAILED]:
-                    sequence.generated_text = self.model_runner.detokenize(
-                        sequence.tokens[sequence.prompt_token_len:],
-                    )
-                    yield {
-                        sequence.sequence_id: {
-                            "prompt": sequence.prompt,
-                            "text": sequence.generated_text,
-                        }
-                    }
+            yield from self.response(self.step(), stream=stream)
+            
 
+    def generate_overlap(self, prompt: List[str]|str, sampling_params: SamplingParams,
+                 stream:bool=False) -> Generator[Dict[str, Any], Any, Any]:
+        """Generate text for inference requests with overlap."""
 
-if __name__ == "__main__":
-    # Example usage
-    import sys
-    sys.argv = ["", "--model", "/home/jicwen/work/Qwen3-0.6B/", "--dtype", "float16"]
-    parser = argparse.ArgumentParser()
-    ServerArgs.add_cli_args(parser)
-    args = parser.parse_args()
-    server_args = ServerArgs.from_cli_args(args)
-    # server_args.disable_cuda_graph = True
-    engine = InferenceEngine(server_args)
-    prompts = [
-        "Hello, my name is",
-        "The president of the United States is",
-        "The capital of France is",
-        "The future of AI is",
-    ]
-    # engine.add_request("Hello, world!", SamplingParams())
-    outputs = engine.generate(prompts, SamplingParams(max_new_tokens=2000, top_k=1), stream=False)
-    for output in outputs:
-        for _, output_d in output.items():
-            v = (f"Prompt: {output_d['prompt']}\nGenerated text: {output_d['text']}")
-    print("Inference step completed.")
+        if isinstance(prompt, str):
+            prompt = [prompt]
+        for p in prompt:
+            self.add_request(p, sampling_params)
+
+        import threading
+        thread = threading.Thread(target=self.event_loop_overlap)
+        thread.start()
+        
+        while thread.is_alive() or not self.output_batch_queue.empty():
+            new_batch = self.step_overlap(timeout=1)
+            yield from self.response(new_batch, stream=stream)
+        
+        thread.join()

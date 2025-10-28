@@ -3,6 +3,10 @@ import os
 import json
 import torch
 
+DEFAULT_CUDA_GRAPH_BATCH_SIZES = [1, 2, 3, 4, 6, 8, 10, 12, 14, 16]+list(range(20, 2048+1, 4))
+MAX_PROCESSED_TOKENS = 1024*200
+
+
 def configure_logger(server_args, prefix: str = ""):
     if SFLLM_LOGGING_CONFIG_PATH := os.getenv("SFLLM_LOGGING_CONFIG_PATH"):
         if not os.path.exists(SFLLM_LOGGING_CONFIG_PATH):
