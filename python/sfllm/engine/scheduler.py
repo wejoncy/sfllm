@@ -185,7 +185,7 @@ class Scheduler:
         self.metrics.log_prefill_metrics(prefill_tokens)
         self.metrics.log_decode_metrics(running_sequences, is_prefill=prefill_tokens>0)
         self.flying_queue = running_sequences
-        return ScheduleBatch(running_sequences), failed_sequences
+        return ScheduleBatch(running_sequences, self.block_memory_manager.physical_memory_pool), failed_sequences
 
     def free_sequence_resources(self, sequence: RequestSequence):
         if sequence.sequence_id in self.abort_requests:
