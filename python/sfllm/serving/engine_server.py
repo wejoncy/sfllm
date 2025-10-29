@@ -36,8 +36,8 @@ class EngineServer:
             input_ids=request.input_ids,
         )
         self.req_to_state[sequence.sequence_id] = {
-            "event": asyncio.Event(),
-            "response": {
+            "response": asyncio.Queue(),
+            "response_template": {
                 "text": "",
                 "output_ids": [],
                 "meta_info": {
@@ -45,9 +45,9 @@ class EngineServer:
                     "prompt_length": sequence.prompt_token_len,
                     "completion_tokens": 0,
                 },
-            "request_id": request_id,
+                "request_id": request_id,
             },
-            "status": "PENDING",
+            "status": SequenceStatus.PENDING,
         }
         self.tokenizer_input_queue.put(sequence)
         return sequence.sequence_id
@@ -55,21 +55,20 @@ class EngineServer:
     async def get_response(self, sequence_id: int, timeout: int = 40, streaming: bool = False) -> Any:
         """Get the response for a submitted inference request."""
         state = self.req_to_state[sequence_id]
-        while state["status"] not in [SequenceStatus.COMPLETED, SequenceStatus.FAILED]:
+        while state["status"].is_active():
             try:
-                await asyncio.wait_for(state["event"].wait(), timeout=timeout)
+                response = await asyncio.wait_for(state["response"].get(), timeout=timeout)
             except asyncio.TimeoutError:
                 self.abort_request(sequence_id)
                 raise ValueError(
                     f"Request is disconnected from the client side (type 1). Abort request {sequence_id}"
                 )
-            response = state["response"].copy()
-            state["event"].clear()
             if streaming:
-                state["response"]["output_ids"] = []
                 yield response
+        while state["response"].empty() is False:
+            response = state["response"].get_nowait()
+            yield response
         self.req_to_state.pop(sequence_id)
-        yield response
 
     async def auto_clean_resource_loop(self):
         while self.running:
@@ -101,18 +100,20 @@ class EngineServer:
             except:  # noqa: E722
                 await asyncio.sleep(0.1)
                 continue
+            import copy
             for sequence_id, output in response.items():
                 if sequence_id in self.req_to_state:
-                    this_response = self.req_to_state[sequence_id]["response"]
-                    this_response["text"] += output["text"]
-                    this_response["output_ids"].append(output["output_ids"])
-                    this_response["meta_info"]["completion_tokens"] = output["completion_tokens"]
+                    self.req_to_state[sequence_id]["response_template"]["text"] += output["text"]
+                    new_response = copy.deepcopy(self.req_to_state[sequence_id]["response_template"])
+                    new_response["output_ids"] = output["output_ids"]
+                    new_response["meta_info"]["completion_tokens"] = output["completion_tokens"]
 
                     self.req_to_state[sequence_id]["status"] = output["status"]
-                    self.req_to_state[sequence_id]["event"].set()
                     self.req_to_state[sequence_id]["finished_time"] = time.time()
+                    await self.req_to_state[sequence_id]["response"].put(new_response)
                 else:
                     pass  # The request has been aborted already
+        logger.info("worker_response_loop exited.>>>>>>>>>>>>")
 
 
     def abort_request(self, rid: int):
