@@ -1,11 +1,13 @@
 import asyncio
 import time
+import logging
 import torch.multiprocessing as multiprocessing
 from sfllm.engine.sequence import AbortSequence, DecodeSequence, RequestSequence
 from sfllm.engine.sampling_params import SamplingParams
 from sfllm.serving.req_protocol import GenerateReqInput
 from sfllm.engine.inference_engine import InferenceEngine
 
+logger = logging.getLogger(__name__)
 
 class TokenizerManager:
     def __init__(self, server_args):
@@ -36,12 +38,14 @@ class TokenizerManager:
         self.ready_flag.value = True
         import queue
         import threading
+        thread = None
         if not self.server_args.disable_overlap:
             th_event = threading.Event()
             thread = threading.Thread(target=self.inference_engine.event_loop_overlap, args=(th_event,))
             thread.start()
         while True:
-            if not self.running:
+            if not self.running or (thread is not None and not thread.is_alive()):
+                logger.error("Inference engine event loop stopped unexpectedly.")
                 break
             try:
                 for i in range(10):
@@ -98,7 +102,8 @@ class TokenizerManager:
                     self.tokenizer_output_queue.put(seq_outputs)
                 else:
                     raise ValueError("Unknown sequence type received in tokenizer_event_run_loop.")
-            except Exception:
+            except Exception as e:
+                print(f"Error occurred in tokenizer_event_run_loop: {e}")
                 exit(-1)
 
     def start(self):

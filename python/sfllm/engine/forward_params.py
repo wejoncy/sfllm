@@ -45,6 +45,8 @@ class ForwardBatch:
         return 0
 
     def update(self, key_states, value_states, layer_idx):
+        if self.past_key_values is None:
+            return key_states, value_states
         past_key, past_value = self.past_key_values[layer_idx]
 
         past_key[self.out_cache_loc, ...] = key_states[0]

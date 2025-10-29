@@ -25,26 +25,44 @@ class InferenceEngine:
         """
         configure_logger(server_args)
         self.model_runner = ModelRunner(server_args)
+        self.model_runner.profile_run()
         self.server_args = server_args
         self.running = False
         self.scheduler = Scheduler(server_args)
         self.output_batch_queue = queue.Queue()
         self.model_runner.init_capture_graph(self.scheduler.block_memory_manager)
+        self.enable_overlap = not server_args.disable_overlap
 
     def post_forward(self, schedule_batch: ScheduleBatch, token_ids: List[int], failed_sequences: List[RequestSequence]) -> None:
         """Post-process the model outputs and update the sequences."""
-        idx = 0
-        for sequence in schedule_batch:
-            sequence.new_tokens = token_ids[idx: idx + 1]
-            sequence.tokens.extend(sequence.new_tokens)
-            idx += 1
+        for idx, sequence in enumerate(schedule_batch):
+            if self.enable_overlap:
+                if sequence.status.is_active():
+                    assert sequence.tokens[sequence.last_generated_token_pos] < 0, (
+                        "Last token should be placeholder"
+                    )
+                    assert token_ids[idx] >= 0, "Generated token should be valid"
+                    sequence.tokens[sequence.last_generated_token_pos] = token_ids[idx]
+                    sequence.generated_tokens[0] = token_ids[idx]
+                    sequence.last_generated_token_pos += 1
+            else:
+                sequence.new_tokens = token_ids[idx: idx + 1]
+                sequence.generated_tokens[0] = token_ids[idx]
+                sequence.tokens.extend(sequence.new_tokens)
 
-            if len(sequence.tokens) - sequence.prompt_token_len < sequence.sampling_params.max_new_tokens:
+            if not sequence.is_done():
                 sequence.status = SequenceStatus.RUNNING
-                self.scheduler.running_queue.put(sequence)
+                if not self.enable_overlap:
+                    self.scheduler.running_queue.put(sequence)
+            elif not sequence.status.is_active():
+                # a sequence may be calculted one more step after completed
+                if sequence.tokens[-1] < 0:
+                    sequence.tokens.pop()  # remove placeholder token
             else:
                 self.scheduler.free_sequence_resources(sequence)
                 sequence.status = SequenceStatus.COMPLETED
+                if sequence.tokens[-1] < 0:
+                    sequence.tokens.pop()  # remove placeholder token                    
                 # abort request may have req_id added after completed, so we need to check again
                 sid = next(iter(self.scheduler.abort_requests), None)
                 # 100 should be safe to set as buffer
@@ -100,12 +118,12 @@ class InferenceEngine:
     def event_loop_overlap(self, event=None):
         """Process a single inference request with overlap."""
         logger.info("Inference engine event loop started.============")
+        assert self.enable_overlap, "Overlap must be enabled for event loop."
         failed_sequences = []
         cur_batch = None
         last_batch = ScheduleBatch([], None)
         future_limit = 1024
         future_tokenid_bufs = torch.empty(future_limit, device="cuda", dtype=torch.int64)
-        future_batch_idx = 0
         import time
         compute_stream = self.model_runner.compute_stream
         copy_in_stream = self.model_runner.copy_in_stream
@@ -117,6 +135,8 @@ class InferenceEngine:
             new_batch, failed_seq = self.scheduler.get_next_batch_async()
             failed_sequences.extend(failed_seq)
             if new_batch.empty() and last_batch.empty():
+                if event is None:
+                    break
                 time.sleep(0.1)
                 continue
             cur_batch = new_batch
@@ -143,7 +163,6 @@ class InferenceEngine:
                 copy_done.synchronize()
                 token_ids = next_token_ids.tolist()
                 self.post_forward(last_batch, token_ids, failed_sequences)
-                last_batch.filter()
                 self.output_batch_queue.put(last_batch)
 
             last_batch = cur_batch
@@ -156,12 +175,13 @@ class InferenceEngine:
         for sequence in new_batch:
             if stream:
                 if sequence.status == SequenceStatus.RUNNING:
+                    new_token = sequence.generated_tokens
                     generated_text = self.model_runner.detokenize(
-                        sequence.new_tokens,
+                        new_token,
                     )
                     seq_outputs[sequence.sequence_id] = {"prompt": sequence.prompt, "text": generated_text}
                     yield seq_outputs
-            elif sequence.status in [SequenceStatus.COMPLETED, SequenceStatus.FAILED]:
+            elif not sequence.status.is_active():
                 sequence.generated_text = self.model_runner.detokenize(
                     sequence.tokens[sequence.prompt_token_len:],
                 )
@@ -200,6 +220,8 @@ class InferenceEngine:
         
         while thread.is_alive() or not self.output_batch_queue.empty():
             new_batch = self.step_overlap(timeout=1)
+            if len(new_batch) == 0:
+                continue
             yield from self.response(new_batch, stream=stream)
         
         thread.join()

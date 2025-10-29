@@ -1,4 +1,5 @@
 import torch.multiprocessing as multiprocessing
+import logging
 import asyncio
 import time
 from typing import Dict, Any
@@ -7,6 +8,7 @@ from sfllm.engine.sequence import RequestSequence, AbortSequence,SequenceStatus
 from sfllm.serving.req_protocol import GenerateReqInput
 from sfllm.serving.tokenizer_manager import TokenizerManager
 
+logger = logging.getLogger(__name__)
 
 class EngineServer:
     def __init__(self, server_args):
@@ -86,8 +88,11 @@ class EngineServer:
 
     async def worker_response_loop(self):
         while self.running:
-            if self.worker_threads[-1].is_alive() is False:
-                print("Inference worker process has stopped unexpectedly.")
+            if (
+                self.worker_threads[-1].is_alive() is False
+                or self.tokenizer_manager.worker_threads[-1].is_alive() is False
+            ):
+                logger.error("Inference worker process has stopped unexpectedly.")
                 self.running = False
                 self.worker_threads[-1].join()
                 break

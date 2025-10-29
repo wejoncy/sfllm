@@ -1,7 +1,7 @@
 import time
 import queue
 import logging
-from sfllm.engine.sequence import RequestSequence
+from sfllm.engine.sequence import RequestSequence, SequenceStatus
 from sfllm.engine.shedule_batch import ScheduleBatch
 from sfllm.engine.memory_pool import BlockMemoryManager
 from typing import List, Tuple
@@ -141,6 +141,7 @@ class Scheduler:
             # check abort requests first
             if self.waiting_queue.queue[0].sequence_id in self.abort_requests:
                 sequence = self.waiting_queue.get()
+                sequence.status = SequenceStatus.CANCELLED
                 self.free_sequence_resources(sequence)
                 continue
             tokens = self.waiting_queue.queue[0].tokens
@@ -149,8 +150,10 @@ class Scheduler:
             if prefill_tokens + len(tokens) > self.max_prefill_tokens:
                 break
             assert self.block_memory_manager.can_alloc(len(tokens))
-            self.scheduler_policy.add_prefill_req(self.waiting_queue.queue[0])
-            running_sequences.append(self.waiting_queue.get())
+            sequence = self.waiting_queue.get()
+            sequence.status = SequenceStatus.RUNNING
+            self.scheduler_policy.add_prefill_req(sequence)
+            running_sequences.append(sequence)
             running_sequences[-1].cache_loc_ids.extend(self.block_memory_manager.alloc_block(
                 tokens, hashv=0
             ))
@@ -191,11 +194,11 @@ class Scheduler:
         # schedule prefill first
         prefill_tokens = 0
 
-        overlap_running_size = self.max_decode_tokens
         while not self.waiting_queue.empty():
             # check abort requests first
             if self.waiting_queue.queue[0].sequence_id in self.abort_requests:
                 sequence = self.waiting_queue.get()
+                sequence.status = SequenceStatus.CANCELLED
                 self.free_sequence_resources(sequence)
                 continue
             tokens = self.waiting_queue.queue[0].tokens
@@ -204,20 +207,33 @@ class Scheduler:
             if prefill_tokens + len(tokens) > self.max_prefill_tokens:
                 break
             assert self.block_memory_manager.can_alloc(len(tokens))
-            self.scheduler_policy.add_prefill_req(self.waiting_queue.queue[0])
-            running_sequences.append(self.waiting_queue.get())
+            sequence = self.waiting_queue.get()
+            sequence.status = SequenceStatus.RUNNING
+            self.scheduler_policy.add_prefill_req(sequence)
+            running_sequences.append(sequence)
             running_sequences[-1].cache_loc_ids.extend(self.block_memory_manager.alloc_block(
                 tokens, hashv=0
             ))
             prefill_tokens += len(tokens)
-        # if there is no prefill request, schedule decode requests
+        
+        # remove finished sequences from flying batch
+        self.flying_batch.filter()
+        running_batch = ScheduleBatch(running_sequences, self.block_memory_manager)
         if len(running_sequences) > 0:
-            running_batch = ScheduleBatch(running_sequences, self.block_memory_manager)
             self.flying_batch.merge(running_batch)
+        else:            
+            # if there is no prefill request, schedule decode requests
+            for seq in self.flying_batch.sequences:
+                self.scheduler_policy.add_decode_req(seq)
+                seq.cache_loc_ids.extend(
+                    self.block_memory_manager.alloc_block([-1], hashv=0)
+                )
+            running_batch.merge(self.flying_batch)
+            self.flying_batch = running_batch
 
         self.metrics.log_prefill_metrics(prefill_tokens)
-        self.metrics.log_decode_metrics(running_sequences, is_prefill=prefill_tokens>0)
-        return self.flying_batch, failed_sequences
+        self.metrics.log_decode_metrics(running_batch.sequences, is_prefill=prefill_tokens > 0)
+        return running_batch, failed_sequences
 
     def free_sequence_resources(self, sequence: RequestSequence):
         if sequence.sequence_id in self.abort_requests:

@@ -110,7 +110,6 @@ class ServerArgs:
         return cls(**{attr: getattr(args, attr) for attr in attrs})
 
     def __post_init__(self):
-        self.disable_overlap = True
         import platform
         if platform.system() == "Windows":
             self.mem_fraction = min(self.mem_fraction, 0.7)

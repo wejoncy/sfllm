@@ -69,6 +69,9 @@ class RaggedAttention:
         sinks=None,
         window_kv_offsets=None,
         xai_temperature_len=-1):
+        if forward_metadata.past_key_values is None:
+            return torch.zeros_like(q_extend)
+
         k_buffer,v_buffer,qo_indptr,kv_indptr,kv_indices,max_len_extend = (
             forward_metadata.past_key_values[self.layer_idx][0],
             forward_metadata.past_key_values[self.layer_idx][1],
