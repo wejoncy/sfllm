@@ -127,8 +127,8 @@ def print_results(results_tuple):
     print(f"Failed: {len(failed)} ({len(failed) / len(results) * 100:.1f}%)")
 
     if success:
-        total_lat = [r.total_latency for r in success]
-        ttfts = [r.ttft for r in success if r.ttft is not None]
+        total_lat = [r.total_latency*1000 for r in success]
+        ttfts = [r.ttft*1000 for r in success if r.ttft is not None]
         tpot = [
             (r.total_latency - (r.ttft or 0)) / r.tokens
             for r in success
@@ -136,7 +136,7 @@ def print_results(results_tuple):
         ]
         total_tokens = sum(r.tokens or 0 for r in success)
 
-        print("\nLatency (seconds):")
+        print("\nLatency (milliseconds):")
         print(f"  Min: {min(total_lat):.4f}")
         print(f"  Max: {max(total_lat):.4f}")
         print(f"  Avg: {statistics.mean(total_lat):.4f}")
@@ -172,8 +172,8 @@ def print_results(results_tuple):
 async def main():
     parser = argparse.ArgumentParser(description="Benchmark the LLM serving system")
     parser.add_argument("--url", default="http://localhost:8081", help="Server URL")
-    parser.add_argument("--concurrency", type=int, default=20, help="Concurrent requests")
-    parser.add_argument("--requests", type=int, default=10, help="Total number of requests")
+    parser.add_argument("--concurrency", type=int, default=32, help="Concurrent requests")
+    parser.add_argument("--requests", type=int, default=100, help="Total number of requests")
     parser.add_argument("--max_new_tokens", type=int, default=640, help="Max new tokens per request")
     parser.add_argument(
         "--stream", action="store_true", default=True, help="Enable streaming mode"

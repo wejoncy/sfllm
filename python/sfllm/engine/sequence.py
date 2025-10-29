@@ -9,10 +9,14 @@ class SequenceStatus(IntEnum):
     PENDING = auto()
     RUNNING = auto()
     COMPLETED = auto()
+    CANCELLED = auto()
     FAILED = auto()
 
     def __str__(self):
         return self.name
+    
+    def is_active(self):
+        return self in {SequenceStatus.PENDING, SequenceStatus.RUNNING}
 
 class StrictCounter:
     def __init__(self, start=0):
@@ -36,7 +40,7 @@ class AbortSequence:
 class DecodeSequence:
     def __init__(self, request_sequence: 'RequestSequence'):
         self.sequence_id = request_sequence.sequence_id
-        self.tokens = request_sequence.new_tokens
+        self.tokens = request_sequence.generated_tokens
         self.text = ""
         self.status = request_sequence.status
         self.completion_tokens = (
@@ -57,12 +61,15 @@ class RequestSequence:
         self.sampling_params = sampling_params
         self.tokens = []
         self.new_tokens = []
+        self.generated_tokens = [-1]  # for overlap generation
+        self.last_generated_token_pos = 0
         self.generated_text = ""
         self.status = SequenceStatus.PENDING
         self.cache_loc_ids = []
         if input_ids is not None:
             self.tokens = input_ids
             self.prompt_token_len = len(input_ids)
+            self.last_generated_token_pos = self.prompt_token_len
             self.new_tokens = input_ids.copy()
             self.max_possible_length = sampling_params.max_new_tokens + self.prompt_token_len
     
@@ -79,3 +86,11 @@ class RequestSequence:
         self.prompt_token_len = len(self.tokens)
         self.new_tokens = self.tokens.copy()
         self.max_possible_length = self.sampling_params.max_new_tokens + self.prompt_token_len
+        self.last_generated_token_pos = self.prompt_token_len
+    
+    def is_done(self) -> bool:
+        return (
+            not self.status.is_active()
+            or len(self.tokens) - self.prompt_token_len
+            >= self.sampling_params.max_new_tokens
+        )

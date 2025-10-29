@@ -29,9 +29,10 @@ class ModelRunner:
         self.server_args = server_args
 
         # cuda graph
-        self.input_ids = torch.empty((max(self.capture_batch_size),), dtype=torch.long, device=self.device_id)
-        self.position_ids = torch.empty((max(self.capture_batch_size),), dtype=torch.long, device=self.device_id)
-        self.out_cache_loc = torch.zeros((max(self.capture_batch_size),), dtype=torch.int64, device=self.device_id)
+        max_batch_size = max(self.capture_batch_size)
+        self.input_ids = torch.empty((max_batch_size,), dtype=torch.long, device=self.device_id)
+        self.position_ids = torch.empty((max_batch_size,), dtype=torch.long, device=self.device_id)
+        self.out_cache_loc = torch.zeros((max_batch_size,), dtype=torch.int64, device=self.device_id)
 
         self.num_kv_splits_buffer = torch.zeros((MAX_PROCESSED_TOKENS,), dtype=torch.int32, device="cuda")+2
         self.kv_indptr_buffer = torch.zeros((MAX_PROCESSED_TOKENS,), dtype=torch.int32, device="cuda")
@@ -40,12 +41,17 @@ class ModelRunner:
         config = self.model.config
         max_kv_splits = 16
         self.attn_logits = torch.empty(
-            (128, config.num_attention_heads, max_kv_splits, config.head_dim),
+            (
+                max_batch_size*2,
+                config.num_attention_heads,
+                max_kv_splits,
+                config.head_dim,
+            ),
             dtype=torch.float32,
             device="cuda",
         )
         self.attn_lse = torch.empty(
-            (128, config.num_attention_heads, max_kv_splits),
+            (max_batch_size*2, config.num_attention_heads, max_kv_splits),
             dtype=torch.float32,
             device="cuda",
         )
@@ -61,13 +67,12 @@ class ModelRunner:
     def get_max_context_length(self):
         return self.model.config.max_position_embeddings
     
-    def prepare_inputs(self, sequence_group: ScheduleBatch) -> Dict[str, Any]:
-        batch_size = len(sequence_group)
-        forward_metadata = sequence_group.forward_metadata
-        padded_batch_size = batch_size+forward_metadata.padded_token
+    def prepare_inputs(self, scheduled_batch: ScheduleBatch) -> Dict[str, Any]:
+        batch_size = len(scheduled_batch)
+        forward_metadata = scheduled_batch.forward_metadata
+        padded_batch_size = batch_size + forward_metadata.padded_token
         total_seq_len = forward_metadata.kv_indices.shape[0]
 
-        forward_metadata = sequence_group.forward_metadata
         forward_metadata.attn_logits = self.attn_logits
         forward_metadata.attn_lse = self.attn_lse
         if forward_metadata.forward_mode == ForwardMode.EXTEND:
@@ -99,20 +104,20 @@ class ModelRunner:
                 self.num_kv_splits_buffer[:padded_batch_size]
             )
         return {
-            "input_ids": sequence_group.input_ids,
-            "position_ids": sequence_group.position_ids,
+            "input_ids": scheduled_batch.input_ids,
+            "position_ids": scheduled_batch.position_ids,
             # "attention_mask": attention_mask,
             "forward_metadata": forward_metadata,
         }
-    def prepare_inputs1(self, sequence_group: ScheduleBatch) -> Dict[str, Any]:
+    def prepare_inputs1(self, scheduled_batch: ScheduleBatch) -> Dict[str, Any]:
         cur_seq_lens_list = []
         input_ids_list = []
         position_ids_list = []
         cache_loc_ids_list = []
         kv_indices_list = []
         prefix_lens_list = []
-        batch_size = len(sequence_group)
-        if len(sequence_group[-1].new_tokens) == len(sequence_group[-1].tokens):
+        batch_size = len(scheduled_batch)
+        if len(scheduled_batch[-1].new_tokens) == len(scheduled_batch[-1].tokens):
             self.forward_metadata.forward_mode = ForwardMode.EXTEND
         else:
             self.forward_metadata.forward_mode = ForwardMode.DECODE
@@ -129,7 +134,7 @@ class ModelRunner:
             ]
             padded_token = padded_batch_size - batch_size
 
-        for sequence in sequence_group:
+        for sequence in scheduled_batch:
             cur_seq_lens_list.append(len(sequence.new_tokens))
             input_ids_list.extend(sequence.new_tokens)
             start_pos = len(sequence.tokens) - len(sequence.new_tokens)
@@ -220,8 +225,8 @@ class ModelRunner:
             is_all_greedy=all(seq.sampling_params.is_greedy for seq in seqs),
         )
 
-    def prepare_replay(self, inputs: Dict[str, Any], sequence_group: ScheduleBatch):
-        bs_size = len(sequence_group)
+    def prepare_replay(self, inputs: Dict[str, Any], scheduled_batch: ScheduleBatch):
+        bs_size = len(scheduled_batch)
         forward_metadata = inputs["forward_metadata"]
         padded_bs_size = bs_size + forward_metadata.padded_token
         self.input_ids[:padded_bs_size].copy_(inputs["input_ids"], non_blocking=True)
@@ -234,17 +239,17 @@ class ModelRunner:
         # self.attention_mask[:bs_size].copy_(inputs["attention_mask"], non_blocking=True)
 
 
-    def forward(self, sequence_group: ScheduleBatch):
-        forward_metadata = sequence_group.forward_metadata
-        inputs = self.prepare_inputs(sequence_group)
-        # self.prepare_sample(sequence_group) if self.rank == 0 else None
-        bs_size = len(sequence_group)
+    def forward(self, scheduled_batch: ScheduleBatch):
+        forward_metadata = scheduled_batch.forward_metadata
+        inputs = self.prepare_inputs(scheduled_batch)
+        # self.prepare_sample(scheduled_batch) if self.rank == 0 else None
+        bs_size = len(scheduled_batch)
         pad_bs_size = forward_metadata.padded_token + bs_size
         if (
             forward_metadata.forward_mode == ForwardMode.DECODE
             and self.cuda_graphs.get(pad_bs_size) is not None
         ):
-            self.prepare_replay(inputs, sequence_group)
+            self.prepare_replay(inputs, scheduled_batch)
             self.cuda_graphs[pad_bs_size].replay()
             logits = self.output_logits[pad_bs_size][:bs_size]
         else:
@@ -254,6 +259,21 @@ class ModelRunner:
             self.sampler(logits, forward_metadata.sampling_batch_info) if self.rank == 0 else None
         )
         return token_ids
+
+    def profile_run(self):
+        logger.info("Profiling run to reserve activation memory...")
+        self.input_ids.fill_(0)
+        self.position_ids.fill_(0)
+        forward_metadata = ForwardBatch(None)
+        forward_metadata.qo_indptr = self.qo_indptr_buffer[: 1]
+        forward_metadata.qo_indptr[0] = 0
+        with torch.no_grad():
+            self.model(
+                self.input_ids*0,
+                position_ids=self.position_ids*0,
+                forward_metadata=forward_metadata,
+            )
+
 
     def capture_graph(self, memory_pool):
         batch_size = 1

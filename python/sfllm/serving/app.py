@@ -53,6 +53,7 @@ def create_app(server_args):
         # Shutdown
         if inference_worker:
             await inference_worker.stop()
+        uvicorn.Server.should_exit = True
 
     app = FastAPI(title="LLM Serving Framework", lifespan=lifespan)
 
@@ -92,17 +93,27 @@ def create_app(server_args):
             async def stream_results() -> AsyncIterator[bytes]:
                 try:
                     async for out in worker.get_response(request_id, streaming=True):
-                        yield (b"data: " + json.dumps(out).encode("utf-8") + b"\n\n")
+                        yield (
+                            b"data: "
+                            + json.dumps(out, ensure_ascii=False).encode("utf-8")
+                            + b"\n\n"
+                        )
                 except ValueError as e:
                     out = {"error": {"message": str(e)}, 'request_id': request_id}
                     if endpoint == "/v1/chat/completions" or endpoint == "/v1/completions":
                         yield (
                             b"data: "
-                            + json.dumps(format_OPENAI_complete(out)).encode("utf-8")
+                            + json.dumps(
+                                format_OPENAI_complete(out), ensure_ascii=False
+                            ).encode("utf-8")
                             + b"\n\n"
                         )
                     else:
-                        yield (b"data: " + json.dumps(out).encode("utf-8") + b"\n\n")
+                        yield (
+                            b"data: "
+                            + json.dumps(out, ensure_ascii=False).encode("utf-8")
+                            + b"\n\n"
+                        )
                 yield b"data: [DONE]\n\n"
 
             background_tasks = fastapi.BackgroundTasks()
