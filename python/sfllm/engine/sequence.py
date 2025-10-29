@@ -79,3 +79,6 @@ class RequestSequence:
         self.prompt_token_len = len(self.tokens)
         self.new_tokens = self.tokens.copy()
         self.max_possible_length = self.sampling_params.max_new_tokens + self.prompt_token_len
+    
+    def is_done(self) -> bool:
+        return len(self.tokens) - self.prompt_token_len >= self.sampling_params.max_new_tokens

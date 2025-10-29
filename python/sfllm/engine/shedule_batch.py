@@ -12,6 +12,11 @@ class ScheduleBatch:
         self.device = torch.device("cuda:0")
         self.mem_pool = mem_pool
         self.forward_metadata = ForwardBatch(mem_pool)
+        self.fake_ids = None
+        self.input_ids = None
+        self.position_ids = None
+        self.copy_done = None
+        self.next_token_ids = None
 
 
     def empty(self):
@@ -28,6 +33,34 @@ class ScheduleBatch:
     
     def __len__(self) -> int:
         return len(self.sequences)
+
+    def clear(self):
+        self.sequences = []
+    
+    def merge(self, other:'ScheduleBatch'):
+        self.sequences.extend(other.sequences)
+    
+    def filter(self) -> 'ScheduleBatch':
+        # indices = [seq.is_done() for seq in self.sequences]
+        filtered_seqs = [seq for seq in self.sequences if not seq.is_done()]
+        self.sequences = filtered_seqs
+        # indices_ = torch.tensor(indices, dtype=torch.bool, pin_memory=True).to(self.device, non_blocking=True)
+        # output_ids = self.next_token_ids[indices_]
+        # self.input_ids = output_ids
+        return ScheduleBatch(filtered_seqs, self.mem_pool)
+
+    def add_placeholder_token(self):
+        for seq in self.sequences:
+            seq.new_tokens = [-seq.sequence_id]  # use -1 as placeholder for future token id
+            seq.tokens.append(-seq.sequence_id)
+
+    def fake_tokenid_indices(self):
+        if self.fake_ids is not None:
+            return self.fake_ids
+        fake_ids = [i.sequence_id for i in self.sequences]
+        fake_ids = torch.tensor(fake_ids, dtype=torch.int64, pin_memory=True).to(self.device, non_blocking=True)
+        self.fake_ids = fake_ids
+        return self.fake_ids
 
     def prepare_inputs(self):
         cur_seq_lens_list = []

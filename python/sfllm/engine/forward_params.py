@@ -33,8 +33,11 @@ class ForwardBatch:
         self.sampling_batch_info = None
         self.padded_token = 0
 
-        self.past_key_values = mem_pool
+        self.past_key_values = mem_pool.physical_memory_pool if mem_pool is not None else None
         self.forward_mode = ForwardMode.EXTEND
+
+    def is_decode(self):
+        return self.forward_mode == ForwardMode.DECODE
 
 
     # for compatibility only, not used in current implementation

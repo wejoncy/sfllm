@@ -32,3 +32,11 @@ def get_device_core_count(device_id: int = 0) -> int:
         return torch.cuda.get_device_properties(device_id).multi_processor_count
 
     return 0
+
+# @torch.compile(dynamic=True, backend="inductor")
+def resolve_future_token_ids(input_ids, future_token_ids_map):
+    input_ids[:] = torch.where(
+        input_ids < 0,
+        future_token_ids_map[torch.clamp(-input_ids, min=0)],
+        input_ids,
+    )

@@ -113,6 +113,7 @@ class Scheduler:
         self.scheduler_policy = SchedulerPolicy(self.block_memory_manager)
         self.abort_requests = set()
         self.enable_overlap = not server_args.disable_overlap
+        self.flying_batch = ScheduleBatch([], self.block_memory_manager)
 
     
     def add_request(self, sequence: RequestSequence):
@@ -181,8 +182,42 @@ class Scheduler:
 
         self.metrics.log_prefill_metrics(prefill_tokens)
         self.metrics.log_decode_metrics(running_sequences, is_prefill=prefill_tokens>0)
-        self.flying_queue = running_sequences
-        return ScheduleBatch(running_sequences, self.block_memory_manager.physical_memory_pool), failed_sequences
+        self.flying_batch = ScheduleBatch(running_sequences, self.block_memory_manager.physical_memory_pool)
+        return self.flying_batch, failed_sequences
+    
+    def get_next_batch_async(self) -> Tuple[ScheduleBatch, List[RequestSequence]]:
+        running_sequences = []
+        failed_sequences = []
+        # schedule prefill first
+        prefill_tokens = 0
+
+        overlap_running_size = self.max_decode_tokens
+        while not self.waiting_queue.empty():
+            # check abort requests first
+            if self.waiting_queue.queue[0].sequence_id in self.abort_requests:
+                sequence = self.waiting_queue.get()
+                self.free_sequence_resources(sequence)
+                continue
+            tokens = self.waiting_queue.queue[0].tokens
+            if not self.scheduler_policy.can_add_prefill_req(self.waiting_queue.queue[0]):
+                break
+            if prefill_tokens + len(tokens) > self.max_prefill_tokens:
+                break
+            assert self.block_memory_manager.can_alloc(len(tokens))
+            self.scheduler_policy.add_prefill_req(self.waiting_queue.queue[0])
+            running_sequences.append(self.waiting_queue.get())
+            running_sequences[-1].cache_loc_ids.extend(self.block_memory_manager.alloc_block(
+                tokens, hashv=0
+            ))
+            prefill_tokens += len(tokens)
+        # if there is no prefill request, schedule decode requests
+        if len(running_sequences) > 0:
+            running_batch = ScheduleBatch(running_sequences, self.block_memory_manager)
+            self.flying_batch.merge(running_batch)
+
+        self.metrics.log_prefill_metrics(prefill_tokens)
+        self.metrics.log_decode_metrics(running_sequences, is_prefill=prefill_tokens>0)
+        return self.flying_batch, failed_sequences
 
     def free_sequence_resources(self, sequence: RequestSequence):
         if sequence.sequence_id in self.abort_requests:
