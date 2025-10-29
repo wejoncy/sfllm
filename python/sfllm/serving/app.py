@@ -53,6 +53,7 @@ def create_app(server_args):
         # Shutdown
         if inference_worker:
             await inference_worker.stop()
+        uvicorn.Server.should_exit = True
 
     app = FastAPI(title="LLM Serving Framework", lifespan=lifespan)
 

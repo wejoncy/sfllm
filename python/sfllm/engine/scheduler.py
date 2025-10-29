@@ -108,7 +108,7 @@ class Scheduler:
         self.block_memory_manager = BlockMemoryManager(server_args)
         self.metrics = RunningMetrics(self.waiting_queue, self.running_queue, self.block_memory_manager)
         self.max_context_length = server_args.max_context_length
-        self.max_prefill_tokens = min(self.max_context_length, 4096)
+        self.max_prefill_tokens = min(self.max_context_length, 8192)
         self.max_decode_tokens = server_args.cuda_graph_max_bs
         self.scheduler_policy = SchedulerPolicy(self.block_memory_manager)
         self.abort_requests = set()
@@ -185,10 +185,10 @@ class Scheduler:
 
         self.metrics.log_prefill_metrics(prefill_tokens)
         self.metrics.log_decode_metrics(running_sequences, is_prefill=prefill_tokens>0)
-        self.flying_batch = ScheduleBatch(running_sequences, self.block_memory_manager.physical_memory_pool)
+        self.flying_batch = ScheduleBatch(running_sequences, self.block_memory_manager)
         return self.flying_batch, failed_sequences
-    
-    def get_next_batch_async(self) -> Tuple[ScheduleBatch, List[RequestSequence]]:
+
+    def get_next_batch_async(self, last_batch: ScheduleBatch) -> Tuple[ScheduleBatch, List[RequestSequence]]:
         running_sequences = []
         failed_sequences = []
         # schedule prefill first
@@ -217,11 +217,12 @@ class Scheduler:
             prefill_tokens += len(tokens)
         
         # remove finished sequences from flying batch
-        self.flying_batch.filter()
+        last_batch.filter()
         running_batch = ScheduleBatch(running_sequences, self.block_memory_manager)
         if len(running_sequences) > 0:
-            self.flying_batch.merge(running_batch)
-        else:            
+            self.flying_batch.merge(last_batch)
+        else:
+            self.flying_batch.merge(last_batch)
             # if there is no prefill request, schedule decode requests
             for seq in self.flying_batch.sequences:
                 self.scheduler_policy.add_decode_req(seq)
@@ -229,7 +230,7 @@ class Scheduler:
                     self.block_memory_manager.alloc_block([-1], hashv=0)
                 )
             running_batch.merge(self.flying_batch)
-            self.flying_batch = running_batch
+            self.flying_batch = ScheduleBatch([], self.block_memory_manager)
 
         self.metrics.log_prefill_metrics(prefill_tokens)
         self.metrics.log_decode_metrics(running_batch.sequences, is_prefill=prefill_tokens > 0)

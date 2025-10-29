@@ -29,9 +29,10 @@ class ModelRunner:
         self.server_args = server_args
 
         # cuda graph
-        self.input_ids = torch.empty((max(self.capture_batch_size),), dtype=torch.long, device=self.device_id)
-        self.position_ids = torch.empty((max(self.capture_batch_size),), dtype=torch.long, device=self.device_id)
-        self.out_cache_loc = torch.zeros((max(self.capture_batch_size),), dtype=torch.int64, device=self.device_id)
+        max_batch_size = max(self.capture_batch_size)
+        self.input_ids = torch.empty((max_batch_size,), dtype=torch.long, device=self.device_id)
+        self.position_ids = torch.empty((max_batch_size,), dtype=torch.long, device=self.device_id)
+        self.out_cache_loc = torch.zeros((max_batch_size,), dtype=torch.int64, device=self.device_id)
 
         self.num_kv_splits_buffer = torch.zeros((MAX_PROCESSED_TOKENS,), dtype=torch.int32, device="cuda")+2
         self.kv_indptr_buffer = torch.zeros((MAX_PROCESSED_TOKENS,), dtype=torch.int32, device="cuda")
@@ -40,12 +41,17 @@ class ModelRunner:
         config = self.model.config
         max_kv_splits = 16
         self.attn_logits = torch.empty(
-            (128, config.num_attention_heads, max_kv_splits, config.head_dim),
+            (
+                max_batch_size*2,
+                config.num_attention_heads,
+                max_kv_splits,
+                config.head_dim,
+            ),
             dtype=torch.float32,
             device="cuda",
         )
         self.attn_lse = torch.empty(
-            (128, config.num_attention_heads, max_kv_splits),
+            (max_batch_size*2, config.num_attention_heads, max_kv_splits),
             dtype=torch.float32,
             device="cuda",
         )

@@ -12,7 +12,7 @@ class ServerArgs:
     tokenizer_worker_num: int = 1
     dtype: Literal["float16", "bfloat16", "float32", "auto"] = "auto"
     mem_fraction: float = 0.8
-    max_context_length: int = 4096
+    max_context_length: int = 8192
     disable_overlap: bool = False
     
     # Optimization/debug options

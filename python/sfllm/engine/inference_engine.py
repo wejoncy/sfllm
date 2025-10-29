@@ -56,13 +56,10 @@ class InferenceEngine:
                     self.scheduler.running_queue.put(sequence)
             elif not sequence.status.is_active():
                 # a sequence may be calculted one more step after completed
-                if sequence.tokens[-1] < 0:
-                    sequence.tokens.pop()  # remove placeholder token
+                pass
             else:
                 self.scheduler.free_sequence_resources(sequence)
                 sequence.status = SequenceStatus.COMPLETED
-                if sequence.tokens[-1] < 0:
-                    sequence.tokens.pop()  # remove placeholder token                    
                 # abort request may have req_id added after completed, so we need to check again
                 sid = next(iter(self.scheduler.abort_requests), None)
                 # 100 should be safe to set as buffer
@@ -132,7 +129,7 @@ class InferenceEngine:
                 return event.is_set()
             return False
         while not notified():
-            new_batch, failed_seq = self.scheduler.get_next_batch_async()
+            new_batch, failed_seq = self.scheduler.get_next_batch_async(last_batch=last_batch)
             failed_sequences.extend(failed_seq)
             if new_batch.empty() and last_batch.empty():
                 if event is None:
@@ -150,8 +147,9 @@ class InferenceEngine:
                     if cur_batch.forward_metadata.is_decode():
                         resolve_future_token_ids(cur_batch.input_ids, future_tokenid_bufs)
                     model_output = self.model_runner.forward(cur_batch)
-                    fake_tokenid_indices = cur_batch.fake_tokenid_indices()
-                    cur_batch.add_placeholder_token()
+                    fake_tokenid_indices = cur_batch.fake_tokenid_indices(future_limit)
+                    assert model_output.shape[-1] == len(cur_batch)
+                    cur_batch.add_placeholder_token(future_limit)
                     future_tokenid_bufs[fake_tokenid_indices] = model_output
                     cur_batch.next_token_ids = model_output.to("cpu", non_blocking=True)
                     cur_batch.copy_done = torch.cuda.Event()
@@ -183,7 +181,7 @@ class InferenceEngine:
                     yield seq_outputs
             elif not sequence.status.is_active():
                 sequence.generated_text = self.model_runner.detokenize(
-                    sequence.tokens[sequence.prompt_token_len:],
+                    sequence.tokens[sequence.prompt_token_len : sequence.last_generated_token_pos],
                 )
                 yield {
                     sequence.sequence_id: {

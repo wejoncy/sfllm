@@ -50,13 +50,14 @@ class ScheduleBatch:
         # output_ids = self.next_token_ids[indices_]
         # self.input_ids = output_ids
 
-    def add_placeholder_token(self):
+    def add_placeholder_token(self, future_limit: int):
         for seq in self.sequences:
-            seq.new_tokens = [-seq.sequence_id]  # use -1 as placeholder for future token id
-            seq.tokens.append(-seq.sequence_id)
+            place_id = -(seq.sequence_id % future_limit)
+            seq.new_tokens = [place_id]  # use negative id as placeholder for future token position
+            seq.tokens.append(place_id)
 
-    def fake_tokenid_indices(self):
-        fake_ids = [i.sequence_id for i in self.sequences]
+    def fake_tokenid_indices(self, future_limit: int):
+        fake_ids = [(i.sequence_id % future_limit) for i in self.sequences]
         fake_ids = torch.tensor(fake_ids, dtype=torch.int64, pin_memory=True).to(self.device, non_blocking=True)
         self.fake_ids = fake_ids
         return self.fake_ids
