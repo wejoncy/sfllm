@@ -38,6 +38,9 @@ class SchedulerProfilerMixin:
         return
 
     def start_profiler(self):
+        if os.getenv("NSYS_PROFILING_SESSION_ID") is not None:
+            logger.info("Nsys profiling detected, skip torch profiler...")
+            return
         self.torch_profiler = torch.profiler.profile(
                 activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA],
                 with_stack=True,
@@ -49,6 +52,9 @@ class SchedulerProfilerMixin:
 
     def stop_profiler(self):
         if not self.profile_in_progress:
+            return
+        if os.getenv("NSYS_PROFILING_SESSION_ID") is not None:
+            logger.info("Nsys profiling detected, skip torch profiler...")
             return
         self.torch_profiler_output_dir.mkdir(parents=True, exist_ok=True)
         self.torch_profiler.stop()
