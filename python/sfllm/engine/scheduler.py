@@ -92,7 +92,7 @@ class SchedulerPolicy:
         self.cur_token_used += 1
     
     def release_req(self, sequence: RequestSequence):
-        token_len = len(sequence.cache_loc_ids)
+        token_len = len(sequence.out_cache_loc)
         self.cur_token_used -= token_len
         self.total_token_used -= sequence.max_possible_length
 
@@ -101,11 +101,11 @@ class SchedulerPolicy:
         return self.total_remain_tokens >= token_len + sequence.sampling_params.max_new_tokens
 
 class Scheduler:
-    def __init__(self, server_args):
+    def __init__(self, server_args, memory_pool: BlockMemoryManager):
         self.waiting_queue = queue.Queue()
         self.running_queue = queue.Queue()
         self.flying_queue = []
-        self.block_memory_manager = BlockMemoryManager(server_args)
+        self.block_memory_manager = memory_pool
         self.metrics = RunningMetrics(self.waiting_queue, self.running_queue, self.block_memory_manager)
         self.max_context_length = server_args.max_context_length
         self.max_prefill_tokens = min(self.max_context_length, 8192)
@@ -121,7 +121,7 @@ class Scheduler:
 
     def swap_req_to_waiting(self, sequence: RequestSequence):
         self.free_sequence_resources(sequence)
-        sequence.cache_loc_ids = []
+        sequence.out_cache_loc = []
         sequence.status = "WAITING"
         sequence.new_tokens = sequence.tokens.copy()
         self.waiting_queue.put(sequence)
@@ -154,7 +154,7 @@ class Scheduler:
             sequence.status = SequenceStatus.RUNNING
             self.scheduler_policy.add_prefill_req(sequence)
             running_sequences.append(sequence)
-            running_sequences[-1].cache_loc_ids.extend(self.block_memory_manager.alloc_block(
+            running_sequences[-1].out_cache_loc.extend(self.block_memory_manager.alloc_block(
                 tokens, hashv=0
             ))
             prefill_tokens += len(tokens)
@@ -168,7 +168,8 @@ class Scheduler:
                 assert self.block_memory_manager.can_alloc(1)  # the future token ids are unknown
                 self.scheduler_policy.add_decode_req(self.running_queue.queue[0])
                 running_sequences.append(self.running_queue.get())
-                running_sequences[-1].cache_loc_ids.extend(
+                assert self.block_memory_manager.can_alloc(1)
+                running_sequences[-1].out_cache_loc.extend(
                     self.block_memory_manager.alloc_block([-1], hashv=0)
                 )
 
@@ -211,7 +212,7 @@ class Scheduler:
             sequence.status = SequenceStatus.RUNNING
             self.scheduler_policy.add_prefill_req(sequence)
             running_sequences.append(sequence)
-            running_sequences[-1].cache_loc_ids.extend(self.block_memory_manager.alloc_block(
+            running_sequences[-1].out_cache_loc.extend(self.block_memory_manager.alloc_block(
                 tokens, hashv=0
             ))
             prefill_tokens += len(tokens)
@@ -226,7 +227,7 @@ class Scheduler:
             # if there is no prefill request, schedule decode requests
             for seq in self.flying_batch.sequences:
                 self.scheduler_policy.add_decode_req(seq)
-                seq.cache_loc_ids.extend(
+                seq.out_cache_loc.extend(
                     self.block_memory_manager.alloc_block([-1], hashv=0)
                 )
             running_batch.merge(self.flying_batch)
@@ -240,9 +241,9 @@ class Scheduler:
         if sequence.sequence_id in self.abort_requests:
             self.abort_requests.remove(sequence.sequence_id)
 
-        if not len(sequence.cache_loc_ids):
+        if not len(sequence.out_cache_loc):
             return
-        self.block_memory_manager.free_block(sequence.cache_loc_ids)
+        self.block_memory_manager.free_block(sequence.out_cache_loc)
         self.scheduler_policy.release_req(sequence)
 
     def is_done(self) -> bool:

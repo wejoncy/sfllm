@@ -7,7 +7,8 @@ import torch
 import queue
 from typing import Dict, Any, List, Tuple, Generator
 
-from sfllm.engine.model_runner import ModelRunner
+from sfllm.engine.model_worker import ModelWorker
+from sfllm.spec_decoding.eagle_worker import EagleWorker
 from sfllm.engine.scheduler import Scheduler
 from sfllm.engine.sampling_params import SamplingParams
 from sfllm.engine.sequence import RequestSequence, SequenceStatus, AbortSequence
@@ -24,13 +25,12 @@ class InferenceEngine:
         Initialize the inference worker.
         """
         configure_logger(server_args)
-        self.model_runner = ModelRunner(server_args)
-        self.model_runner.profile_run()
+        self.model_worker = ModelWorker(server_args) if server_args.speculative_algorithm == "none" else EagleWorker(server_args)
         self.server_args = server_args
         self.running = False
-        self.scheduler = Scheduler(server_args)
+        self.scheduler = Scheduler(server_args, self.model_worker.main_mem_pool)
         self.output_batch_queue = queue.Queue()
-        self.model_runner.init_capture_graph(self.scheduler.block_memory_manager)
+        self.model_worker.init_capture_graph()
         self.enable_overlap = not server_args.disable_overlap
 
     def post_forward(self, schedule_batch: ScheduleBatch, token_ids: List[int], failed_sequences: List[RequestSequence]) -> None:
@@ -70,7 +70,7 @@ class InferenceEngine:
     def new_request(self, prompt: str|Tuple[str, List[int]], sampling_params: SamplingParams) -> int:
         if isinstance(prompt, str):
             sequence = RequestSequence(prompt, sampling_params)
-            sequence.init(self.model_runner.model.tokenizer)
+            sequence.init(self.model_worker.tokenizer)
         else:
             assert isinstance(prompt, tuple), "Prompt must be a string or a tuple of (str, List[int])"
             sequence = RequestSequence(prompt[0], sampling_params, input_ids=prompt[1])
@@ -100,7 +100,8 @@ class InferenceEngine:
         if not new_batch.empty():
             new_batch.prepare_inputs()
             new_batch.prepare_sample()
-            token_ids = self.model_runner.forward(new_batch).tolist()
+            batch_out = self.model_worker.forward(new_batch)
+            token_ids = batch_out.next_token_ids.tolist()
         self.post_forward(new_batch, token_ids, failed_sequences)
         new_batch.extend(failed_sequences)
         return new_batch
@@ -122,8 +123,8 @@ class InferenceEngine:
         future_limit = 1024
         future_tokenid_bufs = torch.empty(future_limit, device="cuda", dtype=torch.int64)
         import time
-        compute_stream = self.model_runner.compute_stream
-        copy_in_stream = self.model_runner.copy_in_stream
+        compute_stream = self.model_worker.compute_stream
+        copy_in_stream = self.model_worker.copy_in_stream
         def notified():
             if event is not None:
                 return event.is_set()
@@ -144,9 +145,9 @@ class InferenceEngine:
                     cur_batch.prepare_sample()
                 with torch.cuda.stream(compute_stream):
                     compute_stream.wait_stream(copy_in_stream)
-                    if cur_batch.forward_metadata.is_decode():
+                    if cur_batch.forward_batch.is_decode():
                         resolve_future_token_ids(cur_batch.input_ids, future_tokenid_bufs)
-                    model_output = self.model_runner.forward(cur_batch)
+                    model_output = self.model_worker.forward(cur_batch)
                     fake_tokenid_indices = cur_batch.fake_tokenid_indices(future_limit)
                     assert model_output.shape[-1] == len(cur_batch)
                     cur_batch.add_placeholder_token(future_limit)
@@ -174,13 +175,13 @@ class InferenceEngine:
             if stream:
                 if sequence.status == SequenceStatus.RUNNING:
                     new_token = sequence.generated_tokens
-                    generated_text = self.model_runner.detokenize(
+                    generated_text = self.model_worker.detokenize(
                         new_token,
                     )
                     seq_outputs[sequence.sequence_id] = {"prompt": sequence.prompt, "text": generated_text}
                     yield seq_outputs
             elif not sequence.status.is_active():
-                sequence.generated_text = self.model_runner.detokenize(
+                sequence.generated_text = self.model_worker.detokenize(
                     sequence.tokens[sequence.prompt_token_len : sequence.last_generated_token_pos],
                 )
                 yield {

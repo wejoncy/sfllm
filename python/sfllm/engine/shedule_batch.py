@@ -1,17 +1,20 @@
+import dataclasses
 import torch
 import bisect
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional, Union
 
 from sfllm.engine.forward_params import ForwardBatch,ForwardMode
 from sfllm.utils.nutils import DEFAULT_CUDA_GRAPH_BATCH_SIZES, MAX_PROCESSED_TOKENS
 from sfllm.layers.sampler import Sampler, SamplingBatchInfo
+from sfllm.spec_decoding.spec_common import SpecInput
+
 
 class ScheduleBatch:
     def __init__(self, sequences, mem_pool):
         self.sequences = sequences
         self.device = torch.device("cuda:0")
         self.mem_pool = mem_pool
-        self.forward_metadata = ForwardBatch(mem_pool)
+        self.forward_batch = ForwardBatch(mem_pool)
         self.fake_ids = None
         self.input_ids = None
         self.position_ids = None
@@ -66,20 +69,20 @@ class ScheduleBatch:
         cur_seq_lens_list = []
         input_ids_list = []
         position_ids_list = []
-        cache_loc_ids_list = []
+        out_cache_loc_list = []
         kv_indices_list = []
         prefix_lens_list = []
         device = self.device
 
         batch_size = len(self.sequences)
         if len(self.sequences[-1].new_tokens) == len(self.sequences[-1].tokens):
-            self.forward_metadata.forward_mode = ForwardMode.EXTEND
+            self.forward_batch.forward_mode = ForwardMode.EXTEND
         else:
-            self.forward_metadata.forward_mode = ForwardMode.DECODE
+            self.forward_batch.forward_mode = ForwardMode.DECODE
 
         padded_batch_size = batch_size
         padded_token = 0
-        if (self.forward_metadata.forward_mode == ForwardMode.DECODE):
+        if (self.forward_batch.forward_mode == ForwardMode.DECODE):
             padded_batch_size = DEFAULT_CUDA_GRAPH_BATCH_SIZES[
                 bisect.bisect_left(DEFAULT_CUDA_GRAPH_BATCH_SIZES, batch_size)
             ]
@@ -93,14 +96,14 @@ class ScheduleBatch:
                 list(range(start_pos, start_pos+cur_seq_lens_list[-1]))
             )
             prefix_lens_list.append(start_pos)
-            cache_loc_ids_list.extend(sequence.cache_loc_ids[-len(sequence.new_tokens):])
-            kv_indices_list.extend(sequence.cache_loc_ids)
+            out_cache_loc_list.extend(sequence.out_cache_loc[-len(sequence.new_tokens):])
+            kv_indices_list.extend(sequence.out_cache_loc)
 
         if padded_token > 0:
             input_ids_list.extend([0]*padded_token)
             position_ids_list.extend([0]*padded_token)
             cur_seq_lens_list.extend([1]*padded_token)
-            cache_loc_ids_list.extend([0]*padded_token)
+            out_cache_loc_list.extend([0]*padded_token)
             kv_indices_list.extend([0]*padded_token)
             prefix_lens_list.extend([0]*padded_token)
     
@@ -108,22 +111,22 @@ class ScheduleBatch:
         position_ids = torch.tensor(
             position_ids_list, dtype=torch.long, pin_memory=True).to(device, non_blocking=True)
         cur_seq_lens = torch.tensor(cur_seq_lens_list, dtype=torch.int32, pin_memory=True).to(device, non_blocking=True)
-        cache_loc_ids = torch.tensor(cache_loc_ids_list, dtype=torch.int64, pin_memory=True).to(device, non_blocking=True)
+        out_cache_loc = torch.tensor(out_cache_loc_list, dtype=torch.int64, pin_memory=True).to(device, non_blocking=True)
         kv_indices = torch.tensor(kv_indices_list, dtype=torch.int64, pin_memory=True).to(device, non_blocking=True)
 
         prefix_lens = torch.tensor(prefix_lens_list, dtype=torch.int32, pin_memory=True).to(device, non_blocking=True)
 
         total_seq_len = kv_indices.shape[0]
-        if self.forward_metadata.forward_mode == ForwardMode.EXTEND:
-            self.forward_metadata.max_extend_len = max(cur_seq_lens_list)
-            self.forward_metadata.kv_indptr = prefix_lens.cumsum(dim=-1)
-            self.forward_metadata.kv_indices = kv_indices
-            self.forward_metadata.qo_indptr = cur_seq_lens.cumsum(dim=-1)
+        if self.forward_batch.forward_mode == ForwardMode.EXTEND:
+            self.forward_batch.max_extend_len = max(cur_seq_lens_list)
+            self.forward_batch.kv_indptr = prefix_lens.cumsum(dim=-1)
+            self.forward_batch.kv_indices = kv_indices
+            self.forward_batch.qo_indptr = cur_seq_lens.cumsum(dim=-1)
         else:
-            self.forward_metadata.kv_indptr = (prefix_lens + 1).cumsum(dim=-1)
-            self.forward_metadata.kv_indices = kv_indices
-        self.forward_metadata.padded_token = padded_token
-        self.forward_metadata.out_cache_loc = cache_loc_ids
+            self.forward_batch.kv_indptr = (prefix_lens + 1).cumsum(dim=-1)
+            self.forward_batch.kv_indices = kv_indices
+        self.forward_batch.padded_token = padded_token
+        self.forward_batch.out_cache_loc = out_cache_loc
         self.input_ids = input_ids
         self.position_ids = position_ids
 
@@ -140,10 +143,53 @@ class ScheduleBatch:
         temperatures = torch.tensor(temperatures, dtype=torch.float32, pin_memory=True).to(device, non_blocking=True)
         top_ks = torch.tensor(top_ks, dtype=torch.int32, pin_memory=True).to(device, non_blocking=True)
         top_ps = torch.tensor(top_ps, dtype=torch.float32, pin_memory=True).to(device, non_blocking=True)
-        self.forward_metadata.sampling_batch_info = SamplingBatchInfo(
+        self.forward_batch.sampling_batch_info = SamplingBatchInfo(
             temperatures=temperatures,
             top_ps=top_ps,
             top_ks=top_ks,
             min_ps=torch.zeros_like(top_ps),
             is_all_greedy=all(seq.sampling_params.is_greedy for seq in self.sequences),
         )
+
+@dataclasses.dataclass
+class BatchResult:
+    next_token_ids: torch.Tensor
+    next_token_logits: torch.Tensor
+    aux_hidden_states: Optional[torch.Tensor] = None
+    spec_info: SpecInput = None
+
+@dataclasses.dataclass
+class LogitsProcessorOutput:
+    ## Part 1: This part will be assigned in python/sglang/srt/layers/logits_processor.py::LogitsProcessor
+    # The logits of the next tokens.       shape: [#seq, vocab_size]
+    # Can be None for certain prefill-only requests (e.g., multi-item scoring) that don't need next token generation
+    next_token_logits: Optional[torch.Tensor]
+    # Used by speculative decoding (EAGLE)
+    # The last hidden layers
+    hidden_states: Optional[torch.Tensor] = None
+
+    ## Part 2: This part will be assigned in python/sglang/srt/layers/sampler.py::Sampler
+    # he log probs of output tokens, if SGLANG_RETURN_ORIGINAL_LOGPROB = True, will get the log probs before applying temperature. If False, will get the log probs before applying temperature.
+    next_token_logprobs: Optional[torch.Tensor] = None
+    # The logprobs and ids of the top-k tokens in output positions. shape: [#seq, k]
+    next_token_top_logprobs_val: Optional[List] = None
+    next_token_top_logprobs_idx: Optional[List] = None
+    # The logprobs and ids of the requested token ids in output positions. shape: [#seq, n] (n is the number of requested token ids)
+    # Can contain either lists or GPU tensors (for delayed copy optimization in prefill-only requests)
+    next_token_token_ids_logprobs_val: Optional[
+        List[Union[List[float], torch.Tensor]]
+    ] = None
+    next_token_token_ids_logprobs_idx: Optional[List] = None
+
+    ## Part 3: Prefill-only. This part will be assigned in python/sglang/srt/layers/logits_processor.py::LogitsProcessor
+    # The logprobs of input tokens.        shape: [#token]
+    input_token_logprobs: Optional[torch.Tensor] = None
+    # The logprobs and ids of the top-k tokens in input positions.  shape: [#seq, #token, k]
+    input_top_logprobs_val: List = None
+    input_top_logprobs_idx: List = None
+    # The logprobs and ids of the requested token ids in input positions. shape: [#seq, n] (n is the number of requested token ids)
+    # Can contain either lists or GPU tensors (for delayed GPU-to-CPU transfer optimization)
+    input_token_ids_logprobs_val: Optional[List[Union[List[float], torch.Tensor]]] = (
+        None
+    )
+    input_token_ids_logprobs_idx: Optional[List] = None

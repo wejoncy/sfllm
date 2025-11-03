@@ -11,6 +11,8 @@ import transformers
 
 
 from sfllm.models.modeling_qwen3 import Qwen3ForCausalLM
+from sfllm.models.llama_eagle import LlamaForCausalLMEagle
+from sfllm.models.llama_eagle3 import LlamaForCausalLMEagle3
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +54,7 @@ def _get_resolved_weight_or_index_file(model_name_or_path):
     return str(weight_or_index_file)
 
 
-def _load_check_point(model, model_name_or_path, get_keys_only: bool = False):
+def _load_check_point(model, model_name_or_path, get_keys_only: bool = False):        
     weight_or_index_file = _get_resolved_weight_or_index_file(model_name_or_path)
     all_keys = set()
     all_missing_keys = []
@@ -80,10 +82,15 @@ def _load_check_point(model, model_name_or_path, get_keys_only: bool = False):
                 all_keys.update(weights.keys())
                 del weights
             else:
-                ret = model.load_state_dict(weights, strict=False)
+                if hasattr(model, 'load_weights'):
+                    model.load_weights(weights)
+                    all_missing_keys = []
+                    all_unexpected_keys = []
+                else:
+                    ret = model.load_state_dict(weights, strict=False)
+                    all_missing_keys.extend(ret.missing_keys)
+                    all_unexpected_keys.extend(ret.unexpected_keys)
                 del weights
-                all_missing_keys.extend(ret.missing_keys)
-                all_unexpected_keys.extend(ret.unexpected_keys)
     else:
         raise ValueError(f"{model_name_or_path} is not a folder containing weights or safetensors")
 
@@ -107,64 +114,48 @@ class TorchDefaultDtype(ContextDecorator):
         torch.set_default_dtype(self._prev)
         return False
 
-class ForwardModel:
-    def __init__(self, model_name:str, dtype:str="auto"):
-        """
-        Initialize the ForwardModel with the model name or path.
+ModelRegistry = {
+    "Qwen3ForCausalLM": Qwen3ForCausalLM,
+    "LlamaForCausalLMEagle": LlamaForCausalLMEagle,
+    "LlamaForCausalLMEagle3": LlamaForCausalLMEagle3,
+}
+
+def initialize_model(model_name:str, dtype:str="auto"):
+    """
+    Initialize the ForwardModel with the model name or path.
+    
+    Args:
+        model_name: The name or path of the model to load
+    """
+    config = transformers.AutoConfig.from_pretrained(model_name)
+    dtype = config.dtype if dtype == "auto" else getattr(torch, dtype)
+    return load_model(model_name, config, dtype)
+
+def load_model(model_name:str, config, dtype:torch.dtype=torch.float16):
+    """
+    Load the model and tokenizer
+    
+    Args:
+        model_name: The name or path of the model to load
         
-        Args:
-            model_name: The name or path of the model to load
-        """
-        self.model = None
-        self.config = transformers.AutoConfig.from_pretrained(model_name)
-
-        self.tokenizer = None
-        self.dtype = self.config.dtype if dtype == "auto" else getattr(torch, dtype)
-
-        # Load the model and tokenizer
-        self.load_model(model_name)
-
-    def load_model(self, model_name:str):
-        """
-        Load the model and tokenizer
-        
-        Args:
-            model_name: The name or path of the model to load
-            
-        Returns:
-            A dictionary containing model, tokenizer, and processor
-        """
-        print(f"Loading model: {model_name}")
-        before_avail_memory, _ = torch.cuda.mem_get_info(0)
-        with TorchDefaultDtype(self.dtype):
-            model = Qwen3ForCausalLM(self.config).cuda()
-            _load_check_point(model, model_name)
-        self.model = model.eval()
-        self.tokenizer = transformers.AutoTokenizer.from_pretrained(model_name)
-        after_avail_memory,_ = torch.cuda.mem_get_info(0)
-        self.weight_load_mem_usage = before_avail_memory - after_avail_memory
-        logger.info(
-            f"Load weight end. "
-            f"type={type(self.model).__name__}, "
-            f"dtype={self.dtype}, "
-            f"avail mem={after_avail_memory / 1024 ** 3:.2f} GB, "
-            f"weight load={self.weight_load_mem_usage / 1024 ** 3:.2f} GB."
-        )
-
-    def __call__(self, *args, **kwargs):
-        return self.forward(*args, **kwargs)
-
-        
-    def forward(self, input_ids, position_ids, forward_metadata):
-        """
-        Perform a forward pass on the model with the given sequence group.
-        
-        Args:
-            sequence_group: The sequence group to process
-            
-        Returns:
-            The model outputs
-        """
-        with torch.no_grad():
-            outputs = self.model(input_ids=input_ids, position_ids=position_ids, forward_metadata=forward_metadata)
-        return outputs
+    Returns:
+        A dictionary containing model, tokenizer, and processor
+    """
+    architectures = config.architectures[0] if config.architectures else "Qwen3ForCausalLM"
+    logger.info(f"Loading model: {model_name} {architectures} with dtype: {dtype}")
+    before_avail_memory, _ = torch.cuda.mem_get_info(0)
+    with TorchDefaultDtype(dtype):
+        model = ModelRegistry[architectures](config).cuda()
+        _load_check_point(model, model_name)
+    model = model.eval()
+    after_avail_memory,_ = torch.cuda.mem_get_info(0)
+    weight_load_mem_usage = before_avail_memory - after_avail_memory
+    logger.info(
+        f"Load weight end. "
+        f"type={type(model).__name__}, "
+        f"dtype={dtype}, "
+        f"avail mem={after_avail_memory / 1024 ** 3:.2f} GB, "
+        f"weight load={weight_load_mem_usage / 1024 ** 3:.2f} GB."
+    )
+    model.dtype = dtype
+    return model

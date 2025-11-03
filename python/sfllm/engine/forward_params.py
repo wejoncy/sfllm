@@ -2,6 +2,8 @@ from enum import IntEnum, auto
 import torch
 import logging
 
+from sfllm.spec_decoding.spec_common import SpecInput
+
 logger = logging.getLogger(__name__)
 
 
@@ -33,7 +35,9 @@ class ForwardBatch:
         self.sampling_batch_info = None
         self.padded_token = 0
 
-        self.past_key_values = mem_pool.physical_memory_pool if mem_pool is not None else None
+        self.spec_info:SpecInput = None
+
+        self.past_key_values = mem_pool.kv_buffers if mem_pool is not None else None
         self.forward_mode = ForwardMode.EXTEND
 
     def is_decode(self):

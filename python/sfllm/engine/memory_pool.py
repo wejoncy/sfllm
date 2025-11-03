@@ -41,7 +41,7 @@ class BlockMemoryManager:
         self.free_block_ids.popleft()  # reserve block 0
         self.release_block_ids = []
         self.used_block_ids = set([0])
-        self.physical_memory_pool = []
+        self.kv_buffers = []
         self.create_physical_memory_pool(server_args)
 
     def get_num_blocks(self, server_args) -> int:
@@ -67,7 +67,7 @@ class BlockMemoryManager:
     def create_physical_memory_pool(self, server_args):
         config = server_args.model_config
         for _ in range(config.num_hidden_layers):
-            self.physical_memory_pool.append(
+            self.kv_buffers.append(
                 (
                     torch.zeros(
                         self.num_blocks, *self.block_shape, dtype=self.dtype
@@ -123,3 +123,46 @@ class BlockMemoryManager:
         """Get the memory usage percentage."""
         used_blocks = len(self.used_block_ids)
         return (used_blocks / self.num_blocks) * 100.0
+
+# for draft model like eagle2/eagle3, those draft model has only one or two layers
+# but we expect they have the same kv shape as the main model
+class SpecMemoryManager:
+    """A simple shadow memory manager."""
+    def __init__(self, mem_manager: BlockMemoryManager, draft_config):
+        self.mem_manager = mem_manager
+        self.dtype = mem_manager.dtype
+        self.num_blocks = 1024
+        self.blocks = [BlockMemory(i) for i in range(self.num_blocks)]
+        self.free_block_ids = deque(range(self.num_blocks))
+        self.free_block_ids.popleft()  # reserve block 0
+        self.release_block_ids = []
+        self.used_block_ids = set([0])
+        self.kv_buffers = []
+        self.create_physical_memory_pool(draft_config)
+
+    def create_physical_memory_pool(self, draft_config):
+        for _ in range(draft_config.num_hidden_layers):
+            self.kv_buffers.append(
+                (
+                    torch.zeros(
+                        self.num_blocks, *self.block_shape, dtype=self.dtype
+                    ).cuda(),
+                    torch.zeros(self.num_blocks, *self.block_shape, dtype=self.dtype).cuda(),
+                )
+            )
+
+    def alloc_block(self, token_ids: list[int], block_ids: list[int]):
+        """Allocate a shadow block of memory."""
+        for token_id, block_id in zip(token_ids, block_ids):
+            if token_id not in self.tokenid2blockids:
+                self.tokenid2blockids[token_id] = []
+            self.tokenid2blockids[token_id].append(block_id)
+
+    def free_block(self, token_ids: list[int]) -> list[int]:
+        """Free a shadow block of memory."""
+        freed_block_ids = []
+        for token_id in token_ids:
+            if token_id in self.tokenid2blockids:
+                freed_block_ids.extend(self.tokenid2blockids[token_id])
+                del self.tokenid2blockids[token_id]
+        return freed_block_ids
