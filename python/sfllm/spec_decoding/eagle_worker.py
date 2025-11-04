@@ -71,7 +71,7 @@ class EagleWorker:
             self.draft_batch_out = draft_batch_out
             return batch_output
         elif scheduled_batch.forward_batch.forward_mode == ForwardMode.DECODE:
-            self.multi_step_speculative_decode(scheduled_batch)
+            return self.multi_step_speculative_decode(scheduled_batch)
     
     def draft_forward_extend(self, batch_output:BatchResult, scheduled_batch:ScheduleBatch):
         next_token_ids = batch_output.next_token_ids
@@ -100,7 +100,7 @@ class EagleWorker:
 
     def multi_step_speculative_decode(self, scheduled_batch:ScheduleBatch):
         verify_input = self.draft_propose(scheduled_batch)
-        self.verify_propose(scheduled_batch, verify_input)
+        return self.verify_propose(scheduled_batch, verify_input)
     
     def draft_propose(self, scheduled_batch:ScheduleBatch):
         # Implement the draft propose logic here
@@ -167,10 +167,10 @@ class EagleWorker:
 
             # Set inputs
             scheduled_batch.forward_batch = attn_metadatas[i]
-            if i > 0:
-                last_kv_indices = attn_metadatas[i-1].kv_indices.view(self.topk,-1)
-                cur_kv_indices = attn_metadatas[i].kv_indices.view(self.topk,-1)
-                cur_kv_indices[:, :-1] = last_kv_indices[selected_input_index]
+            # if i > 0:
+            #     last_kv_indices = attn_metadatas[i-1].kv_indices.view(self.topk,-1)
+            #     cur_kv_indices = attn_metadatas[i].kv_indices.view(self.topk,-1)
+            #     cur_kv_indices[:, :-1] = last_kv_indices[selected_input_index]
             scheduled_batch.input_ids = input_ids
             scheduled_batch.forward_batch.out_cache_loc = out_cache_loc[i]
             scheduled_batch.position_ids.add_(1)
@@ -188,6 +188,8 @@ class EagleWorker:
         parent_list, top_scores_index, draft_tokens = organize_draft_results(
             score_list, token_list, parents_list, self.speculative_num_draft_tokens
         )
+
+        scheduled_batch.forward_batch = orig_forward_batch
 
         # return parent_list, top_scores_index, draft_tokens
         (
@@ -225,6 +227,39 @@ class EagleWorker:
     def verify_propose(self, scheduled_batch:ScheduleBatch, verify_input:EagleVerifyInput):
         # Implement the verification logic here
         # Forward
-        batch_result = self.target_worker.forward_batch_generation(
-            model_worker_batch, is_verify=True
+        device = scheduled_batch.input_ids.device
+        bs = len(scheduled_batch)
+        old_forward_batch = scheduled_batch.forward_batch
+        scheduled_batch.position_ids = verify_input.positions
+        scheduled_batch.input_ids = verify_input.draft_token
+        out_cache_loc = self.target_model_runner.block_memory_manager.alloc_block(scheduled_batch.input_ids, hashv=0)
+        forward_batch = ForwardBatch(self.target_model_runner.block_memory_manager)
+        forward_batch.forward_mode = ForwardMode.TARGET_VERIFY
+        forward_batch.out_cache_loc = torch.tensor(out_cache_loc, dtype=torch.int64, device=device)
+        forward_batch.qo_indptr = torch.arange(
+            self.speculative_num_draft_tokens,
+            (1 + bs) * self.speculative_num_draft_tokens,
+            step=self.speculative_num_draft_tokens,
+            dtype=torch.int32,
+            device=device,
         )
+        forward_batch.kv_indptr = old_forward_batch.kv_indptr - 1 
+        forward_batch.kv_indices = old_forward_batch.kv_indices[:-1]
+        forward_batch.custom_mask = verify_input.custom_mask
+        seq_mask_len = self.speculative_num_draft_tokens * (
+            old_forward_batch.seq_lens + self.speculative_num_draft_tokens
+        )
+        forward_batch.mask_indptr = torch.cumsum(seq_mask_len[:bs], dim=0)
+        forward_batch.max_extend_len = self.speculative_num_draft_tokens
+
+
+        scheduled_batch.forward_batch = forward_batch
+        batch_result = self.target_model_runner.forward(scheduled_batch)
+
+
+        verify_input.hidden_states = torch.concatenate(batch_result.aux_hidden_states,dim=-1)
+
+        verify_input.verify(scheduled_batch, batch_result, self.target_model_runner.block_memory_manager, 1)
+        scheduled_batch.forward_batch = old_forward_batch
+
+        return batch_result

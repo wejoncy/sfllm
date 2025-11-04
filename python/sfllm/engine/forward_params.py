@@ -11,6 +11,7 @@ class ForwardMode(IntEnum):
     # Extend a sequence. The KV cache of the beginning part of the sequence is already computed (e.g., system prompt).
     # It is also called "prefill" in common terminology.
     EXTEND = auto()
+    TARGET_VERIFY = auto()
     # Decode one token.
     DECODE = auto()
     # Contains both EXTEND and DECODE when doing chunked prefill.
@@ -25,6 +26,7 @@ class ForwardBatch:
         # need to inilialize during prepare inputs
         self.max_extend_len = 0
         self.num_kv_splits = None
+        self.seq_lens = None
         self.kv_indptr = None
         self.kv_indices = None
         self.qo_indptr = None

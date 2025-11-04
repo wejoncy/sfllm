@@ -125,6 +125,7 @@ class ScheduleBatch:
         else:
             self.forward_batch.kv_indptr = (prefix_lens + 1).cumsum(dim=-1)
             self.forward_batch.kv_indices = kv_indices
+        self.forward_batch.seq_lens = prefix_lens
         self.forward_batch.padded_token = padded_token
         self.forward_batch.out_cache_loc = out_cache_loc
         self.input_ids = input_ids

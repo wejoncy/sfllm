@@ -81,9 +81,11 @@ class ModelRunner:
         self.cuda_graphs = {}
 
         self.num_kv_splits_buffer = torch.zeros((MAX_PROCESSED_TOKENS,), dtype=torch.int32, device="cuda")+2
-        self.kv_indptr_buffer = torch.zeros((MAX_PROCESSED_TOKENS,), dtype=torch.int32, device="cuda")
+        self.kv_indptr_buffer = torch.zeros((max_batch_size,), dtype=torch.int32, device="cuda")
         self.kv_indices_buffer = torch.zeros((MAX_PROCESSED_TOKENS,), dtype=torch.int64, device="cuda")
-        self.qo_indptr_buffer = torch.zeros((MAX_PROCESSED_TOKENS,), dtype=torch.int32, device="cuda")
+        self.qo_indptr_buffer = torch.zeros((max_batch_size,), dtype=torch.int32, device="cuda")
+
+        self.mask_indptr_buffer = torch.zeros((max_batch_size,), dtype=torch.int32, device="cuda")
 
         self.graph_pool = torch.cuda.graph_pool_handle()
 
@@ -127,6 +129,11 @@ class ModelRunner:
             forward_batch.kv_indices = self.kv_indices_buffer[:total_seq_len]
             forward_batch.kv_indices.copy_(ori_data, non_blocking=True)
             forward_batch.num_kv_splits = self.num_kv_splits_buffer[:padded_batch_size]
+        
+        if forward_batch.mask_indptr is not None:
+            ori_data = forward_batch.mask_indptr
+            forward_batch.mask_indptr = self.mask_indptr_buffer[: padded_batch_size + 1]
+            forward_batch.mask_indptr[1:].copy_(ori_data, non_blocking=True)
         return {
             "input_ids": scheduled_batch.input_ids,
             "position_ids": scheduled_batch.position_ids,
