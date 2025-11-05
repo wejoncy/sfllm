@@ -55,6 +55,6 @@ class ForwardBatch:
             return key_states, value_states
         past_key, past_value = self.past_key_values[layer_idx]
 
-        past_key[self.out_cache_loc, ...] = key_states[0]
-        past_value[self.out_cache_loc, ...] = value_states[0]
+        past_key[self.out_cache_loc, ...] = key_states
+        past_value[self.out_cache_loc, ...] = value_states
         return key_states, value_states

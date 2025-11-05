@@ -366,9 +366,14 @@ class LlamaForCausalLM(nn.Module):
             hidden_states, aux_hidden_states = hidden_states
 
         if not get_embedding:
+            if forward_batch.qo_indptr is not None:
+                pruned_states = hidden_states[forward_batch.qo_indptr[1:] - 1]
+            else:
+                pruned_states = hidden_states
             logits = torch.matmul(
-                    hidden_states.to(self.lm_head.weight.dtype), self.lm_head.weight.T
-                )
+                pruned_states.to(self.lm_head.weight.dtype), self.lm_head.weight.T
+            )
+            logits = logits[:, : self.config.vocab_size].float()
             return logits, aux_hidden_states
         else:
             return hidden_states

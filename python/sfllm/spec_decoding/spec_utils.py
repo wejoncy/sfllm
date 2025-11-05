@@ -61,6 +61,7 @@ class EagleVerifyInput(SpecInput):
     spec_steps: int
     topk: int
     draft_token_num: int
+    input_ids_cache_loc_list: List[torch.Tensor]
 
     def verify(
         self,
@@ -181,12 +182,13 @@ class EagleVerifyInput(SpecInput):
         # Iterate every accepted token and check if req has finished after append the token
         # should be checked BEFORE free kv cache slots
         for i, (req, accept_index_row) in enumerate(zip(batch.sequences, accept_index_cpu)):
+            req.new_tokens = []
             for j, idx in enumerate(accept_index_row):
                 if idx == -1:
                     break
                 id = predict_cpu[idx]
-                req.new_tokens[0] = id
-                req.tokens.append(id)
+                req.new_tokens.append(id)
+                # req.tokens.append(id)
                 req.is_done()
                 if req.is_done():
                     has_finished = True
@@ -362,7 +364,7 @@ def build_tree_efficient_native(
     draft_token_num_range = torch.arange(draft_token_num, device=tree_mask.device)
 
     # Optimized common case for performance.
-    if draft_token_num == 2 and topk == 1 and tree_mask_mode == 1:
+    if draft_token_num == 2 and topk == 1 and tree_mask_mode == 0:
         positions = verified_seq_len.repeat_interleave(draft_token_num)
         positions = (positions.view(bs, -1) + draft_token_num_range).view(-1)
 
@@ -388,7 +390,7 @@ def build_tree_efficient_native(
     )
 
     # Batch processing for tree mask
-    if tree_mask_mode == 1:
+    if tree_mask_mode == 0:
         token_tree_base = (
             seq_tree_idx.view(-1, 1)
             + (verified_seq_len.view(-1, 1) + draft_token_num) * draft_token_num_range
@@ -493,7 +495,8 @@ def build_tree_kernel_efficient(
         (bs * num_verify_tokens,), device=device, dtype=torch.long
     )
 
-    if True:
+    tree_mask_mode = 0
+    if False:
         (
             positions,
             retrive_index,
@@ -510,11 +513,11 @@ def build_tree_kernel_efficient(
             retrive_next_sibling,
             topk,
             num_verify_tokens,
-            1,
+            tree_mask_mode,
             bs,
         )
     else:
-        sgl_build_tree_kernel_efficient(
+        sf_kernel.build_tree_kernel_efficient(
             parent_list,
             top_scores_index,
             seq_lens,

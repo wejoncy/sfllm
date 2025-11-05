@@ -35,6 +35,8 @@ class ModelRunner:
         self.create_cudagraph_buffers()
         self.init_attn_backend_buffers()
 
+    def get_config(self):
+        return self.model.config
 
     def init_attn_backend_buffers(self):
         # attn backend related buffers
@@ -56,9 +58,11 @@ class ModelRunner:
             dtype=torch.float32,
             device="cuda",
         )
-    
+
     def init_memory_pool(self):
-        self.block_memory_manager = BlockMemoryManager(self.server_args)
+        self.block_memory_manager = BlockMemoryManager(
+            self.server_args, self.get_config()
+        )
 
     def wrap_attn_backend(self, attn_logits, attn_lse):
         self.attn_logits = attn_logits
@@ -105,19 +109,15 @@ class ModelRunner:
         forward_batch.attn_logits = self.attn_logits
         forward_batch.attn_lse = self.attn_lse
 
-        if forward_batch.forward_mode == ForwardMode.EXTEND:
+        if forward_batch.forward_mode != ForwardMode.DECODE:
             ori_data = forward_batch.kv_indptr
             forward_batch.kv_indptr = self.kv_indptr_buffer[: batch_size + 1]
             forward_batch.kv_indptr[1:].copy_(ori_data, non_blocking=True)
             ori_data = forward_batch.kv_indices
-            forward_batch.kv_indices = self.kv_indices_buffer[
-                :total_seq_len
-            ]
+            forward_batch.kv_indices = self.kv_indices_buffer[:total_seq_len]
             forward_batch.kv_indices.copy_(ori_data, non_blocking=True)
             ori_data = forward_batch.qo_indptr
-            forward_batch.qo_indptr = self.qo_indptr_buffer[
-                : batch_size + 1
-            ]
+            forward_batch.qo_indptr = self.qo_indptr_buffer[: batch_size + 1]
             forward_batch.qo_indptr[1:].copy_(ori_data, non_blocking=True)
         else:
             if self.is_draft:

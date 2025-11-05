@@ -2,6 +2,8 @@
 from collections import deque
 import logging
 import torch
+from sfllm.server_args import ServerArgs
+
 logger = logging.getLogger(__name__)
 
 class BlockMemory:
@@ -29,11 +31,12 @@ class BlockMemory:
 
 class BlockMemoryManager:
     """A simple block memory manager."""
-    def __init__(self, server_args):
+    def __init__(self, server_args: ServerArgs, model_config):
         dtype = server_args.model_config.dtype
         self.dtype = (
             dtype if server_args.dtype == "auto" else getattr(torch, server_args.dtype)
         )
+        self.config = model_config
 
         self.num_blocks, self.block_shape = self.get_num_blocks(server_args)
         self.blocks = [BlockMemory(i) for i in range(self.num_blocks)]
@@ -45,7 +48,7 @@ class BlockMemoryManager:
         self.create_physical_memory_pool(server_args)
 
     def get_num_blocks(self, server_args) -> int:
-        config = server_args.model_config
+        config = self.config
         dim = (
             getattr(config, "head_dim", None)
             or config.hidden_size // config.num_attention_heads
@@ -65,7 +68,7 @@ class BlockMemoryManager:
         return max_length, (n_heads, dim)
 
     def create_physical_memory_pool(self, server_args):
-        config = server_args.model_config
+        config = self.config
         for _ in range(config.num_hidden_layers):
             self.kv_buffers.append(
                 (

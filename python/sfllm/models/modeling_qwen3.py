@@ -455,7 +455,7 @@ class Qwen3ForCausalLM(Qwen3PreTrainedModel):
         # Only compute necessary logits, and do not upcast them to float if we are not computing the loss
         # slice_indices = slice(-logits_to_keep, None) if isinstance(logits_to_keep, int) else logits_to_keep
         if forward_batch.forward_mode == ForwardMode.EXTEND:
-            logits = self.lm_head(hidden_states[0, forward_batch.qo_indptr[1:] - 1, :])
+            logits = self.lm_head(hidden_states[0, forward_batch.qo_indptr[1:] - 1])
         else:
             logits = self.lm_head(hidden_states[0])
         return logits, aux_hidden_states
@@ -470,5 +470,7 @@ class Qwen3ForCausalLM(Qwen3PreTrainedModel):
             # of the (i-1)th layer as aux hidden state
             self.model.layers_to_capture = [val + 1 for val in layer_ids]
 
+    def get_embed_and_head(self):
+        return self.model.embed_tokens.weight, self.lm_head.weight
     
 EntryClass = [Qwen3ForCausalLM]

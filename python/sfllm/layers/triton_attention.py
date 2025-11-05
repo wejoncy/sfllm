@@ -65,10 +65,10 @@ class RaggedAttention:
         if save_kv_cache:
             forward_batch.update(k_extend, v_extend, layer.layer_id)
 
-        custom_mask=None
-        is_causal=True
-        mask_indptr=None
-        sm_scale=None
+        custom_mask = forward_batch.custom_mask
+        is_causal = True
+        mask_indptr = forward_batch.mask_indptr
+        sm_scale = layer.scaling
         logit_cap=0.0
         skip_prefix_custom_mask=True
         sliding_window_size=-1
@@ -122,13 +122,15 @@ class RaggedAttention:
         if save_kv_cache:
             forward_batch.update(k, v, layer.layer_id)
         o = torch.empty_like(q)
+        kv_indptr = forward_batch.kv_indptr
+        kv_indices = forward_batch.kv_indices
         decode_attention_fwd(
-            q,
+            q.view(-1, layer.tp_q_head_num, layer.qk_head_dim),
             forward_batch.past_key_values[self.layer_idx][0],
             forward_batch.past_key_values[self.layer_idx][1],
-            o,
-            forward_batch.kv_indptr,
-            forward_batch.kv_indices,
+            o.view(-1, layer.tp_q_head_num, layer.v_head_dim),
+            kv_indptr,
+            kv_indices,
             forward_batch.attn_logits,
             forward_batch.attn_lse,
             forward_batch.num_kv_splits,
