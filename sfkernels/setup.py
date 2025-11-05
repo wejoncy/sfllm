@@ -29,7 +29,8 @@ arch = platform.machine().lower()
 def _get_version():
     return "0.1.0"
 
-
+# D:\Users\wen\miniconda3\Lib\site-packages\torch\include\torch\csrc\dynamo\compiled_autograd.h:1134
+#  else if constexpr (::std::is_same_v<T, ::string>
 operator_namespace = "sfkernels"
 include_dirs = [
     root / "include",
@@ -41,28 +42,47 @@ sources = [
     "csrc/eagle_utils.cu",
 ]
 
-cxx_flags = ["-O3"]
-libraries = ["c10", "torch", "torch_python"]
-extra_link_args = ["-Wl,-rpath,$ORIGIN/../../torch/lib", f"-L/usr/lib/{arch}-linux-gnu"]
+cxx_flags = []
+extra_link_args = []
+if os.name == "nt":
+    # Windows specific flags
+    cxx_flags = ["/openmp", "/std:c++17", "/MD"]
+    torch_lib_path = Path(torch.__file__).parent / "lib"
+    extra_link_args = [f"/LIBPATH:{torch_lib_path}"]
+else:
+    # Linux specific flags
+    cxx_flags = ["-O3", "-fopenmp", "-lgomp", "-std=c++17"]
+    extra_link_args = ["-Wl,-rpath,$ORIGIN/../../torch/lib", f"-L/usr/lib/{arch}-linux-gnu"]
+
+# Libraries - platform specific
+if os.name == "nt":
+    libraries = []  # On Windows, libraries are linked via extra_link_args
+else:
+    libraries = ["c10", "torch", "torch_python"]
 
 default_target = "70"
-amdgpu_target = os.environ.get("AMDGPU_TARGET", default_target)
+gpu_target = os.environ.get("GPU_TARGET", default_target)
 
-# if torch.cuda.is_available():
-#     try:
-#         amdgpu_target = torch.cuda.get_device_properties(0).gcnArchName.split(":")[0]
-#     except Exception as e:
-#         print(f"Warning: Failed to detect GPU properties: {e}")
-# else:
-#     print(f"Warning: torch.cuda not available. Using default target: {amdgpu_target}")
+if torch.cuda.is_available():
+    try:
+        if torch.version.hip is not None:
+            gpu_target = torch.cuda.get_device_properties(0).gcnArchName.split(":")[0]
+        else:
+            prop = torch.cuda.get_device_properties(0)
+            gpu_target = prop.major * 10 + prop.minor
+            gpu_target = str(gpu_target)
+    except Exception as e:
+        print(f"Warning: Failed to detect GPU properties: {e}")
+else:
+    print(f"Warning: torch.cuda not available. Using default target: {gpu_target}")
 
-if amdgpu_target not in ["70", "86"]:
+if gpu_target not in ["70", "86"]:
     print(
-        f"Warning: Unsupported GPU architecture detected '{amdgpu_target}'. Expected 'sm70' or 'sm86'."
+        f"Warning: Unsupported GPU architecture detected '{gpu_target}'. Expected 'sm70' or 'sm86'."
     )
     sys.exit(1)
 
-hipcc_flags = [
+nvcc_flags = [
     "-DNDEBUG",
     f"-DOPERATOR_NAMESPACE={operator_namespace}",
     "-O3",
@@ -70,9 +90,14 @@ hipcc_flags = [
     "-fPIC",
     "-std=c++17",
     "-gencode",
-    f"arch=compute_{amdgpu_target},code=sm_{amdgpu_target}",
+    f"arch=compute_{gpu_target},code=sm_{gpu_target}",
     "-DENABLE_BF16",
 ]
+# NVCC flags - platform specific
+if os.name == "nt":
+    # Windows NVCC flags
+    nvcc_flags.remove("-fPIC")
+    nvcc_flags.remove("-Xcompiler")
 
 ext_modules = [
     CUDAExtension(
@@ -80,7 +105,7 @@ ext_modules = [
         sources=sources,
         include_dirs=include_dirs,
         extra_compile_args={
-            "nvcc": hipcc_flags,
+            "nvcc": nvcc_flags,
             "cxx": cxx_flags,
         },
         libraries=libraries,

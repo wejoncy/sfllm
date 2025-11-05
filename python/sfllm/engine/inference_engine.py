@@ -46,9 +46,15 @@ class InferenceEngine:
                     sequence.generated_tokens[0] = token_ids[idx]
                     sequence.last_generated_token_pos += 1
             else:
-                sequence.new_tokens = token_ids[idx: idx + 1]
-                sequence.generated_tokens[0] = token_ids[idx]
-                sequence.tokens.extend(sequence.new_tokens)
+                if self.server_args.speculative_algorithm is not None:
+                    #TODO fix it, this only works for single batch 
+                    sequence.new_tokens = token_ids[-1:]
+                    sequence.generated_tokens[0] = token_ids[-1]
+                    sequence.tokens.extend(token_ids)
+                else:
+                    sequence.new_tokens = token_ids[idx: idx + 1]
+                    sequence.generated_tokens[0] = token_ids[idx]
+                    sequence.tokens.extend(sequence.new_tokens)
 
             if not sequence.is_done():
                 sequence.status = SequenceStatus.RUNNING

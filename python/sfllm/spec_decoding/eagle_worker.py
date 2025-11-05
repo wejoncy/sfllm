@@ -122,6 +122,30 @@ class EagleWorker:
     def draft_propose(self, scheduled_batch:ScheduleBatch):
         # Implement the draft propose logic here
 
+        #decode for the latest token#######################
+        spec_info = self.draft_batch_out.spec_info
+        if spec_info.hidden_states.shape[-1] > 2000:
+            old_forward_batch = scheduled_batch.forward_batch
+            forward_batch = ForwardBatch(self.draft_mem_pool)
+            forward_batch.forward_mode = ForwardMode.DECODE
+            forward_batch.kv_indptr = scheduled_batch.forward_batch.kv_indptr-1
+            forward_batch.kv_indices = spec_info.kv_indices
+            # scheduled_batch.input_ids
+            scheduled_batch.position_ids.sub_(1)
+            out_cache_loc = self.draft_mem_pool.alloc_block(scheduled_batch.sequences[0].new_tokens, hashv=0)
+            forward_batch.out_cache_loc = torch.tensor(out_cache_loc, dtype=torch.int64, device="cuda")
+            forward_batch.spec_info = spec_info
+            scheduled_batch.forward_batch = forward_batch
+
+            # Run forward
+            logits_output = self.draft_model_runner.forward(scheduled_batch)
+            spec_info.kv_indices = torch.cat([spec_info.kv_indices, forward_batch.out_cache_loc], dim=0)
+            self.draft_batch_out.next_token_logits = logits_output.next_token_logits
+            spec_info.hidden_states = logits_output.aux_hidden_states[0]
+            scheduled_batch.position_ids.add_(1)
+            scheduled_batch.forward_batch = old_forward_batch
+        ##############################################
+
         # Return values
         score_list: List[torch.Tensor] = []
         token_list: List[torch.Tensor] = []
@@ -172,7 +196,7 @@ class EagleWorker:
         hidden_states = spec_info.hidden_states
         if self.hot_token_id is not None:
             topk_index = self.hot_token_id[topk_index]
-        # spec_info.verified_id = scheduled_batch.input_ids
+        spec_info.verified_id = scheduled_batch.input_ids
         # Forward multiple steps
         input_ids_cache_loc_list = [[], []]
         scores = None
@@ -296,7 +320,18 @@ class EagleWorker:
 
         #release draft token block
         input_ids_cache_loc_list = verify_input.input_ids_cache_loc_list
-        draft_token_mask = torch.isin(input_ids_cache_loc_list[0], ret.verified_id)
+        # draft_token_mask = torch.isin(input_ids_cache_loc_list[0], ret.verified_id)
+        ###
+        x = input_ids_cache_loc_list[0]
+        draft_token_mask = torch.zeros_like(x, dtype=torch.bool)
+        verified = ret.verified_id
+        isin_mask = torch.isin(x, verified)
+        x_in_verified = x[isin_mask]
+        if x_in_verified.numel() > 1:
+            unique_vals, unique_idx = torch.unique(x_in_verified, return_inverse=True)
+            original_idxs = isin_mask.nonzero(as_tuple=True)[0][unique_idx]
+            draft_token_mask[original_idxs] = True
+        ###
         draft_token_inv_mask = ~draft_token_mask
         draft_token_drop_loc = input_ids_cache_loc_list[1][draft_token_inv_mask].tolist()
         draft_token_keep_loc = input_ids_cache_loc_list[1][draft_token_mask]
@@ -310,5 +345,5 @@ class EagleWorker:
         batch_result.next_token_logits = batch_result.next_token_logits[ret.accepted_indices]
         self.draft_batch_out.spec_info.verified_id = ret.verified_id
         self.draft_batch_out.spec_info.next_token_logits = batch_result.next_token_logits
-        self.draft_batch_out.spec_info.hidden_states = verify_input.hidden_states[ret.accepted_indices]
+        self.draft_batch_out.spec_info.hidden_states = verify_input.hidden_states[ret.accepted_indices[-1:]]
         return batch_result

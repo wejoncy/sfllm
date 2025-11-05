@@ -24,11 +24,3 @@ class ModelWorker:
         #===init
         self.model_runner.profile_run()
         self.model_runner.init_memory_pool()
-
-    def tokenize(self, prompt):
-        return self.tokenizer.encode(prompt)
-
-    def detokenize(self, tokens):
-        return self.tokenizer.decode(
-            tokens, skip_special_tokens=True, spaces_between_special_tokens=True
-        )

@@ -2,6 +2,7 @@ import logging
 import torch
 import bisect
 import tqdm
+import transformers
 from typing import Dict, List, Any
 
 from sfllm.model_loader.model_loader import initialize_model
@@ -21,6 +22,7 @@ class ModelRunner:
             model_path = server_args.draft_model_path
         else:
             model_path = server_args.model_path
+            self.tokenizer = transformers.AutoTokenizer.from_pretrained(model_path)
         self.model = initialize_model(model_path, server_args.dtype)
         self.device_id = device_id
         self.sampler = Sampler(self.model.config)
@@ -239,10 +241,10 @@ class ModelRunner:
         self.cuda_graphs[1].replay()
     
     def tokenize(self, prompt):
-        return self.model.tokenizer.encode(prompt)
+        return self.tokenizer.encode(prompt)
 
 
     def detokenize(self, tokens):
-        return self.model.tokenizer.decode(
+        return self.tokenizer.decode(
             tokens, skip_special_tokens=True, spaces_between_special_tokens=True
         )

@@ -1,6 +1,9 @@
 
 #include <ATen/core/dispatch/Dispatcher.h>
 #include <torch/library.h>
+#if defined(_WIN32) || defined(_WIN64)
+#include <torch/extension.h>
+#endif
 
 #include "ops.h"
 
@@ -23,3 +26,10 @@ TORCH_LIBRARY_FRAGMENT(sfkernels, m) {
   m.impl("build_tree_kernel_efficient", torch::kCUDA, &build_tree_kernel_efficient);
 
 }
+
+#if defined(_WIN32) || defined(_WIN64)
+// Empty Python module initialization for TORCH_LIBRARY_FRAGMENT
+PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
+  // Empty module - the actual operators are registered via TORCH_LIBRARY_FRAGMENT
+}
+#endif
