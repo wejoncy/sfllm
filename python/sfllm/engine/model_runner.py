@@ -87,11 +87,10 @@ class ModelRunner:
         self.cuda_graphs = {}
 
         self.num_kv_splits_buffer = torch.zeros((MAX_PROCESSED_TOKENS,), dtype=torch.int32, device="cuda")+2
-        self.kv_indptr_buffer = torch.zeros((max_batch_size,), dtype=torch.int32, device="cuda")
+        self.kv_indptr_buffer = torch.zeros((max_batch_size+2,), dtype=torch.int32, device="cuda")
         self.kv_indices_buffer = torch.zeros((MAX_PROCESSED_TOKENS,), dtype=torch.int64, device="cuda")
-        self.qo_indptr_buffer = torch.zeros((max_batch_size,), dtype=torch.int32, device="cuda")
-
-        self.mask_indptr_buffer = torch.zeros((max_batch_size,), dtype=torch.int32, device="cuda")
+        self.qo_indptr_buffer = torch.zeros((max_batch_size+2,), dtype=torch.int32, device="cuda")
+        self.mask_indptr_buffer = torch.zeros((max_batch_size+2,), dtype=torch.int32, device="cuda")
 
         self.graph_pool = torch.cuda.graph_pool_handle()
 
@@ -170,12 +169,12 @@ class ModelRunner:
         ):
             self.prepare_replay(inputs, scheduled_batch)
             self.cuda_graphs[pad_bs_size].replay()
-            logits, aux_hidden_states = self.output_logits[pad_bs_size][:bs_size]
+            logits, aux_hidden_states = self.output_logits[pad_bs_size]
         else:
             logits, aux_hidden_states = self.model(**inputs)
-            if forward_batch.padded_token > 0:
-                logits = logits[:bs_size]
-                aux_hidden_states = aux_hidden_states[:bs_size] if aux_hidden_states is not None else None
+        if forward_batch.padded_token > 0:
+            logits = logits[:bs_size]
+            aux_hidden_states = aux_hidden_states[:bs_size] if aux_hidden_states is not None else None
 
         token_ids = (
             self.sampler(logits, forward_batch.sampling_batch_info) if self.rank == 0 else None

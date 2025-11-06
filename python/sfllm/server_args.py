@@ -115,6 +115,7 @@ class ServerArgs:
             "--speculative-algorithm",
             type=str,
             default=ServerArgs.speculative_algorithm,
+            choices=[None, "eagle3"],
             help="The speculative decoding algorithm to use.",
         )
         parser.add_argument(

@@ -94,14 +94,18 @@ class BlockMemoryManager:
         self.used_block_ids.remove(block_id)
         self.release_block_ids.append(block_id)
 
+    def sort_free_blocks(self):
+        """Sort the free blocks."""
+        self.release_block_ids.extend(self.free_block_ids)
+        self.free_block_ids.clear()
+        self.release_block_ids.sort()
+        self.free_block_ids.extend(self.release_block_ids)
+        self.release_block_ids.clear()
+
     def can_alloc(self, token_len: int) -> bool:
         """Check if a block of memory can be allocated."""
         if len(self.free_block_ids) < token_len:
-            self.release_block_ids.extend(self.free_block_ids)
-            self.free_block_ids.clear()
-            self.release_block_ids.sort()
-            self.free_block_ids.extend(self.release_block_ids)
-            self.release_block_ids.clear()
+            self.sort_free_blocks()
         return len(self.free_block_ids) >= token_len
 
     def alloc_block(self, token_ids: list[int], hashv: int) -> BlockMemory:
@@ -112,11 +116,13 @@ class BlockMemoryManager:
             self._alloc_block_by_id(block_ids[-1], token_id, hashv)
 
         return block_ids
-    
-    def free_block(self, block_ids: list[int]):
+
+    def free_block(self, block_ids: list[int], force_sort: bool = False):
         """Free a block of memory."""
         for block_id in block_ids:
             self._free_block_by_id(block_id)
+        if force_sort:
+            self.sort_free_blocks()
     
     def num_available_blocks(self) -> int:
         """Get the number of available blocks."""

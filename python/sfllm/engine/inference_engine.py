@@ -25,7 +25,7 @@ class InferenceEngine:
         Initialize the inference worker.
         """
         configure_logger(server_args)
-        self.model_worker = ModelWorker(server_args) if server_args.speculative_algorithm == "none" else EagleWorker(server_args)
+        self.model_worker = ModelWorker(server_args) if server_args.speculative_algorithm != "eagle3" else EagleWorker(server_args)
         self.server_args = server_args
         self.running = False
         self.scheduler = Scheduler(server_args, self.model_worker.main_mem_pool)
@@ -51,10 +51,12 @@ class InferenceEngine:
                     sequence.new_tokens = token_ids[-1:]
                     sequence.generated_tokens[0] = token_ids[-1]
                     sequence.tokens.extend(token_ids)
+                    sequence.last_generated_token_pos += len(token_ids)
                 else:
                     sequence.new_tokens = token_ids[idx: idx + 1]
                     sequence.generated_tokens[0] = token_ids[idx]
                     sequence.tokens.extend(sequence.new_tokens)
+                    sequence.last_generated_token_pos += 1
 
             if not sequence.is_done():
                 sequence.status = SequenceStatus.RUNNING
