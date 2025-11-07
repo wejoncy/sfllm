@@ -47,13 +47,15 @@ class InferenceEngine:
                 last_verify_id_start = 0
                 for idx, sequence in enumerate(schedule_batch):
                     if sequence.status.is_active():
-                        sequence.logits = batch_result.spec_info.logits[idx : idx + 1] # keep batch dim
-                        sequence.hidden_states = batch_result.spec_info.hidden_states[idx:idx+1]
-                        sequence.accept_length_cpu = batch_result.spec_info.accept_length.tolist()[idx:idx+1]
-                        accept_length = sequence.accept_length_cpu[idx]
-                        end = max(accept_length+1, last_verify_id_start+1)
+                        sequence.accept_length = batch_result.spec_info.accept_length[idx:idx+1]
+                        sequence.accept_length_cpu = batch_result.spec_info.accept_length.cpu()[idx:idx+1]
+                        accept_length = sequence.accept_length_cpu[0]
+                        end = max(last_verify_id_start+accept_length+1, last_verify_id_start+1)
                         sequence.verified_id = batch_result.spec_info.verified_id[last_verify_id_start:end]
-                        last_verify_id_start = end + 1
+                        sequence.logits = batch_result.spec_info.logits[last_verify_id_start:end] # keep batch dim
+                        sequence.hidden_states = batch_result.spec_info.hidden_states[last_verify_id_start:end]
+
+                        last_verify_id_start = end
         for idx, sequence in enumerate(schedule_batch):
             if self.enable_overlap:
                 if sequence.status.is_active():

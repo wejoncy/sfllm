@@ -84,14 +84,11 @@ class EagleWorker:
             scheduled_batch.spec_info = spec_info
             spec_info.hidden_states = torch.concatenate(batch_output.aux_hidden_states, dim=-1)
             scheduled_batch.forward_batch_spec.spec_info = spec_info
-            draft_batch_out = self.draft_forward_extend(batch_output, scheduled_batch)
+            self.draft_forward_extend(batch_output, scheduled_batch)
 
-            pruned_states = [hd[scheduled_batch.forward_batch.qo_indptr[1:] - 1] for hd in draft_batch_out.aux_hidden_states]
-            spec_info.hidden_states = torch.concatenate(pruned_states, dim=-1)
-            spec_info.logits = draft_batch_out.next_token_logits
             spec_info.verified_id = batch_output.next_token_ids
-            spec_info.accept_length = torch.zeros((len(scheduled_batch),), dtype=torch.int32, device=spec_info.logits.device)-1
-            spec_info.accept_length_cpu = spec_info.accept_length.tolist()
+            spec_info.accept_length_cpu = torch.zeros((len(scheduled_batch),), dtype=torch.int32)-1
+            spec_info.accept_length = spec_info.accept_length_cpu.to(spec_info.logits.device)
             batch_output.spec_info = spec_info
             return batch_output
         elif scheduled_batch.forward_batch.forward_mode == ForwardMode.DECODE:
@@ -100,15 +97,24 @@ class EagleWorker:
     def draft_forward_extend(self, batch_output:BatchResult, scheduled_batch:ScheduleBatch):
         next_token_ids = batch_output.next_token_ids
         #build inputs for draft model
-        input_ids = scheduled_batch.input_ids
-        input_ids = torch.cat((input_ids[1:], next_token_ids), dim=-1)
-        scheduled_batch.input_ids = input_ids
+        o_input_ids = scheduled_batch.input_ids
+        pt = 0
+        for i, extend_len in enumerate(scheduled_batch.forward_batch.extend_lens_list):
+            input_ids = o_input_ids[pt : pt + extend_len]
+            o_input_ids[pt : pt + extend_len] = torch.cat(
+                (input_ids[1:], next_token_ids[i].reshape(1))
+            )
+            pt += extend_len
         if not ALIGN_EAGLE_WITH_SGLANG_:
             scheduled_batch.position_ids.add_(1) # we should update it accordingly
         with scheduled_batch.switch_spec_forward_batch():
-            draft_batch_out = self.draft_model_runner.forward(scheduled_batch)
-        # scheduled_batch.forward_batch = old_forward_batch
-        return draft_batch_out
+            logits_output = self.draft_model_runner.forward(scheduled_batch)
+
+        pruned_states = [hd[scheduled_batch.forward_batch.qo_indptr[1:] - 1] for hd in logits_output.aux_hidden_states]
+        spec_info = scheduled_batch.spec_info
+        spec_info.hidden_states = torch.concatenate(pruned_states, dim=-1)
+        spec_info.logits = logits_output.next_token_logits
+        return logits_output
 
     def multi_step_speculative_decode(self, scheduled_batch:ScheduleBatch):
         verify_input = self.draft_propose(scheduled_batch)
@@ -117,7 +123,7 @@ class EagleWorker:
     def draft_propose(self, scheduled_batch:ScheduleBatch):
         spec_info = scheduled_batch.spec_info
         self.pre_forward_last_verify_token(scheduled_batch)
-        spec_info.verified_id = spec_info.verified_id[spec_info.accept_length]# TODO,only works for bs=1
+        spec_info.verified_id = scheduled_batch.input_ids# TODO,only works for bs=1
 
         seq_len = scheduled_batch.forward_batch.seq_lens
         #prepare kv cache loc
@@ -129,25 +135,35 @@ class EagleWorker:
         token_allocator = self.draft_mem_pool
         assert token_allocator.can_alloc(total_tokens)
         out_cache_loc = token_allocator.borrow_disposable_block(total_tokens)
-        out_cache_loc_tensor = torch.tensor(out_cache_loc, dtype=torch.int32, device="cuda").view(self.topk, -1)
+        out_cache_loc_tensor = torch.tensor(out_cache_loc, dtype=torch.int32, device="cuda").view(-1, running_steps)
 
         forward_batch_spec = scheduled_batch.forward_batch_spec
         cur_kv_indptr = forward_batch_spec.kv_mtd_indptr[..., None]
         scheduled_batch.position_ids = scheduled_batch.position_ids.repeat_interleave(self.topk, dim=0)
         past_kv_indices = forward_batch_spec.kv_indices_mtd
 
+        seq_lens_list = scheduled_batch.forward_batch.seq_lens.tolist()
         for i in range(running_steps):
             forward_batch = ForwardBatch(self.draft_mem_pool)
             forward_batch.forward_mode = ForwardMode.DECODE
-            forward_batch.kv_indptr = cur_kv_indptr.expand(-1, self.topk).cumsum(dim=1).flatten()
+            forward_batch.kv_indptr = cur_kv_indptr.expand(-1, self.topk).flatten().cumsum(dim=-1)
             kv_indices = torch.empty(
-                ((past_kv_indices.shape[0] + i+1) * self.topk,),
-                dtype=past_kv_indices.dtype, device=past_kv_indices.device,
+                ((sum(seq_lens_list) + (i + 1) * bs) * self.topk,),
+                dtype=past_kv_indices.dtype,
+                device=past_kv_indices.device,
             )
-            kv_indices = kv_indices.view(self.topk, -1)
-            for tpki, sb_kv_indices in enumerate(kv_indices):
-                sb_kv_indices[:-i-1] = past_kv_indices
-                sb_kv_indices[-i-1:] = out_cache_loc_tensor[tpki,:i+1]
+            batch_kv_start = 0
+            kv_indices_batch_index = 0
+            inside_batch_kv_start = 0
+            for bs_i in range(bs):
+                kv_indices_batch_i = kv_indices[batch_kv_start : batch_kv_start + ((seq_lens_list[bs_i]+i+1) * self.topk)]
+                kv_indices_batch_i = kv_indices_batch_i.view(self.topk, seq_lens_list[bs_i]+1+i)
+                batch_kv_start = batch_kv_start + ((seq_lens_list[bs_i]+i+1) * self.topk)
+                for sb_kv_indices in kv_indices_batch_i:
+                    sb_kv_indices[:-i-1] = past_kv_indices[inside_batch_kv_start:inside_batch_kv_start+seq_lens_list[bs_i]]
+                    sb_kv_indices[-i-1:] = out_cache_loc_tensor[kv_indices_batch_index,:i+1]
+                    kv_indices_batch_index += 1
+                inside_batch_kv_start += seq_lens_list[bs_i]
             forward_batch.kv_indices = kv_indices.flatten()
 
             cur_kv_indptr = cur_kv_indptr + 1 # don't do it inplace to avoid affecting next step
@@ -247,25 +263,32 @@ class EagleWorker:
         # the first time will be skipped as we have run it in prefill stage
         spec_info = scheduled_batch.spec_info
         forward_batch_spec = scheduled_batch.forward_batch_spec
+        old_input_ids = scheduled_batch.input_ids
         if spec_info.hidden_states.shape[-1] > self.target_model_runner.get_config().hidden_size:
             old_position_ids = scheduled_batch.position_ids
             forward_batch_spec.forward_mode = ForwardMode.EXTEND
             scheduled_batch.input_ids = spec_info.verified_id
-            scheduled_batch.position_ids = torch.arange(
-                scheduled_batch.position_ids[0] - forward_batch_spec.max_extend_len,
-                scheduled_batch.position_ids[0],
-                dtype=scheduled_batch.position_ids.dtype,
-                device=scheduled_batch.position_ids.device,
-            )
+            spec_info.accept_length.add_(1)
+            # spec_info.accept_length_cpu.add_(1)
+            positions_outs = []
+            for i in range(len(scheduled_batch)):
+                positions_outs.append(torch.arange(
+                    scheduled_batch.position_ids[i] - spec_info.accept_length[i],
+                    scheduled_batch.position_ids[i],
+                    dtype=scheduled_batch.position_ids.dtype,
+                    device=scheduled_batch.position_ids.device,
+                ))
+            scheduled_batch.position_ids = torch.cat(positions_outs, dim=0)
             forward_batch_spec.spec_info = spec_info
 
             # Run forward
             with scheduled_batch.switch_spec_forward_batch():
                 logits_output = self.draft_model_runner.forward(scheduled_batch)
 
-            spec_info.hidden_states = logits_output.aux_hidden_states[0][-1:]
+            spec_info.hidden_states = logits_output.aux_hidden_states[0][spec_info.accept_length.cumsum(dim=0)-1]
             spec_info.logits = logits_output.next_token_logits
             scheduled_batch.position_ids = old_position_ids
+            scheduled_batch.input_ids = old_input_ids
 
 
     def verify_propose(self, scheduled_batch:ScheduleBatch, verify_input:EagleVerifyInput):
@@ -274,9 +297,6 @@ class EagleWorker:
         forward_batch = scheduled_batch.forward_batch
 
         forward_batch.forward_mode = ForwardMode.TARGET_VERIFY
-        # extend mode
-        # shift left by 1 to align with draft tokens, if decode mode, kv_indptr should not change, while we use verify_extend mode here
-        forward_batch.kv_indptr = forward_batch.kv_indptr - 1  
         forward_batch.custom_mask = verify_input.custom_mask
 
         logits_output = self.target_model_runner.forward(scheduled_batch)
@@ -299,5 +319,7 @@ class EagleWorker:
 
         bs = len(scheduled_batch)
         self.total_accepted_tokens += len(ret.verified_id)-bs
-        logger.info(f"Speculative decoding: proposed {len(verify_input.draft_token)} tokens, accepted {len(ret.verified_id)-bs} tokens, total accepted {self.total_accepted_tokens}.")
+        logger.info(
+            f"Speculative decoding: accepted {len(ret.verified_id) - bs} tokens, rate:{(len(ret.verified_id) - bs) / self.speculative_num_steps/bs} total accepted {self.total_accepted_tokens}."
+        )
         return logits_output

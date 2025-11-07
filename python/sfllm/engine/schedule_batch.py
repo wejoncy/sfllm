@@ -111,6 +111,16 @@ class ScheduleBatch:
 
 
     def prepare_decode_for_draft(self):
+        g_hash = self.get_seq_groups_hash()
+        if self.spec_info.hash != g_hash:
+            self.spec_info = self.spec_info.raw_new()
+            self.spec_info.hash = g_hash
+            self.spec_info.verified_id = torch.cat([seq.verified_id for seq in self.sequences], dim=-1)
+            self.spec_info.accept_length = torch.cat([seq.accept_length for seq in self.sequences], dim=-1)
+            self.spec_info.accept_length_cpu = self.spec_info.accept_length.cpu()
+            self.spec_info.hidden_states = torch.cat([seq.hidden_states for seq in self.sequences])
+            self.spec_info.logits = torch.cat([seq.logits for seq in self.sequences])
+
         spec_out_cache_loc_list = []
         spec_kv_indices_list = []
         spec_kv_indices_mtd_list = []
@@ -133,10 +143,9 @@ class ScheduleBatch:
         kv_indices_mtd_spec = torch.tensor(spec_kv_indices_mtd_list, dtype=torch.int64, pin_memory=True).to(device, non_blocking=True)
 
         #kv_indptr would be used in two place, extend forward for the latest accepted token,, the other is multi-step draft decode path
-        self.forward_batch_spec.kv_mtd_indptr = self.forward_batch.kv_indptr
-        self.forward_batch_spec.kv_indptr = (
-            self.forward_batch.kv_indptr - 1 - (0 if ALIGN_EAGLE_WITH_SGLANG_ else (self.spec_info.accept_length_cpu[0] + 1))
-        )  # sglang dropped the first token
+        self.forward_batch_spec.kv_mtd_indptr = self.forward_batch.seq_lens + 1
+        minux_const = torch.arange(1, len(self.sequences)+1, dtype=torch.int32, pin_memory=True).add_(0 if ALIGN_EAGLE_WITH_SGLANG_ else (self.spec_info.accept_length_cpu + 1))
+        self.forward_batch_spec.kv_indptr = self.forward_batch.kv_indptr - minux_const.to(self.device, non_blocking=True)  # sglang dropped the first token
         self.forward_batch_spec.kv_indices = kv_indices_spec
         self.forward_batch_spec.kv_indices_mtd = kv_indices_mtd_spec
         self.forward_batch_spec.padded_token = padded_token
@@ -158,17 +167,9 @@ class ScheduleBatch:
             num_draft_tokens, (1 + bs) * num_draft_tokens, step=num_draft_tokens,
             dtype=torch.int32, device=device,
         )
-        #TODO handle batch here
-        forward_batch.kv_indices = forward_batch.kv_indices[: forward_batch.kv_indptr-1]
-
-        g_hash = self.get_seq_groups_hash()
-        if self.spec_info.hash != g_hash:
-            self.spec_info = self.spec_info.raw_new()
-            self.spec_info.hash = g_hash
-            self.spec_info.verified_id = torch.cat([seq.verified_id for seq in self.sequences])
-            self.spec_info.accept_length = torch.cat([seq.accept_length for seq in self.sequences])
-            self.spec_info.hidden_states = torch.cat([seq.hidden_states for seq in self.sequences])
-            self.spec_info.logits = torch.cat([seq.ogits for seq in self.sequences])
+        #TODO handle batch here, it's for verify_extend
+        minux_const = torch.arange(1, len(self.sequences)+1, dtype=torch.int32, pin_memory=True)
+        forward_batch.kv_indptr  = forward_batch.kv_indptr - minux_const.to(self.device, non_blocking=True)
 
 
     def prepare_inputs(self):
@@ -206,12 +207,13 @@ class ScheduleBatch:
                 start_pos = len(sequence.tokens) - len(sequence.new_tokens)
             position_ids_list.extend(list(range(start_pos, start_pos+cur_seq_lens_list[-1])))
             prefix_lens_list.append(start_pos)
-            if self.forward_batch_spec is not None and self.forward_batch.forward_mode != ForwardMode.EXTEND:
+            if self.forward_batch_spec is not None and self.forward_batch.forward_mode == ForwardMode.DECODE:
                 # target model used for verify, speculative_num_draft_tokens cache loc
                 out_cache_loc_list.extend(sequence.out_cache_loc[len(sequence.tokens)-1:])
+                kv_indices_list.extend(sequence.out_cache_loc[:len(sequence.tokens)-1])
             else:
                 out_cache_loc_list.extend(sequence.out_cache_loc[-len(sequence.new_tokens):])
-            kv_indices_list.extend(sequence.out_cache_loc)
+                kv_indices_list.extend(sequence.out_cache_loc)
 
         if padded_token > 0:
             input_ids_list.extend([0]*padded_token)
@@ -229,7 +231,7 @@ class ScheduleBatch:
 
         prefix_lens = torch.tensor(prefix_lens_list, dtype=torch.int32, pin_memory=True).to(device, non_blocking=True)
 
-        total_seq_len = kv_indices.shape[0]
+        total_seq_len = kv_indices.shape[0] # this would be wrong if speculative decoding with draft model
         if self.forward_batch.forward_mode == ForwardMode.EXTEND:
             self.forward_batch.max_extend_len = max(cur_seq_lens_list)
             self.forward_batch.kv_indptr = prefix_lens.cumsum(dim=-1)
@@ -240,6 +242,7 @@ class ScheduleBatch:
             self.forward_batch.kv_indices = kv_indices
 
         self.forward_batch.seq_lens = prefix_lens
+        self.forward_batch.extend_lens_list = cur_seq_lens_list
         self.forward_batch.padded_token = padded_token
         self.forward_batch.out_cache_loc = out_cache_loc
         self.input_ids = input_ids

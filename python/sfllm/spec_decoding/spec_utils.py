@@ -235,8 +235,12 @@ class EagleVerifyInput(SpecInput):
 
         if page_size == 1:
             # TODO: boolean array index leads to a device sync. Remove it.
-            batch[0].out_cache_loc = batch[0].out_cache_loc[:-self.draft_token_num]
-            batch[0].out_cache_loc.extend(batch.forward_batch.out_cache_loc[~evict_mask].tolist())
+            accept_cache_loc = batch.forward_batch.out_cache_loc[~evict_mask].tolist()
+            for locidx, seq_bt in enumerate(batch):
+                seq_bt.out_cache_loc = seq_bt.out_cache_loc[: -self.draft_token_num]
+                accept_len = accept_length_list[locidx]
+                seq_bt.out_cache_loc.extend(accept_cache_loc[: accept_len + 1])
+                accept_cache_loc = accept_cache_loc[accept_len + 1 :]
             token_to_kv_pool_allocator.free_block(
                 batch.forward_batch.out_cache_loc[evict_mask].tolist()
             )
@@ -266,7 +270,7 @@ class EagleVerifyInput(SpecInput):
                 hidden_states=self.hidden_states[accept_index],
                 verified_id=verified_id,
                 accept_length=accept_length,
-                accept_length_cpu=accept_length_list,
+                accept_length_cpu=accept_length_cpu,
                 # seq_lens_for_draft_extend=batch.forward_batch.seq_lens,
                 # seq_lens_for_draft_extend_cpu=batch.seq_lens_cpu,
                 # req_pool_indices_for_draft_extend=batch.req_pool_indices,
@@ -510,41 +514,20 @@ def build_tree_kernel_efficient(
     )
 
     tree_mask_mode = 0
-    if False:
-        (
-            positions,
-            retrive_index,
-            retrive_next_token,
-            retrive_next_sibling,
-            tree_mask,
-        ) = build_tree_efficient_native(
-            parent_list,
-            top_scores_index,
-            seq_lens,
-            tree_mask,
-            retrive_index,
-            retrive_next_token,
-            retrive_next_sibling,
-            topk,
-            num_verify_tokens,
-            tree_mask_mode,
-            bs,
-        )
-    else:
-        sf_kernel.build_tree_kernel_efficient(
-            parent_list,
-            top_scores_index,
-            seq_lens,
-            tree_mask,
-            positions,
-            retrive_index,
-            retrive_next_token,
-            retrive_next_sibling,
-            topk,
-            spec_steps,
-            num_verify_tokens,
-            tree_mask_mode,
-        )
+    sf_kernel.build_tree_kernel_efficient(
+        parent_list,
+        top_scores_index,
+        seq_lens.long(),
+        tree_mask,
+        positions,
+        retrive_index,
+        retrive_next_token,
+        retrive_next_sibling,
+        topk,
+        spec_steps,
+        num_verify_tokens,
+        tree_mask_mode,
+    )
     return (
         tree_mask,
         positions,

@@ -30,6 +30,7 @@ class SpecInputType(IntEnum):
 class SpecInput(ABC):
     def __init__(self, spec_input_type: SpecInputType = SpecInputType.EAGLE_DRAFT):
         self.spec_input_type = spec_input_type
+        self.hash = None  # type: Optional[torch.Tensor]
 
     def is_draft_input(self) -> bool:
         # FIXME: remove this function which is only used for assertion

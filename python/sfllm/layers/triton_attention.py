@@ -18,6 +18,8 @@ class RaggedAttention:
         self.device_core_count = get_device_core_count()
         self.max_kv_splits = 16
         self.static_kv_splits = False
+        self.decode_attention_fwd = decode_attention_fwd
+        self.extend_attention_fwd = extend_attention_fwd
 
     def get_num_kv_splits(
         self,
@@ -56,14 +58,14 @@ class RaggedAttention:
         )
 
     def forward_extend(self,
-        q_extend: torch.Tensor,
-        k_extend: torch.Tensor,
-        v_extend: torch.Tensor,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
         layer,
         forward_batch: ForwardBatch,
         save_kv_cache=True,):
         if save_kv_cache:
-            forward_batch.update(k_extend, v_extend, layer.layer_id)
+            forward_batch.update(k, v, layer.layer_id)
 
         custom_mask = forward_batch.custom_mask
         is_causal = True
@@ -76,7 +78,7 @@ class RaggedAttention:
         window_kv_offsets=None
         xai_temperature_len=-1
         if forward_batch.past_key_values is None:
-            return torch.zeros_like(q_extend)
+            return torch.zeros_like(q)
 
         k_buffer,v_buffer,qo_indptr,kv_indptr,kv_indices,max_len_extend = (
             forward_batch.past_key_values[self.layer_idx][0],
@@ -86,12 +88,12 @@ class RaggedAttention:
             forward_batch.kv_indices,
             forward_batch.max_extend_len,
         )
-        o_extend = torch.empty_like(q_extend)
+        o = torch.empty_like(q)
         extend_attention_fwd(
-            q_extend.view(-1, layer.tp_q_head_num, layer.qk_head_dim),
-            k_extend.contiguous(),
-            v_extend.contiguous(),
-            o_extend.view(-1, layer.tp_q_head_num, layer.v_head_dim),
+            q.view(-1, layer.tp_q_head_num, layer.qk_head_dim),
+            k.contiguous(),
+            v.contiguous(),
+            o.view(-1, layer.tp_q_head_num, layer.v_head_dim),
             k_buffer,
             v_buffer,
             qo_indptr,
@@ -109,7 +111,7 @@ class RaggedAttention:
             window_kv_offsets,
             xai_temperature_len,
         )
-        return o_extend
+        return o
 
 
     def forward_decode(self,
@@ -124,7 +126,7 @@ class RaggedAttention:
         o = torch.empty_like(q)
         kv_indptr = forward_batch.kv_indptr
         kv_indices = forward_batch.kv_indices
-        decode_attention_fwd(
+        self.decode_attention_fwd(
             q.view(-1, layer.tp_q_head_num, layer.qk_head_dim),
             forward_batch.past_key_values[self.layer_idx][0],
             forward_batch.past_key_values[self.layer_idx][1],
