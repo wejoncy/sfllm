@@ -6,7 +6,7 @@ from typing import Dict, List, Any
 import transformers
 
 from sfllm.model_loader.model_loader import initialize_model
-from sfllm.engine.shedule_batch import ScheduleBatch,BatchResult
+from sfllm.engine.schedule_batch import ScheduleBatch,BatchResult
 from sfllm.engine.forward_params import ForwardMode, ForwardBatch
 from sfllm.engine.model_runner import ModelRunner
 from sfllm.layers.sampler import Sampler, SamplingBatchInfo

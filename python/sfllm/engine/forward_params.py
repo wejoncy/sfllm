@@ -29,6 +29,7 @@ class ForwardBatch:
         self.seq_lens = None
         self.kv_indptr = None
         self.kv_indices = None
+        self.kv_indices_extend = None # draft model need both extend and decode kv indices in decode step
         self.qo_indptr = None
         self.out_cache_loc = None
         self.custom_mask = None

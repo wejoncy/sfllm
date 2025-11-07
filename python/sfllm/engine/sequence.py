@@ -66,6 +66,7 @@ class RequestSequence:
         self.generated_text = ""
         self.status = SequenceStatus.PENDING
         self.out_cache_loc = []
+        self.out_cache_loc_spec = []
         if input_ids is not None:
             self.tokens = input_ids
             self.prompt_token_len = len(input_ids)

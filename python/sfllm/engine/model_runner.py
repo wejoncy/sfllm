@@ -6,7 +6,7 @@ import transformers
 from typing import Dict, List, Any
 
 from sfllm.model_loader.model_loader import initialize_model
-from sfllm.engine.shedule_batch import ScheduleBatch,BatchResult
+from sfllm.engine.schedule_batch import ScheduleBatch,BatchResult
 from sfllm.engine.forward_params import ForwardMode, ForwardBatch
 from sfllm.engine.memory_pool import BlockMemoryManager
 from sfllm.layers.sampler import Sampler, SamplingBatchInfo
@@ -61,9 +61,9 @@ class ModelRunner:
             device="cuda",
         )
 
-    def init_memory_pool(self):
+    def init_memory_pool(self, num_blocks: int = None):
         self.block_memory_manager = BlockMemoryManager(
-            self.server_args, self.get_config()
+            self.server_args, self.get_config(), num_blocks=num_blocks
         )
 
     def wrap_attn_backend(self, attn_logits, attn_lse):

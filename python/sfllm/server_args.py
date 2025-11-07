@@ -2,7 +2,6 @@ import dataclasses
 import argparse
 from typing import List, Literal, Optional
 
-
 @dataclasses.dataclass
 class ServerArgs:
     # Model and tokenizer
@@ -154,6 +153,8 @@ class ServerArgs:
             self.mem_fraction = min(self.mem_fraction, 0.65)
             print("Warning: On Windows, setting mem_fraction to 0.7 and disable_overlap to True for better stability.")
         self.rl_on_policy_target = None
+        if self.speculative_algorithm is not None:
+            self.disable_overlap = True
         set_global_server_args_for_scheduler(self)
 
 # NOTE: This is a global variable to hold the server args for scheduler.

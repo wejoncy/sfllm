@@ -30,7 +30,7 @@ from sfllm.layers.rotary_embedding import get_rope
 from sfllm.layers.layernorm import RMSNorm
 from sfllm.engine.forward_params import ForwardMode, ForwardBatch
 from sfllm.server_args import get_global_server_args
-from sfllm.engine.shedule_batch import LogitsProcessorOutput
+from sfllm.engine.schedule_batch import LogitsProcessorOutput
 from sfllm.model_loader.weight_utils import default_weight_loader,get_layer_id
 
 logger = logging.getLogger(__name__)

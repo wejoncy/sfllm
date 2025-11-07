@@ -31,6 +31,10 @@ class EagleSpecInput(SpecInput):
 
     logits: torch.Tensor = None
 
+    def raw_new(self):
+        return EagleSpecInput()
+
+
 @dataclass
 class EagleVerifyOutput:
     # Draft input batch
@@ -61,13 +65,11 @@ class EagleVerifyInput(SpecInput):
     spec_steps: int
     topk: int
     draft_token_num: int
-    input_ids_cache_loc_list: List[torch.Tensor]
 
     def verify(
         self,
         batch,
         logits_output,
-        token_to_kv_pool_allocator,
         page_size: int,
         vocab_mask: Optional[torch.Tensor] = None,  # For grammar
     ) -> torch.Tensor:
@@ -83,7 +85,7 @@ class EagleVerifyInput(SpecInput):
         """
         
 
-        bs = self.retrive_index.shape[0]
+        bs = len(batch)
         candidates = self.draft_token.reshape(bs, self.draft_token_num)
         # sampling_info = batch.sampling_info
 
@@ -162,7 +164,6 @@ class EagleVerifyInput(SpecInput):
                 threshold_acc=get_global_server_args().speculative_accept_threshold_acc,
                 deterministic=True,
             )
-
         # if SIMULATE_ACC_LEN > 0.0:
         #     # Do simulation
         #     accept_index = generate_simulated_accept_index(
@@ -172,7 +173,18 @@ class EagleVerifyInput(SpecInput):
         #         bs=bs,
         #         spec_steps=self.spec_steps,
         #     )
+        return accept_index, accept_length, predict
 
+    def verify_post_process(
+        self,
+        batch,
+        accept_index: torch.Tensor,
+        accept_length: torch.Tensor,
+        predict: torch.Tensor,
+        logits_output: torch.Tensor,
+        token_to_kv_pool_allocator,
+        page_size: int = 1,
+    ):
         unfinished_index = []
         unfinished_accept_index = []
         accept_index_cpu = accept_index.tolist()
@@ -223,6 +235,8 @@ class EagleVerifyInput(SpecInput):
 
         if page_size == 1:
             # TODO: boolean array index leads to a device sync. Remove it.
+            batch[0].out_cache_loc = batch[0].out_cache_loc[:-self.draft_token_num]
+            batch[0].out_cache_loc.extend(batch.forward_batch.out_cache_loc[~evict_mask].tolist())
             token_to_kv_pool_allocator.free_block(
                 batch.forward_batch.out_cache_loc[evict_mask].tolist()
             )

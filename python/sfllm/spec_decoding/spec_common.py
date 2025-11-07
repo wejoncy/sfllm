@@ -28,7 +28,7 @@ class SpecInputType(IntEnum):
 
 
 class SpecInput(ABC):
-    def __init__(self, spec_input_type: SpecInputType):
+    def __init__(self, spec_input_type: SpecInputType = SpecInputType.EAGLE_DRAFT):
         self.spec_input_type = spec_input_type
 
     def is_draft_input(self) -> bool:
@@ -41,3 +41,30 @@ class SpecInput(ABC):
             SpecInputType.EAGLE_VERIFY,
             SpecInputType.NGRAM_VERIFY,
         }
+
+
+
+class SpeculativeAlgorithm(IntEnum):
+    NONE = auto()
+    EAGLE = auto()
+    EAGLE3 = auto()
+
+    def is_none(self):
+        return self == SpeculativeAlgorithm.NONE
+
+    def is_eagle(self):
+        return self == SpeculativeAlgorithm.EAGLE or self == SpeculativeAlgorithm.EAGLE3
+
+    def is_eagle3(self):
+        return self == SpeculativeAlgorithm.EAGLE3
+
+    @staticmethod
+    def from_string(name: str):
+        name_map = {
+            "EAGLE": SpeculativeAlgorithm.EAGLE,
+            "EAGLE3": SpeculativeAlgorithm.EAGLE3,
+            None: SpeculativeAlgorithm.NONE,
+        }
+        if name is not None:
+            name = name.upper()
+        return name_map[name]

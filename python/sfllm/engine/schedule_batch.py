@@ -2,24 +2,28 @@ import dataclasses
 import torch
 import bisect
 from typing import Dict, List, Any, Optional, Union
+from contextlib import contextmanager
 
 from sfllm.engine.forward_params import ForwardBatch,ForwardMode
 from sfllm.utils.nutils import DEFAULT_CUDA_GRAPH_BATCH_SIZES, MAX_PROCESSED_TOKENS
-from sfllm.layers.sampler import Sampler, SamplingBatchInfo
+from sfllm.layers.sampler import SamplingBatchInfo
+from sfllm.server_args import get_global_server_args
 from sfllm.spec_decoding.spec_common import SpecInput
 
-
+ALIGN_EAGLE_WITH_SGLANG_ = True
 class ScheduleBatch:
-    def __init__(self, sequences, mem_pool):
+    def __init__(self, sequences, mem_pool, draft_mem_pool=None):
         self.sequences = sequences
         self.device = torch.device("cuda:0")
         self.mem_pool = mem_pool
         self.forward_batch = ForwardBatch(mem_pool)
+        self.forward_batch_spec = ForwardBatch(draft_mem_pool) if draft_mem_pool is not None else None
         self.fake_ids = None
         self.input_ids = None
         self.position_ids = None
         self.copy_done = None
         self.next_token_ids = None
+        self.spec_info: SpecInput = None
 
 
     def empty(self):
@@ -65,6 +69,108 @@ class ScheduleBatch:
         self.fake_ids = fake_ids
         return self.fake_ids
 
+    @contextmanager
+    def switch_spec_forward_batch(self):
+        self.forward_batch, self.forward_batch_spec = self.forward_batch_spec, self.forward_batch
+        yield
+        self.forward_batch, self.forward_batch_spec = self.forward_batch_spec, self.forward_batch
+
+    def get_seq_groups_hash(self):
+        group_hash = 0
+        for seq in self.sequences:
+            x = seq.sequence_id * 0x9e3779b97f4a7c15
+            group_hash ^= (x ^ (x >> 32)) & 0xFFFFFFFFFFFFFFFF
+        return group_hash
+
+    def prepare_prefill_for_draft(self):
+        spec_out_cache_loc_list = []
+        spec_kv_indices_list = []
+        device = self.device
+        for sequence in self.sequences:
+            spec_out_cache_loc_list.extend(sequence.out_cache_loc_spec[-len(sequence.new_tokens):])
+            spec_kv_indices_list.extend(sequence.out_cache_loc_spec)
+
+        padded_token = self.forward_batch.padded_token
+        if padded_token > 0:
+            spec_out_cache_loc_list.extend([0] * padded_token)
+            spec_kv_indices_list.extend([0] * padded_token)
+
+        out_cache_loc_spec = torch.tensor(spec_out_cache_loc_list, dtype=torch.int64, pin_memory=True).to(device, non_blocking=True)
+        kv_indices_spec = torch.tensor(spec_kv_indices_list, dtype=torch.int64, pin_memory=True).to(device, non_blocking=True)
+
+        self.forward_batch_spec.max_extend_len = self.forward_batch.max_extend_len
+        self.forward_batch_spec.kv_indptr = self.forward_batch.kv_indptr
+        self.forward_batch_spec.kv_indices = kv_indices_spec
+        self.forward_batch_spec.qo_indptr = self.forward_batch.qo_indptr
+        # self.forward_batch_spec.seq_lens = prefix_lens
+        self.forward_batch_spec.padded_token = padded_token
+        self.forward_batch_spec.out_cache_loc = out_cache_loc_spec
+
+        self.spec_info = SpecInput()
+        self.spec_info.hash = self.get_seq_groups_hash()
+
+
+    def prepare_decode_for_draft(self):
+        spec_out_cache_loc_list = []
+        spec_kv_indices_list = []
+        spec_kv_indices_mtd_list = []
+        device = self.device
+        for sequence in self.sequences:
+            total_draft_len = sequence.accept_length_cpu[0] + 1
+            spec_out_cache_loc_list.extend(sequence.out_cache_loc_spec[-total_draft_len:])
+            total_draft_len_past = 0 if ALIGN_EAGLE_WITH_SGLANG_ else total_draft_len
+            if total_draft_len_past == 0:
+                total_draft_len_past = -len(sequence.out_cache_loc_spec)
+            spec_kv_indices_list.extend(sequence.out_cache_loc_spec[:-total_draft_len_past]) # actually, it's for extend. it's weird here.
+            spec_kv_indices_mtd_list.extend(sequence.out_cache_loc_spec)
+
+        padded_token = self.forward_batch.padded_token
+        if padded_token > 0:
+            spec_out_cache_loc_list.extend([0] * padded_token)
+            spec_kv_indices_list.extend([0] * padded_token)
+        out_cache_loc_spec = torch.tensor(spec_out_cache_loc_list, dtype=torch.int64, pin_memory=True).to(device, non_blocking=True)
+        kv_indices_spec = torch.tensor(spec_kv_indices_list, dtype=torch.int64, pin_memory=True).to(device, non_blocking=True)
+        kv_indices_mtd_spec = torch.tensor(spec_kv_indices_mtd_list, dtype=torch.int64, pin_memory=True).to(device, non_blocking=True)
+
+        #kv_indptr would be used in two place, extend forward for the latest accepted token,, the other is multi-step draft decode path
+        self.forward_batch_spec.kv_mtd_indptr = self.forward_batch.kv_indptr
+        self.forward_batch_spec.kv_indptr = (
+            self.forward_batch.kv_indptr - 1 - (0 if ALIGN_EAGLE_WITH_SGLANG_ else (self.spec_info.accept_length_cpu[0] + 1))
+        )  # sglang dropped the first token
+        self.forward_batch_spec.kv_indices = kv_indices_spec
+        self.forward_batch_spec.kv_indices_mtd = kv_indices_mtd_spec
+        self.forward_batch_spec.padded_token = padded_token
+        self.forward_batch_spec.out_cache_loc = out_cache_loc_spec
+        self.forward_batch_spec.qo_indptr = (1 + self.spec_info.accept_length).cumsum(dim=0)
+        self.forward_batch_spec.max_extend_len = max(self.spec_info.accept_length_cpu)+1
+
+        # for this step, target model will go the verify path
+        forward_batch = self.forward_batch
+        server_args = get_global_server_args()
+        num_draft_tokens = server_args.speculative_num_draft_tokens
+        seq_mask_len = num_draft_tokens * (forward_batch.seq_lens + num_draft_tokens)
+        bs = len(self.sequences)
+        forward_batch.mask_indptr = torch.cumsum(seq_mask_len[:bs], dim=0)
+        forward_batch.max_extend_len = num_draft_tokens
+        # forward_batch.forward_mode = ForwardMode.TARGET_VERIFY
+
+        forward_batch.qo_indptr = torch.arange(
+            num_draft_tokens, (1 + bs) * num_draft_tokens, step=num_draft_tokens,
+            dtype=torch.int32, device=device,
+        )
+        #TODO handle batch here
+        forward_batch.kv_indices = forward_batch.kv_indices[: forward_batch.kv_indptr-1]
+
+        g_hash = self.get_seq_groups_hash()
+        if self.spec_info.hash != g_hash:
+            self.spec_info = self.spec_info.raw_new()
+            self.spec_info.hash = g_hash
+            self.spec_info.verified_id = torch.cat([seq.verified_id for seq in self.sequences])
+            self.spec_info.accept_length = torch.cat([seq.accept_length for seq in self.sequences])
+            self.spec_info.hidden_states = torch.cat([seq.hidden_states for seq in self.sequences])
+            self.spec_info.logits = torch.cat([seq.ogits for seq in self.sequences])
+
+
     def prepare_inputs(self):
         cur_seq_lens_list = []
         input_ids_list = []
@@ -89,14 +195,22 @@ class ScheduleBatch:
             padded_token = padded_batch_size - batch_size
 
         for sequence in self.sequences:
-            cur_seq_lens_list.append(len(sequence.new_tokens))
-            input_ids_list.extend(sequence.new_tokens)
-            start_pos = len(sequence.tokens) - len(sequence.new_tokens)
-            position_ids_list.extend(
-                list(range(start_pos, start_pos+cur_seq_lens_list[-1]))
-            )
+            if self.forward_batch.forward_mode == ForwardMode.DECODE:
+                # it's posible to decode multiple tokens at once when doing speculative decoding
+                cur_seq_lens_list.append(1)
+                input_ids_list.append(sequence.new_tokens[-1])
+                start_pos = len(sequence.tokens) - 1
+            else:
+                cur_seq_lens_list.append(len(sequence.new_tokens))
+                input_ids_list.extend(sequence.new_tokens)
+                start_pos = len(sequence.tokens) - len(sequence.new_tokens)
+            position_ids_list.extend(list(range(start_pos, start_pos+cur_seq_lens_list[-1])))
             prefix_lens_list.append(start_pos)
-            out_cache_loc_list.extend(sequence.out_cache_loc[-len(sequence.new_tokens):])
+            if self.forward_batch_spec is not None and self.forward_batch.forward_mode != ForwardMode.EXTEND:
+                # target model used for verify, speculative_num_draft_tokens cache loc
+                out_cache_loc_list.extend(sequence.out_cache_loc[len(sequence.tokens)-1:])
+            else:
+                out_cache_loc_list.extend(sequence.out_cache_loc[-len(sequence.new_tokens):])
             kv_indices_list.extend(sequence.out_cache_loc)
 
         if padded_token > 0:
@@ -108,8 +222,7 @@ class ScheduleBatch:
             prefix_lens_list.extend([0]*padded_token)
     
         input_ids = torch.tensor(input_ids_list, dtype=torch.long, pin_memory=True).to(device, non_blocking=True)
-        position_ids = torch.tensor(
-            position_ids_list, dtype=torch.long, pin_memory=True).to(device, non_blocking=True)
+        position_ids = torch.tensor(position_ids_list, dtype=torch.long, pin_memory=True).to(device, non_blocking=True)
         cur_seq_lens = torch.tensor(cur_seq_lens_list, dtype=torch.int32, pin_memory=True).to(device, non_blocking=True)
         out_cache_loc = torch.tensor(out_cache_loc_list, dtype=torch.int64, pin_memory=True).to(device, non_blocking=True)
         kv_indices = torch.tensor(kv_indices_list, dtype=torch.int64, pin_memory=True).to(device, non_blocking=True)
@@ -125,11 +238,18 @@ class ScheduleBatch:
         else:
             self.forward_batch.kv_indptr = (prefix_lens + 1).cumsum(dim=-1)
             self.forward_batch.kv_indices = kv_indices
+
         self.forward_batch.seq_lens = prefix_lens
         self.forward_batch.padded_token = padded_token
         self.forward_batch.out_cache_loc = out_cache_loc
         self.input_ids = input_ids
         self.position_ids = position_ids
+
+        if self.forward_batch_spec is not None:
+            if self.forward_batch.forward_mode == ForwardMode.EXTEND:
+                self.prepare_prefill_for_draft()
+            else:
+                self.prepare_decode_for_draft()
 
     def prepare_sample(self):
         temperatures = []

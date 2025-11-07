@@ -1,6 +1,7 @@
 
 from collections import deque
 import logging
+import itertools
 import torch
 from sfllm.server_args import ServerArgs
 
@@ -31,13 +32,14 @@ class BlockMemory:
 
 class BlockMemoryManager:
     """A simple block memory manager."""
-    def __init__(self, server_args: ServerArgs, model_config):
+    def __init__(self, server_args: ServerArgs, model_config, num_blocks: int = None):
         dtype = server_args.model_config.dtype
         self.dtype = (
             dtype if server_args.dtype == "auto" else getattr(torch, server_args.dtype)
         )
         self.config = model_config
 
+        self.num_blocks = num_blocks
         self.num_blocks, self.block_shape = self.get_num_blocks(server_args)
         self.blocks = [BlockMemory(i) for i in range(self.num_blocks)]
         self.free_block_ids = deque(range(self.num_blocks))
@@ -61,6 +63,8 @@ class BlockMemoryManager:
             // one_token_size
             // config.num_hidden_layers
         )
+        if self.num_blocks is not None:
+            max_length = min(max_length, self.num_blocks)
         logger.info(
             f"GPU memory free: {free / (1024**3):.2f} GB, total: {total / (1024**3):.2f} GB"
             f", max tokens per layer: {max_length}"
@@ -115,6 +119,11 @@ class BlockMemoryManager:
             block_ids.append(self.free_block_ids.popleft())
             self._alloc_block_by_id(block_ids[-1], token_id, hashv)
 
+        return block_ids
+
+    def borrow_disposable_block(self, token_nums: int) -> list[int]:
+        """Borrow disposable blocks of memory without tracking."""
+        block_ids = list(itertools.islice(self.free_block_ids, token_nums))
         return block_ids
 
     def free_block(self, block_ids: list[int], force_sort: bool = False):

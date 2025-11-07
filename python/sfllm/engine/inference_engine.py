@@ -5,14 +5,14 @@ nsys profile  --force-overwrite=true  -o baseline-report  --trace=cuda,nvtx,osrt
 import logging
 import torch
 import queue
-from typing import Dict, Any, List, Tuple, Generator
+from typing import Dict, Any, List, Tuple, Generator, Union
 
 from sfllm.engine.model_worker import ModelWorker
 from sfllm.spec_decoding.eagle_worker import EagleWorker
 from sfllm.engine.scheduler import Scheduler
 from sfllm.engine.sampling_params import SamplingParams
 from sfllm.engine.sequence import RequestSequence, SequenceStatus, AbortSequence
-from sfllm.engine.shedule_batch import ScheduleBatch
+from sfllm.engine.schedule_batch import ScheduleBatch, BatchResult
 from sfllm.server_args import ServerArgs
 from sfllm.utils.nutils import configure_logger,resolve_future_token_ids
 
@@ -28,13 +28,32 @@ class InferenceEngine:
         self.model_worker = ModelWorker(server_args) if server_args.speculative_algorithm != "eagle3" else EagleWorker(server_args)
         self.server_args = server_args
         self.running = False
-        self.scheduler = Scheduler(server_args, self.model_worker.main_mem_pool)
+        self.scheduler = Scheduler(server_args, self.model_worker)
         self.output_batch_queue = queue.Queue()
         self.model_worker.init_capture_graph()
         self.enable_overlap = not server_args.disable_overlap
 
-    def post_forward(self, schedule_batch: ScheduleBatch, token_ids: List[int], failed_sequences: List[RequestSequence]) -> None:
+    def post_forward(
+        self,
+        schedule_batch: ScheduleBatch,
+        token_ids: Union[List[int], BatchResult],
+        failed_sequences: List[RequestSequence],
+    ) -> None:
         """Post-process the model outputs and update the sequences."""
+        if isinstance(token_ids, BatchResult):
+            batch_result = token_ids
+            token_ids = batch_result.next_token_ids.tolist()
+            if batch_result.spec_info is not None:
+                last_verify_id_start = 0
+                for idx, sequence in enumerate(schedule_batch):
+                    if sequence.status.is_active():
+                        sequence.logits = batch_result.spec_info.logits[idx : idx + 1] # keep batch dim
+                        sequence.hidden_states = batch_result.spec_info.hidden_states[idx:idx+1]
+                        sequence.accept_length_cpu = batch_result.spec_info.accept_length.tolist()[idx:idx+1]
+                        accept_length = sequence.accept_length_cpu[idx]
+                        end = max(accept_length+1, last_verify_id_start+1)
+                        sequence.verified_id = batch_result.spec_info.verified_id[last_verify_id_start:end]
+                        last_verify_id_start = end + 1
         for idx, sequence in enumerate(schedule_batch):
             if self.enable_overlap:
                 if sequence.status.is_active():
@@ -47,11 +66,11 @@ class InferenceEngine:
                     sequence.last_generated_token_pos += 1
             else:
                 if self.server_args.speculative_algorithm is not None:
-                    #TODO fix it, this only works for single batch 
-                    sequence.new_tokens = token_ids[-1:]
-                    sequence.generated_tokens[0] = token_ids[-1]
-                    sequence.tokens.extend(token_ids)
-                    sequence.last_generated_token_pos += len(token_ids)
+                    #TODO parallel decoding with speculative decoding, multitoken would be decoded in a single step
+                    sequence.new_tokens = sequence.verified_id.tolist()
+                    sequence.generated_tokens = sequence.new_tokens.copy()
+                    sequence.tokens.extend(sequence.new_tokens)
+                    sequence.last_generated_token_pos += len(sequence.generated_tokens)
                 else:
                     sequence.new_tokens = token_ids[idx: idx + 1]
                     sequence.generated_tokens[0] = token_ids[idx]
@@ -104,13 +123,12 @@ class InferenceEngine:
     def step(self):
         """Process a single inference request."""
         new_batch, failed_sequences = self.scheduler.get_next_batch()
-        token_ids = []
+        batch_out = []
         if not new_batch.empty():
             new_batch.prepare_inputs()
             new_batch.prepare_sample()
             batch_out = self.model_worker.forward(new_batch)
-            token_ids = batch_out.next_token_ids.tolist()
-        self.post_forward(new_batch, token_ids, failed_sequences)
+        self.post_forward(new_batch, batch_out, failed_sequences)
         new_batch.extend(failed_sequences)
         return new_batch
 
