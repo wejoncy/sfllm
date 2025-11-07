@@ -1,5 +1,6 @@
 import dataclasses
 import torch
+import itertools
 import bisect
 from typing import Dict, List, Any, Optional, Union
 from contextlib import contextmanager
@@ -11,6 +12,7 @@ from sfllm.server_args import get_global_server_args
 from sfllm.spec_decoding.spec_common import SpecInput
 
 ALIGN_EAGLE_WITH_SGLANG_ = True
+padding_for_extend_cuda_graph = True
 class ScheduleBatch:
     def __init__(self, sequences, mem_pool, draft_mem_pool=None):
         self.sequences = sequences
@@ -110,7 +112,7 @@ class ScheduleBatch:
         self.spec_info.hash = self.get_seq_groups_hash()
 
 
-    def prepare_decode_for_draft(self):
+    def prepare_decode_for_draft(self, position_ids_list: List[int]):
         g_hash = self.get_seq_groups_hash()
         if self.spec_info.hash != g_hash:
             self.spec_info = self.spec_info.raw_new()
@@ -120,6 +122,18 @@ class ScheduleBatch:
             self.spec_info.accept_length_cpu = self.spec_info.accept_length.cpu()
             self.spec_info.hidden_states = torch.cat([seq.hidden_states for seq in self.sequences])
             self.spec_info.logits = torch.cat([seq.logits for seq in self.sequences])
+
+        # prepare position_ids for draft model extend for last verified tokens
+        positions_outs = []
+        # for cuda graph compatibility, we may need to padding kv_indptr/qo_indptr to certain size
+        extend_batch_size = self.input_ids.shape[0] if padding_for_extend_cuda_graph else len(self.sequences)
+        update_accept_length_cpu = self.spec_info.accept_length_cpu + 1
+        for i in range(len(position_ids_list)):
+            positions_outs.append(range(
+                position_ids_list[i] - update_accept_length_cpu[i],
+                position_ids_list[i]
+            ))
+        position_ids_list = list(itertools.chain.from_iterable(positions_outs))
 
         spec_out_cache_loc_list = []
         spec_kv_indices_list = []
@@ -143,42 +157,48 @@ class ScheduleBatch:
         kv_indices_mtd_spec = torch.tensor(spec_kv_indices_mtd_list, dtype=torch.int64, pin_memory=True).to(device, non_blocking=True)
 
         #kv_indptr would be used in two place, extend forward for the latest accepted token,, the other is multi-step draft decode path
-        self.forward_batch_spec.kv_mtd_indptr = self.forward_batch.seq_lens + 1
-        minux_const = torch.arange(1, len(self.sequences)+1, dtype=torch.int32, pin_memory=True).add_(0 if ALIGN_EAGLE_WITH_SGLANG_ else (self.spec_info.accept_length_cpu + 1))
-        self.forward_batch_spec.kv_indptr = self.forward_batch.kv_indptr - minux_const.to(self.device, non_blocking=True)  # sglang dropped the first token
+        minux_const = torch.arange(1, len(self.sequences)+1, dtype=torch.int32, 
+                        pin_memory=True).add_(
+                        0 if ALIGN_EAGLE_WITH_SGLANG_ else (self.spec_info.accept_length_cpu + 1))
+        # sglang dropped the first token
+        # leading zero
+        self.forward_batch_spec.kv_indptr = self.forward_batch.kv_indptr.clone()
+        self.forward_batch_spec.kv_indptr[1:].sub_(minux_const.to(self.device, non_blocking=True))
         self.forward_batch_spec.kv_indices = kv_indices_spec
         self.forward_batch_spec.kv_indices_mtd = kv_indices_mtd_spec
         self.forward_batch_spec.padded_token = padded_token
         self.forward_batch_spec.out_cache_loc = out_cache_loc_spec
-        self.forward_batch_spec.qo_indptr = (1 + self.spec_info.accept_length).cumsum(dim=0)
+        self.forward_batch_spec.qo_indptr = torch.zeros_like(self.forward_batch.kv_indptr)
+        self.forward_batch_spec.qo_indptr[1:] = (1 + self.spec_info.accept_length).cumsum(dim=0, dtype=torch.int32)
         self.forward_batch_spec.max_extend_len = max(self.spec_info.accept_length_cpu)+1
+        self.forward_batch_spec.position_ids_extend = torch.tensor(
+            position_ids_list, dtype=torch.long, pin_memory=True).to(self.device, non_blocking=True)
 
         # for this step, target model will go the verify path
-        forward_batch = self.forward_batch
+        forward_batch_target = self.forward_batch
         server_args = get_global_server_args()
         num_draft_tokens = server_args.speculative_num_draft_tokens
-        seq_mask_len = num_draft_tokens * (forward_batch.seq_lens + num_draft_tokens)
-        bs = len(self.sequences)
-        forward_batch.mask_indptr = torch.cumsum(seq_mask_len[:bs], dim=0)
-        forward_batch.max_extend_len = num_draft_tokens
-        # forward_batch.forward_mode = ForwardMode.TARGET_VERIFY
+        seq_mask_len = num_draft_tokens * (forward_batch_target.seq_lens + num_draft_tokens)
+        forward_batch_target.mask_indptr = forward_batch_target.kv_indptr.clone()
+        forward_batch_target.mask_indptr[1:] = torch.cumsum(seq_mask_len, dim=0, dtype=torch.int32)
+        forward_batch_target.max_extend_len = num_draft_tokens
 
-        forward_batch.qo_indptr = torch.arange(
-            num_draft_tokens, (1 + bs) * num_draft_tokens, step=num_draft_tokens,
+        bs = len(self.sequences)
+        forward_batch_target.qo_indptr = torch.arange(
+            0, (1 + bs) * num_draft_tokens, step=num_draft_tokens,
             dtype=torch.int32, device=device,
         )
-        #TODO handle batch here, it's for verify_extend
-        minux_const = torch.arange(1, len(self.sequences)+1, dtype=torch.int32, pin_memory=True)
-        forward_batch.kv_indptr  = forward_batch.kv_indptr - minux_const.to(self.device, non_blocking=True)
-
+        # it's for verify_extend
+        minux_const = torch.arange(1, len(self.sequences)+1, dtype=torch.int32, device=device)
+        forward_batch_target.kv_indptr[1:].sub_(minux_const)
 
     def prepare_inputs(self):
-        cur_seq_lens_list = []
+        cur_seq_lens_list = [0]
         input_ids_list = []
         position_ids_list = []
         out_cache_loc_list = []
         kv_indices_list = []
-        prefix_lens_list = []
+        prefix_lens_list = [0]
         device = self.device
 
         batch_size = len(self.sequences)
@@ -234,15 +254,16 @@ class ScheduleBatch:
         total_seq_len = kv_indices.shape[0] # this would be wrong if speculative decoding with draft model
         if self.forward_batch.forward_mode == ForwardMode.EXTEND:
             self.forward_batch.max_extend_len = max(cur_seq_lens_list)
-            self.forward_batch.kv_indptr = prefix_lens.cumsum(dim=-1)
+            self.forward_batch.kv_indptr = prefix_lens.cumsum(dim=-1, dtype=torch.int32)
             self.forward_batch.kv_indices = kv_indices
-            self.forward_batch.qo_indptr = cur_seq_lens.cumsum(dim=-1)
+            self.forward_batch.qo_indptr = cur_seq_lens.cumsum(dim=-1, dtype=torch.int32)
         else:
-            self.forward_batch.kv_indptr = (prefix_lens + 1).cumsum(dim=-1)
+            self.forward_batch.kv_indptr = prefix_lens.clone()
+            self.forward_batch.kv_indptr[1:] = (prefix_lens[1:] + 1).cumsum(dim=-1, dtype=torch.int32)
             self.forward_batch.kv_indices = kv_indices
 
-        self.forward_batch.seq_lens = prefix_lens
-        self.forward_batch.extend_lens_list = cur_seq_lens_list
+        self.forward_batch.seq_lens = prefix_lens[1:]
+        self.forward_batch.extend_lens_list = cur_seq_lens_list[1:]
         self.forward_batch.padded_token = padded_token
         self.forward_batch.out_cache_loc = out_cache_loc
         self.input_ids = input_ids
@@ -252,7 +273,7 @@ class ScheduleBatch:
             if self.forward_batch.forward_mode == ForwardMode.EXTEND:
                 self.prepare_prefill_for_draft()
             else:
-                self.prepare_decode_for_draft()
+                self.prepare_decode_for_draft(position_ids_list)
 
     def prepare_sample(self):
         temperatures = []
@@ -293,12 +314,15 @@ class LogitsProcessorOutput:
     hidden_states: Optional[torch.Tensor] = None
 
     ## Part 2: This part will be assigned in python/sglang/srt/layers/sampler.py::Sampler
-    # he log probs of output tokens, if SGLANG_RETURN_ORIGINAL_LOGPROB = True, will get the log probs before applying temperature. If False, will get the log probs before applying temperature.
+    # he log probs of output tokens, if SGLANG_RETURN_ORIGINAL_LOGPROB = True, 
+    # will get the log probs before applying temperature. 
+    # If False, will get the log probs before applying temperature.
     next_token_logprobs: Optional[torch.Tensor] = None
     # The logprobs and ids of the top-k tokens in output positions. shape: [#seq, k]
     next_token_top_logprobs_val: Optional[List] = None
     next_token_top_logprobs_idx: Optional[List] = None
-    # The logprobs and ids of the requested token ids in output positions. shape: [#seq, n] (n is the number of requested token ids)
+    # The logprobs and ids of the requested token ids in output positions. 
+    # shape: [#seq, n] (n is the number of requested token ids)
     # Can contain either lists or GPU tensors (for delayed copy optimization in prefill-only requests)
     next_token_token_ids_logprobs_val: Optional[
         List[Union[List[float], torch.Tensor]]
@@ -311,7 +335,8 @@ class LogitsProcessorOutput:
     # The logprobs and ids of the top-k tokens in input positions.  shape: [#seq, #token, k]
     input_top_logprobs_val: List = None
     input_top_logprobs_idx: List = None
-    # The logprobs and ids of the requested token ids in input positions. shape: [#seq, n] (n is the number of requested token ids)
+    # The logprobs and ids of the requested token ids in input positions. 
+    # shape: [#seq, n] (n is the number of requested token ids)
     # Can contain either lists or GPU tensors (for delayed GPU-to-CPU transfer optimization)
     input_token_ids_logprobs_val: Optional[List[Union[List[float], torch.Tensor]]] = (
         None

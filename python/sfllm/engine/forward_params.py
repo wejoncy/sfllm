@@ -38,6 +38,8 @@ class ForwardBatch:
         self.sampling_batch_info = None
         self.padded_token = 0
 
+        self.position_ids_extend = None
+
         self.spec_info:SpecInput = None
 
         self.past_key_values = mem_pool.kv_buffers if mem_pool is not None else None
