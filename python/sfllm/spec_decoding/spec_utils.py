@@ -1,7 +1,10 @@
 from dataclasses import dataclass
-from typing import ClassVar, List, Optional
+from typing import List, Optional, Tuple
 import torch
 import logging
+import math
+import triton
+import triton.language as tl
 
 import sf_kernel
 from sfllm.spec_decoding.spec_common import SpecInput, SpecInputType
@@ -536,3 +539,225 @@ def build_tree_kernel_efficient(
         retrive_next_sibling,
         draft_tokens,
     )
+
+
+@triton.jit
+def generate_kv_indices_kernel(
+    old_kv_indptr,          # [bs + 1], cumulative sequence lengths
+    past_kv_indices,        # [seq_lens_sum], past KV cache indices
+    out_cache_loc_tensor,   # [bs * topk, running_steps], new cache locations
+    kv_indptr,              # Output: [running_steps * (topk * bs + 1)], cumulative indices pointers
+    kv_indices,             # Output: flattened KV indices array
+    running_steps: int,
+    bs: int,
+    kv_indices_stride_0: tl.constexpr,
+    kv_indptr_stride_0: tl.constexpr,
+    topk: tl.constexpr,
+    BLOCK_SIZE: tl.constexpr,
+    num_warps: tl.constexpr,
+):
+    """
+    Efficiently generate KV indices for multiple time steps using Triton.
+    
+    Optimized for smaller block sizes (128/256) with better parallelization:
+    - Uses smaller BLOCK_SIZE for better occupancy
+    - Supports multiple warps for long sequences
+    - Each thread block processes one (step, batch, topk) combination efficiently
+    
+    Uses the PyTorch offset formula:
+    offset_start = (seq_lens_sum*i + sum(range(1,i+1)) * bs) * topk
+    """
+    # Get current grid position - each thread handles one (step, batch, topk) combination
+    step_id = tl.program_id(0)      # Current time step [0, running_steps)
+    batch_id = tl.program_id(1)     # Current batch [0, bs)
+    topk_id = tl.program_id(2)      # Current topk variant [0, topk)
+
+    seq_lens_sum = tl.load(old_kv_indptr+bs)  # Total original sequence lengths sum
+    
+    # Load sequence boundaries for current batch
+    seq_start = tl.load(old_kv_indptr + batch_id)
+    seq_end = tl.load(old_kv_indptr + batch_id + 1)
+    original_seq_len = seq_end - seq_start
+    
+    # Current sequence length includes original sequence + new tokens up to current step
+    current_seq_len = original_seq_len + step_id + 1
+    
+    # === Calculate kv_indptr position and cumulative length ===
+    # Each step has (topk * bs + 1) entries in indptr, first entry is always 0
+    if kv_indptr_stride_0 == 0:
+        indptr_base_offset = step_id * (topk * bs + 1)
+    else:
+        indptr_base_offset = step_id * kv_indptr_stride_0
+    indptr_idx = indptr_base_offset + batch_id * topk + topk_id + 1
+    
+    # Calculate cumulative length up to current position using optimized formula
+    # Original: old_kv_indptr[batch_id] is cumsum of original seq_lens up to batch_id
+    # After adding (step_id + 1) tokens to each sequence, the new cumsum becomes:
+    # new_cumsum[batch_id] = old_kv_indptr[batch_id] + batch_id * (step_id + 1)
+    prev_batches_total_len = tl.load(old_kv_indptr + batch_id) + batch_id * (step_id + 1)
+    cumulative_len = prev_batches_total_len * topk
+    
+    # Add lengths from previous topk variants in current batch
+    cumulative_len += topk_id * current_seq_len
+    
+    # Add current sequence length to get the cumulative end position
+    cumulative_len += current_seq_len
+    
+    # Store cumulative length in indptr
+    tl.store(kv_indptr + indptr_idx, cumulative_len)
+    
+    # === Calculate kv_indices starting position using PyTorch formula ===
+    # Base offset from PyTorch formula: offset_start = (seq_lens_sum*i + sum(range(1,i+1)) * bs) * topk
+    if kv_indices_stride_0 == 0:
+        indices_offset = seq_lens_sum * step_id * topk
+        
+        # Add sum(range(1,step_id+1)) * bs * topk = step_id*(step_id+1)/2 * bs * topk
+        step_sum = step_id * (step_id + 1) // 2
+        indices_offset += step_sum * bs * topk
+    else:
+        indices_offset = step_id * kv_indices_stride_0
+    
+    # Add offset within current step for previous batches
+    # Use cumulative sum from old_kv_indptr: sum of (seq_len[j] + step_id + 1) for j < batch_id
+    prev_batches_seq_sum = tl.load(old_kv_indptr + batch_id)  # Sum of seq lengths before current batch
+    prev_batches_total_len = prev_batches_seq_sum + batch_id * (step_id + 1)
+    indices_offset += prev_batches_total_len * topk
+    
+    # Add offset for previous topk variants in current batch
+    indices_offset += topk_id * current_seq_len
+    
+    # === Fill KV indices array with optimized parallelization ===
+    # Process original sequence indices in chunks for better parallelization
+    for seq_chunk_start in range(0, original_seq_len, BLOCK_SIZE):
+        seq_offsets = tl.arange(0, BLOCK_SIZE)
+        seq_chunk_offsets = seq_chunk_start + seq_offsets
+        seq_mask = seq_chunk_offsets < original_seq_len
+        
+        # Vectorized load from past_kv_indices
+        past_indices = tl.load(past_kv_indices + seq_start + seq_chunk_offsets, mask=seq_mask, other=0)
+        
+        # Vectorized store to kv_indices
+        tl.store(kv_indices + indices_offset + seq_chunk_offsets, past_indices, mask=seq_mask)
+    
+    # Fill new cache locations for steps 0 through current step
+    # This is typically small (step_id + 1 <= 8), so one vectorized operation is sufficient
+    cache_tensor_row = batch_id * topk + topk_id
+    cache_offsets = tl.arange(0, BLOCK_SIZE)
+    cache_mask = cache_offsets <= step_id  # 0 to step_id inclusive
+    
+    # Vectorized load from out_cache_loc_tensor  
+    cache_locs = tl.load(out_cache_loc_tensor + cache_tensor_row * running_steps + cache_offsets,
+                        mask=cache_mask, other=0)
+    
+    # Vectorized store to kv_indices at offset after original sequence
+    tl.store(kv_indices + indices_offset + original_seq_len + cache_offsets,
+            cache_locs, mask=cache_mask)
+
+
+def generate_kv_indices_for_mtd_triton(kv_out_buffer: Tuple[torch.Tensor, torch.Tensor], old_kv_indptr: torch.Tensor, past_kv_indices: torch.Tensor,
+                                       out_cache_loc_tensor: torch.Tensor,
+                                       seq_lens_sum: int,
+                                       running_steps: int, topk: int):
+    """
+    Triton-accelerated version of generate_kv_indices_for_mtd.
+    Returns the same format as the PyTorch implementation.
+    
+    Uses default 1024 block size with 8 warps - simple and effective.
+    """
+    device = past_kv_indices.device
+    bs = old_kv_indptr.numel() - 1
+
+    # Use default configuration - simple and performs well for typical LLM workloads
+    block_size = 1024
+    num_warps = 8
+
+    kv_indices_stride_0 = 0
+    kv_indptr_stride_0 = 0
+    if kv_out_buffer is not None:
+        kv_indptr, kv_indices = kv_out_buffer
+        assert kv_indices.shape[0] == running_steps and kv_indices.is_contiguous()
+        assert kv_indptr.shape[0] == running_steps and kv_indptr.is_contiguous()
+        kv_indices_stride_0 = kv_indices.stride(0)
+        kv_indptr_stride_0 = kv_indptr.stride(0)
+        assert (seq_lens_sum + (running_steps - 1 + 1) * bs) * topk < kv_indices_stride_0
+    else:
+        kv_indptr = torch.zeros((running_steps*(topk*bs+1),), dtype=torch.int32, device=device)
+        kv_indices = torch.empty(
+            ((seq_lens_sum*running_steps + sum(range(1,running_steps+1))*bs) * topk,),
+            dtype=past_kv_indices.dtype,
+            device=device,
+        )
+    if torch.cuda.is_current_stream_capturing():
+        assert kv_out_buffer[0] is not None, "For cuda graph compatibility, kv_indices_out_buffer must be provided."
+
+    grid = (running_steps, bs, topk)
+    generate_kv_indices_kernel[grid](
+        old_kv_indptr, past_kv_indices, out_cache_loc_tensor,
+        kv_indptr, kv_indices, 
+        running_steps, bs, kv_indices_stride_0, kv_indptr_stride_0,
+        topk, BLOCK_SIZE=block_size, num_warps=num_warps
+    )
+    # for cuda graph compatibility, return the raw buffers if provided
+    if kv_out_buffer is not None:
+        return (kv_indptr, kv_indices)
+    kv_indptr = kv_indptr.reshape(running_steps, (topk * bs + 1))
+    # Convert to same format as PyTorch implementation
+    kv_indices_outs = []
+    for i in range(running_steps):
+        # Extract indptr for current step
+        # step_indptr = kv_indptr[i * (topk * bs + 1):(i + 1) * (topk * bs + 1)]        
+        # Extract indices for current step using PyTorch offset formula
+        offset_start = (seq_lens_sum * i + sum(range(1, i + 1)) * bs) * topk
+        indices_size = (seq_lens_sum + (i + 1) * bs) * topk
+        step_indices = kv_indices[offset_start:offset_start + indices_size]
+        
+        kv_indices_outs.append((step_indices))
+
+    return (kv_indptr, kv_indices_outs)
+
+
+def generate_kv_indices_for_mtd(kv_out_buffer: Tuple[torch.Tensor, torch.Tensor], old_kv_indptr: torch.Tensor, past_kv_indices: torch.Tensor,
+            out_cache_loc_tensor:torch.Tensor, seq_lens_sum:int, bs:int, topk:int, running_steps:int):
+    triton_out = generate_kv_indices_for_mtd_triton(
+        kv_out_buffer, old_kv_indptr, past_kv_indices, out_cache_loc_tensor, seq_lens_sum, running_steps, topk)
+    return triton_out
+    device = past_kv_indices.device
+    kv_indptr_out = torch.zeros((running_steps*(topk*bs+1),), dtype=torch.int32, device=device)
+    kv_indices_out = torch.empty(
+        ((seq_lens_sum*running_steps + sum(range(1,running_steps+1)) * bs) * topk,),
+        dtype=past_kv_indices.dtype,
+        device=device,
+    )
+
+    seq_lens = old_kv_indptr[1:] - old_kv_indptr[:-1]
+    kv_indices_outs = []
+    cur_kv_seqlen = seq_lens[..., None] + 1
+    for i in range(running_steps):
+        # kv_indptr = torch.zeros((topk*bs+1,), dtype=torch.int32, device=device)
+        kv_indptr = kv_indptr_out[i*(topk*bs+1):(i+1)*(topk*bs+1)]
+        kv_indptr[1:] = cur_kv_seqlen.expand(-1, topk).flatten().cumsum(dim=-1, dtype=torch.int32)
+        offset_start = (seq_lens_sum*i + sum(range(1,i+1)) * bs) * topk
+        indices_size = (seq_lens_sum + (i + 1) * bs) * topk
+        kv_indices = kv_indices_out[offset_start:offset_start + indices_size]
+        # kv_indices = torch.empty(
+        #     ((seq_lens_sum + (i + 1) * bs) * topk,),
+        #     dtype=past_kv_indices.dtype,
+        #     device=device,
+        # )
+        batch_kv_start = 0
+        kv_indices_batch_index = 0
+        # inside_batch_kv_start = 0
+        for bs_i in range(bs):
+            kv_indices_batch_i = kv_indices[batch_kv_start : batch_kv_start + ((seq_lens[bs_i]+i+1) * topk)]
+            kv_indices_batch_i = kv_indices_batch_i.view(topk, seq_lens[bs_i]+1+i)
+            batch_kv_start = batch_kv_start + ((seq_lens[bs_i]+i+1) * topk)
+            for sb_kv_indices in kv_indices_batch_i: # topk 
+                sb_kv_indices[:-i-1] = past_kv_indices[old_kv_indptr[bs_i]:old_kv_indptr[bs_i+1]]
+                sb_kv_indices[-i-1:] = out_cache_loc_tensor[kv_indices_batch_index,:i+1]
+                kv_indices_batch_index += 1
+            # inside_batch_kv_start += seq_lens[bs_i]
+        kv_indices_outs.append(kv_indices.flatten())
+
+        cur_kv_seqlen = cur_kv_seqlen + 1 # don't do it inplace to avoid affecting next step
+    assert sum([torch.allclose(tt[0], pt[0]) and torch.allclose(tt[1], pt[1]) for tt, pt in zip(triton_out, kv_indices_outs)])==3
+    return (kv_indptr_out.view(running_steps, -1), kv_indices_outs)

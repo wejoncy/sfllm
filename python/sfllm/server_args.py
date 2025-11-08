@@ -151,7 +151,7 @@ class ServerArgs:
         import platform
         if platform.system() == "Windows":
             self.mem_fraction = min(self.mem_fraction, 0.65)
-            print("Warning: On Windows, setting mem_fraction to 0.7 and disable_overlap to True for better stability.")
+            print("Warning: On Windows, setting mem_fraction to 0.7 for better stability.")
         self.rl_on_policy_target = None
         if self.speculative_algorithm is not None:
             self.disable_overlap = True

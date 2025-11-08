@@ -16,4 +16,4 @@ if __name__ == "__main__":
         _load_check_point(model, model_path)
     model.eval()
     model_runner = ModelRunner(model)
-    model_runner.capture_graph()
+    model_runner.capture_cudagraph()

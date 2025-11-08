@@ -12,7 +12,6 @@ from sfllm.server_args import get_global_server_args
 from sfllm.spec_decoding.spec_common import SpecInput
 
 ALIGN_EAGLE_WITH_SGLANG_ = True
-padding_for_extend_cuda_graph = True
 class ScheduleBatch:
     def __init__(self, sequences, mem_pool, draft_mem_pool=None):
         self.sequences = sequences
@@ -125,8 +124,11 @@ class ScheduleBatch:
 
         # prepare position_ids for draft model extend for last verified tokens
         positions_outs = []
+        batch_size = len(self.sequences)
+        server_args = get_global_server_args()
         # for cuda graph compatibility, we may need to padding kv_indptr/qo_indptr to certain size
-        extend_batch_size = self.input_ids.shape[0] if padding_for_extend_cuda_graph else len(self.sequences)
+        padding_for_extend_cuda_graph = False if server_args.disable_cuda_graph else True
+        extend_batch_size = self.spec_info.verified_id.shape[0] if padding_for_extend_cuda_graph else batch_size
         update_accept_length_cpu = self.spec_info.accept_length_cpu + 1
         for i in range(len(position_ids_list)):
             positions_outs.append(range(
@@ -162,30 +164,30 @@ class ScheduleBatch:
                         0 if ALIGN_EAGLE_WITH_SGLANG_ else (self.spec_info.accept_length_cpu + 1))
         # sglang dropped the first token
         # leading zero
-        self.forward_batch_spec.kv_indptr = self.forward_batch.kv_indptr.clone()
-        self.forward_batch_spec.kv_indptr[1:].sub_(minux_const.to(self.device, non_blocking=True))
+        self.forward_batch_spec.padded_token_extend = extend_batch_size - batch_size
+        self.forward_batch_spec.kv_indptr = torch.zeros((extend_batch_size + 1,), dtype=torch.int32, device=device)
+        self.forward_batch_spec.kv_indptr[1:batch_size+1] = (self.forward_batch.kv_indptr[1:] -
+            minux_const.to(self.device, non_blocking=True))
         self.forward_batch_spec.kv_indices = kv_indices_spec
         self.forward_batch_spec.kv_indices_mtd = kv_indices_mtd_spec
         self.forward_batch_spec.padded_token = padded_token
         self.forward_batch_spec.out_cache_loc = out_cache_loc_spec
-        self.forward_batch_spec.qo_indptr = torch.zeros_like(self.forward_batch.kv_indptr)
-        self.forward_batch_spec.qo_indptr[1:] = (1 + self.spec_info.accept_length).cumsum(dim=0, dtype=torch.int32)
-        self.forward_batch_spec.max_extend_len = max(self.spec_info.accept_length_cpu)+1
+        self.forward_batch_spec.qo_indptr = torch.zeros((extend_batch_size + 1,), dtype=torch.int32, device=device)
+        self.forward_batch_spec.qo_indptr[1:batch_size + 1] = (1 + self.spec_info.accept_length).cumsum(dim=0, dtype=torch.int32)
+        self.forward_batch_spec.max_extend_len = max(self.spec_info.accept_length_cpu.tolist())+1
         self.forward_batch_spec.position_ids_extend = torch.tensor(
             position_ids_list, dtype=torch.long, pin_memory=True).to(self.device, non_blocking=True)
 
         # for this step, target model will go the verify path
         forward_batch_target = self.forward_batch
-        server_args = get_global_server_args()
         num_draft_tokens = server_args.speculative_num_draft_tokens
         seq_mask_len = num_draft_tokens * (forward_batch_target.seq_lens + num_draft_tokens)
-        forward_batch_target.mask_indptr = forward_batch_target.kv_indptr.clone()
+        forward_batch_target.mask_indptr = self.forward_batch.kv_indptr.clone()
         forward_batch_target.mask_indptr[1:] = torch.cumsum(seq_mask_len, dim=0, dtype=torch.int32)
         forward_batch_target.max_extend_len = num_draft_tokens
 
-        bs = len(self.sequences)
         forward_batch_target.qo_indptr = torch.arange(
-            0, (1 + bs) * num_draft_tokens, step=num_draft_tokens,
+            0, (1 + batch_size) * num_draft_tokens, step=num_draft_tokens,
             dtype=torch.int32, device=device,
         )
         # it's for verify_extend
@@ -209,7 +211,7 @@ class ScheduleBatch:
 
         padded_batch_size = batch_size
         padded_token = 0
-        if (self.forward_batch.forward_mode == ForwardMode.DECODE):
+        if (self.forward_batch.forward_mode == ForwardMode.DECODE and self.forward_batch_spec is None):
             padded_batch_size = DEFAULT_CUDA_GRAPH_BATCH_SIZES[
                 bisect.bisect_left(DEFAULT_CUDA_GRAPH_BATCH_SIZES, batch_size)
             ]
@@ -263,6 +265,7 @@ class ScheduleBatch:
             self.forward_batch.kv_indices = kv_indices
 
         self.forward_batch.seq_lens = prefix_lens[1:]
+        self.forward_batch.seq_lens_sum = sum(prefix_lens_list)
         self.forward_batch.extend_lens_list = cur_seq_lens_list[1:]
         self.forward_batch.padded_token = padded_token
         self.forward_batch.out_cache_loc = out_cache_loc

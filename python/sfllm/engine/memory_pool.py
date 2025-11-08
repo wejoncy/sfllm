@@ -3,6 +3,7 @@ from collections import deque
 import logging
 import itertools
 import torch
+from typing import List
 from sfllm.server_args import ServerArgs
 
 logger = logging.getLogger(__name__)
@@ -116,7 +117,12 @@ class BlockMemoryManager:
             self.sort_free_blocks()
         return len(self.free_block_ids) >= token_len
 
-    def alloc_block(self, token_ids: list[int], hashv: int) -> BlockMemory:
+    def persist_alloc_block_from_rear(self, num_tokens: int) -> List[int]:
+        popped = [self.free_block_ids.pop() for _ in range(min(num_tokens, len(self.free_block_ids)))]
+        popped.reverse()
+        return popped
+
+    def alloc_block(self, token_ids: List[int], hashv: int) -> List[int]:
         """Allocate a block of memory."""
         block_ids = []
         for token_id in token_ids:
@@ -125,12 +131,12 @@ class BlockMemoryManager:
 
         return block_ids
 
-    def borrow_disposable_block(self, token_nums: int) -> list[int]:
+    def borrow_disposable_block(self, token_nums: int) -> List[int]:
         """Borrow disposable blocks of memory without tracking."""
         block_ids = list(itertools.islice(self.free_block_ids, token_nums))
         return block_ids
 
-    def free_block(self, block_ids: list[int], force_sort: bool = False):
+    def free_block(self, block_ids: List[int], force_sort: bool = False):
         """Free a block of memory."""
         for block_id in block_ids:
             self._free_block_by_id(block_id)
@@ -173,14 +179,14 @@ class SpecMemoryManager:
                 )
             )
 
-    def alloc_block(self, token_ids: list[int], block_ids: list[int]):
+    def alloc_block(self, token_ids: List[int], block_ids: List[int]):
         """Allocate a shadow block of memory."""
         for token_id, block_id in zip(token_ids, block_ids):
             if token_id not in self.tokenid2blockids:
                 self.tokenid2blockids[token_id] = []
             self.tokenid2blockids[token_id].append(block_id)
 
-    def free_block(self, token_ids: list[int]) -> list[int]:
+    def free_block(self, token_ids: List[int]) -> List[int]:
         """Free a shadow block of memory."""
         freed_block_ids = []
         for token_id in token_ids:

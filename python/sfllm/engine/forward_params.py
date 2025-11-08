@@ -12,6 +12,7 @@ class ForwardMode(IntEnum):
     # It is also called "prefill" in common terminology.
     EXTEND = auto()
     TARGET_VERIFY = auto()
+    DRAFT_EXTEND = auto()
     # Decode one token.
     DECODE = auto()
     # Contains both EXTEND and DECODE when doing chunked prefill.
@@ -37,6 +38,7 @@ class ForwardBatch:
         self.max_kv_splits = 16
         self.sampling_batch_info = None
         self.padded_token = 0
+        self.padded_token_extend = 0
 
         self.position_ids_extend = None
 

@@ -8,9 +8,15 @@
             "name": "Python Debugger: Current File",
             "type": "debugpy",
             "request": "launch",
+            // "program": "python\\sfllm\\serving\\app.py",
+            "env": {"CUDA_LAUNCH_BLOCKING":"1"},
             "program": "${file}",
             "console": "integratedTerminal",
-            "justMyCode": false,
+            "args": ["--model=D:\\work\\Qwen3-0.6B\\", "--dtype=float16", "--disable-overlap", 
+            "--speculative-algorithm=eagle3", "--draft-model-path=D:\\work\\Qwen3-06B-eagle3\\", "--speculative-eagle-topk=4",
+            "--speculative-num-steps=4", "--speculative-num-draft-tokens=12"
+            ],
+            "justMyCode": true,
         }
     ]
 }

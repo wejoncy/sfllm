@@ -30,7 +30,7 @@ class InferenceEngine:
         self.running = False
         self.scheduler = Scheduler(server_args, self.model_worker)
         self.output_batch_queue = queue.Queue()
-        self.model_worker.init_capture_graph()
+        self.model_worker.init_capture_cudagraph()
         self.enable_overlap = not server_args.disable_overlap
 
     def post_forward(
@@ -177,10 +177,10 @@ class InferenceEngine:
                         resolve_future_token_ids(cur_batch.input_ids, future_tokenid_bufs)
                     model_output = self.model_worker.forward(cur_batch)
                     fake_tokenid_indices = cur_batch.fake_tokenid_indices(future_limit)
-                    assert model_output.shape[-1] == len(cur_batch)
+                    assert model_output.next_token_ids.shape[-1] == len(cur_batch)
                     cur_batch.add_placeholder_token(future_limit)
-                    future_tokenid_bufs[fake_tokenid_indices] = model_output
-                    cur_batch.next_token_ids = model_output.to("cpu", non_blocking=True)
+                    future_tokenid_bufs[fake_tokenid_indices] = model_output.next_token_ids
+                    cur_batch.next_token_ids = model_output.next_token_ids.to("cpu", non_blocking=True)
                     cur_batch.copy_done = torch.cuda.Event()
                     cur_batch.copy_done.record(compute_stream)
 

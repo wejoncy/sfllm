@@ -21,6 +21,8 @@ class ModelWorker:
         server_args.model_config = self.model_runner.model.config
         self.detokenize = self.model_runner.detokenize
         self.tokenizer = self.model_runner.tokenizer
+        self.compute_stream = self.model_runner.compute_stream
+        self.copy_in_stream = self.model_runner.copy_in_stream
 
         #===init
         self.model_runner.profile_run()
@@ -30,8 +32,8 @@ class ModelWorker:
     def main_mem_pool(self):
         return self.model_runner.block_memory_manager
     
-    def init_capture_graph(self):
-        self.model_runner.init_capture_graph()
+    def init_capture_cudagraph(self):
+        self.model_runner.init_capture_cudagraph()
 
     def forward(self, scheduled_batch: ScheduleBatch) -> BatchResult:
         return self.model_runner.forward(scheduled_batch)
