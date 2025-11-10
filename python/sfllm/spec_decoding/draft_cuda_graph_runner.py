@@ -70,7 +70,7 @@ class EagleCudaGraphRunner():
             
         self.cuda_graphs[1].replay()
 
-    @torch.compile
+    # @torch.compile
     def prepare_replay(self, spec_info, scheduled_batch):
         batch_size = len(scheduled_batch)
         self.hidden_states_buffer[:batch_size].copy_(spec_info.hidden_states)

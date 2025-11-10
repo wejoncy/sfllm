@@ -156,15 +156,6 @@ python python/sfllm/serving/app.py \
   --disable-cuda-graph             # Disable CUDA graphs
 ```
 
-### Environment Variables
-
-```bash
-export SFLLM_MODEL_PATH=/path/to/model
-export SFLLM_PORT=8081
-export SFLLM_DTYPE=float16
-export CUDA_VISIBLE_DEVICES=0
-```
-
 ## 🧪 Testing
 
 ### Run Performance Benchmarks
