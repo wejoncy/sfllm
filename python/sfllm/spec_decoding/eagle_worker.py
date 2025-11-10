@@ -91,7 +91,7 @@ class EagleWorker:
     def init_capture_cudagraph(self):
         if not self.server_args.disable_cuda_graph:
             self.target_model_runner.init_capture_cudagraph(forward_mode=ForwardMode.TARGET_VERIFY)
-            self.draft_model_runner.init_capture_cudagraph(forward_mode=ForwardMode.DRAFT_EXTEND)
+            # self.draft_model_runner.init_capture_cudagraph(forward_mode=ForwardMode.DRAFT_EXTEND)
             self.eagle_cuda_graph_runner.init_cuda_graph()
         
     @torch.inference_mode()

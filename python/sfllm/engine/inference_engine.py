@@ -1,6 +1,7 @@
 
 """
 nsys profile  --force-overwrite=true  -o baseline-report  --trace=cuda,nvtx,osrt,cudnn --cuda-graph-trace=node  python python/sfllm/engine/inference_engine.py
+HIP_TRACE_API=1 is useful for ROCm error tracing
 """
 import logging
 import torch
@@ -222,7 +223,10 @@ class InferenceEngine:
     def generate(self, prompt: List[str]|str, sampling_params: SamplingParams,
                  stream:bool=False) -> Generator[Dict[str, Any], Any, Any]:
         """Generate text for inference requests."""
-        
+        if self.enable_overlap:
+            yield from self.generate_overlap(prompt, sampling_params, stream=stream)
+            return
+
         if isinstance(prompt, str):
             prompt = [prompt]
         for p in prompt:

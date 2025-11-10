@@ -27,7 +27,7 @@ class EagleCudaGraphRunner():
         self.hidden_states_buffer = draft_model_runner.hidden_states_buffer.view(-1, draft_model_runner.get_config().hidden_size)
         self.input_ids = draft_model_runner.input_ids
         self.position_ids = draft_model_runner.position_ids
-        self.kv_indices_mtd_buffer = draft_model_runner.out_cache_loc
+        self.kv_indices_mtd_buffer = draft_model_runner.kv_indices_buffer
         self.cuda_graphs = {}
         self.graph_pool  = draft_model_runner.graph_pool
         self.graph_outputs = {}
@@ -70,7 +70,7 @@ class EagleCudaGraphRunner():
             
         self.cuda_graphs[1].replay()
 
-
+    @torch.compile
     def prepare_replay(self, spec_info, scheduled_batch):
         batch_size = len(scheduled_batch)
         self.hidden_states_buffer[:batch_size].copy_(spec_info.hidden_states)

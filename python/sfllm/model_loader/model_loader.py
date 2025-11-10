@@ -1,4 +1,3 @@
-import concurrent
 from contextlib import ContextDecorator
 import glob
 import json
@@ -54,7 +53,9 @@ def _get_resolved_weight_or_index_file(model_name_or_path):
     return str(weight_or_index_file)
 
 
-def _load_check_point(model, model_name_or_path, get_keys_only: bool = False):        
+def _load_check_point(model, model_name_or_path, get_keys_only: bool = False):
+    from transformers.utils.hub import cached_file
+    import concurrent
     weight_or_index_file = _get_resolved_weight_or_index_file(model_name_or_path)
     all_keys = set()
     all_missing_keys = []

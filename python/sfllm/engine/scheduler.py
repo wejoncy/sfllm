@@ -77,7 +77,7 @@ class RunningMetrics:
 
         tps = self.tokens_generated / elapsed
         if (tps > 0 and elapsed > refresh_interval) or (tps == 0 and elapsed > refresh_interval * 10) or is_prefill:
-            msg = f"Decode batch. #running-req: {decode_tokens}. "
+            msg = f"Decode batch. #running-req: {len(seq_group)}. "
             cache_usage = self.block_memory_manager.get_usage()
             msg += (
                 f"gen throughput (token/s): {tps:.2f}, "
