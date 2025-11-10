@@ -103,7 +103,7 @@ class ModelRunner:
         self.kv_indices_buffer = torch.zeros((MAX_PROCESSED_TOKENS,), dtype=torch.int64, device="cuda")
         self.qo_indptr_buffer = torch.zeros((max_batch_size+4,), dtype=torch.int32, device="cuda")
         self.mask_indptr_buffer = torch.zeros((max_batch_size+2,), dtype=torch.int32, device="cuda")
-        self.custom_mask_buffer = torch.zeros((256*160+2,), dtype=torch.bool, device="cuda")
+        self.custom_mask_buffer = torch.zeros((MAX_PROCESSED_TOKENS*4096//200+2,), dtype=torch.bool, device="cuda")
 
         if self.is_draft:
             self.hidden_states_buffer = torch.empty(
@@ -360,7 +360,7 @@ class ModelRunner:
             self.cuda_graphs[pad_bs_size].replay()
             logits, aux_hidden_states = self.output_logits[pad_bs_size]
         elif (forward_batch.forward_mode == ForwardMode.DRAFT_EXTEND
-              and self.cuda_graphs_extend.get(extend_bs_size) is not None and False
+              and self.cuda_graphs_extend.get(extend_bs_size) is not None
               ):
             self.prepare_replay(inputs, scheduled_batch)
             self.cuda_graphs_extend[extend_bs_size].replay()
