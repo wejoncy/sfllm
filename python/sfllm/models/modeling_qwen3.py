@@ -1,10 +1,10 @@
 from collections.abc import Callable
-from typing import Optional, Union
+from typing import Optional, Union,List
 
 import torch
 from torch import nn
 from torch import Tensor
-from sfllm.layers.triton_attention import RaggedAttention
+from sfllm.layers.radix_attention import RadixAttention
 from sfllm.kernels.rope import rope_forward
 from sfllm.engine.forward_params import ForwardMode, ForwardBatch
 
@@ -188,14 +188,18 @@ class Qwen3Attention(nn.Module):
         self.q_norm = Qwen3RMSNorm(self.head_dim, eps=config.rms_norm_eps)  # unlike olmo, only on the head dim!
         self.k_norm = Qwen3RMSNorm(self.head_dim, eps=config.rms_norm_eps)  # thus post q_norm does not need reshape
         self.sliding_window = config.sliding_window if self.layer_type == "sliding_attention" else None
-        self.attention = RaggedAttention(layer_idx, config)
+        self.attention = RadixAttention(config.num_attention_heads,
+                                        self.head_dim,
+                                        self.scaling,
+                                        num_kv_heads=config.num_key_value_heads,
+                                        layer_id=layer_idx)
 
     def forward(
         self,
         hidden_states: torch.Tensor,
         position_embeddings: tuple[torch.Tensor, torch.Tensor],
         attention_mask: Optional[torch.Tensor],
-        forward_metadata = None,
+        forward_batch = None,
         cache_position: Optional[torch.LongTensor] = None,
         **kwargs,
     ) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
@@ -209,20 +213,14 @@ class Qwen3Attention(nn.Module):
         cos, sin = position_embeddings
         query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
 
-        if forward_metadata is not None:
-            # sin and cos are specific to RoPE models; cache_position needed for the static cache
-            # cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
-            key_states, value_states = forward_metadata.update(key_states, value_states, self.layer_idx)
+        # if forward_batch is not None:
+        #     # sin and cos are specific to RoPE models; cache_position needed for the static cache
+        #     # cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
+        #     key_states, value_states = forward_batch.update(key_states, value_states, self.layer_idx)
 
         attention_interface: Callable = eager_attention_forward
-        if forward_metadata.forward_mode == ForwardMode.DECODE:
-            attn_output = self.attention.forward_decode(
-                query_states[0], forward_metadata, self.scaling,
-            )
-        elif forward_metadata.forward_mode == ForwardMode.EXTEND:
-            attn_output = self.attention.forward_extend(
-                query_states[0], key_states[0], value_states[0], forward_metadata,
-            )
+        if self.attention is not None:
+            attn_output = self.attention(query_states[0], key_states[0], value_states[0], forward_batch)
         else:
             # if self.config._attn_implementation != "eager":
             #     attention_interface = ALL_ATTENTION_FUNCTIONS[self.config._attn_implementation]
@@ -261,7 +259,7 @@ class Qwen3DecoderLayer(nn.Module):
         hidden_states: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
-        forward_metadata: Optional[Cache] = None,
+        forward_batch: Optional[Cache] = None,
         use_cache: Optional[bool] = False,
         cache_position: Optional[torch.LongTensor] = None,
         position_embeddings: Optional[tuple[torch.Tensor, torch.Tensor]] = None,
@@ -274,7 +272,7 @@ class Qwen3DecoderLayer(nn.Module):
             hidden_states=hidden_states,
             attention_mask=attention_mask,
             position_ids=position_ids,
-            forward_metadata=forward_metadata,
+            forward_batch=forward_batch,
             use_cache=use_cache,
             cache_position=cache_position,
             position_embeddings=position_embeddings,
@@ -321,6 +319,7 @@ class Qwen3Model(Qwen3PreTrainedModel):
         self.config = config
         self.padding_idx = config.pad_token_id
         self.vocab_size = config.vocab_size
+        self.layers_to_capture = []
 
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
         self.layers = nn.ModuleList(
@@ -340,7 +339,7 @@ class Qwen3Model(Qwen3PreTrainedModel):
         input_ids: Optional[torch.LongTensor] = None,
         attention_mask: Optional[torch.Tensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
-        forward_metadata: Optional[Cache] = None,
+        forward_batch: Optional[Cache] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
         use_cache: Optional[bool] = None,
         cache_position: Optional[torch.LongTensor] = None,
@@ -355,11 +354,11 @@ class Qwen3Model(Qwen3PreTrainedModel):
         if inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids)
 
-        # if use_cache and forward_metadata is None:
-        #     forward_metadata = DynamicCache(config=self.config)
+        # if use_cache and forward_batch is None:
+        #     forward_batch = DynamicCache(config=self.config)
 
         if cache_position is None:
-            past_seen_tokens = forward_metadata.get_seq_length() if forward_metadata is not None else 0
+            past_seen_tokens = forward_batch.get_seq_length() if forward_batch is not None else 0
             cache_position = torch.arange(
                 past_seen_tokens, past_seen_tokens + inputs_embeds.shape[1], device=inputs_embeds.device
             )
@@ -375,7 +374,7 @@ class Qwen3Model(Qwen3PreTrainedModel):
                 "input_embeds": inputs_embeds,
                 "attention_mask": attention_mask,
                 "cache_position": cache_position,
-                "forward_metadata": forward_metadata,
+                "forward_batch": forward_batch,
                 "position_ids": position_ids,
             }
             # Create the masks
@@ -389,23 +388,26 @@ class Qwen3Model(Qwen3PreTrainedModel):
         hidden_states = inputs_embeds
         position_embeddings = self.rotary_emb(hidden_states, position_ids)
 
-        for decoder_layer in self.layers[: self.config.num_hidden_layers]:
+        aux_hidden_states = []
+        for i, decoder_layer in enumerate(self.layers):
+            if i in self.layers_to_capture:
+                aux_hidden_states.append(hidden_states[0])
             hidden_states = decoder_layer(
                 hidden_states,
                 attention_mask=None,#causal_mask_mapping[decoder_layer.attention_type],
                 position_embeddings=position_embeddings,
                 position_ids=position_ids,
-                forward_metadata=forward_metadata,
+                forward_batch=forward_batch,
                 use_cache=use_cache,
                 cache_position=cache_position,
                 **kwargs,
             )
 
         hidden_states = self.norm(hidden_states)
-        return hidden_states,forward_metadata
+        return hidden_states, aux_hidden_states
         # return BaseModelOutputWithPast(
         #     last_hidden_state=hidden_states,
-        #     forward_metadata=forward_metadata if use_cache else None,
+        #     forward_batch=forward_batch if use_cache else None,
         # )
 
 
@@ -420,6 +422,7 @@ class Qwen3ForCausalLM(Qwen3PreTrainedModel):
         self.model = Qwen3Model(config)
         self.vocab_size = config.vocab_size
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
+        self.capture_aux_hidden_states = False
 
         # Initialize weights and apply final processing
         # self.post_init()
@@ -430,7 +433,7 @@ class Qwen3ForCausalLM(Qwen3PreTrainedModel):
         input_ids: Optional[torch.LongTensor] = None,
         attention_mask: Optional[torch.Tensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
-        forward_metadata: Optional[Cache] = None,
+        forward_batch: Optional[Cache] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
         use_cache: Optional[bool] = None,
         cache_position: Optional[torch.LongTensor] = None,
@@ -441,19 +444,33 @@ class Qwen3ForCausalLM(Qwen3PreTrainedModel):
             input_ids=input_ids,
             attention_mask=attention_mask,
             position_ids=position_ids,
-            forward_metadata=forward_metadata,
+            forward_batch=forward_batch,
             inputs_embeds=inputs_embeds,
             use_cache=use_cache,
             cache_position=cache_position,
             **kwargs,
         )
 
-        hidden_states = outputs[0]
+        hidden_states, aux_hidden_states = outputs
         # Only compute necessary logits, and do not upcast them to float if we are not computing the loss
         # slice_indices = slice(-logits_to_keep, None) if isinstance(logits_to_keep, int) else logits_to_keep
-        if forward_metadata.forward_mode == ForwardMode.EXTEND:
-            logits = self.lm_head(hidden_states[0, forward_metadata.qo_indptr[1:] - 1, :])
+        if forward_batch.forward_mode == ForwardMode.EXTEND:
+            logits = self.lm_head(hidden_states[0, forward_batch.qo_indptr[1:] - 1])
         else:
             logits = self.lm_head(hidden_states[0])
+        return logits, aux_hidden_states
+    
+    def set_eagle3_layers_to_capture(self, layer_ids: Optional[List[int]] = None):
+        self.capture_aux_hidden_states = True
+        if layer_ids is None:
+            num_layers = self.config.num_hidden_layers
+            self.model.layers_to_capture = [2, num_layers // 2, num_layers - 3]
+        else:
+            # we plus 1 here because in sglang, for the ith layer, it takes the output
+            # of the (i-1)th layer as aux hidden state
+            self.model.layers_to_capture = [val + 1 for val in layer_ids]
 
-        return logits
+    def get_embed_and_head(self):
+        return self.model.embed_tokens.weight, self.lm_head.weight
+    
+EntryClass = [Qwen3ForCausalLM]

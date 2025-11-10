@@ -2,11 +2,13 @@ import logging
 import torch
 import bisect
 import tqdm
+import transformers
 from typing import Dict, List, Any
 
-from sfllm.engine.model_loader import ForwardModel
-from sfllm.engine.shedule_batch import ScheduleBatch
+from sfllm.model_loader.model_loader import initialize_model
+from sfllm.engine.schedule_batch import ScheduleBatch,BatchResult
 from sfllm.engine.forward_params import ForwardMode, ForwardBatch
+from sfllm.engine.memory_pool import BlockMemoryManager
 from sfllm.layers.sampler import Sampler, SamplingBatchInfo
 from sfllm.server_args import ServerArgs
 from sfllm.utils.nutils import DEFAULT_CUDA_GRAPH_BATCH_SIZES, MAX_PROCESSED_TOKENS
@@ -14,32 +16,36 @@ from sfllm.utils.nutils import DEFAULT_CUDA_GRAPH_BATCH_SIZES, MAX_PROCESSED_TOK
 logger = logging.getLogger(__name__)
 
 class ModelRunner:
-    def __init__(self, server_args: ServerArgs, device_id: int = 0):
-        self.model = ForwardModel(server_args.model_path, server_args.dtype)
-        server_args.model_config = self.model.config
+    def __init__(self, server_args: ServerArgs, device_id: int = 0, is_draft: bool = False):
+        self.is_draft = is_draft
+        if is_draft:
+            model_path = server_args.draft_model_path
+        else:
+            model_path = server_args.model_path
+            self.tokenizer = transformers.AutoTokenizer.from_pretrained(model_path)
+        self.model = initialize_model(model_path, server_args.dtype)
         self.device_id = device_id
-        self.compute_stream = torch.cuda.Stream(device=device_id)
-        self.copy_in_stream = torch.cuda.Stream(device=device_id)
-        self.cuda_graph_max_bs = server_args.cuda_graph_max_bs
-        ind = bisect.bisect_right(DEFAULT_CUDA_GRAPH_BATCH_SIZES, self.cuda_graph_max_bs)
-        self.capture_batch_size = DEFAULT_CUDA_GRAPH_BATCH_SIZES[:ind]
-        self.capture_batch_size = self.capture_batch_size[:ind]
         self.sampler = Sampler(self.model.config)
         self.rank = 0
+        self.dtype = self.model.dtype
         self.server_args = server_args
 
-        # cuda graph
-        max_batch_size = max(self.capture_batch_size)
+        expand_scale = self.server_args.speculative_num_steps* self.server_args.speculative_eagle_topk if self.is_draft else 1
+        max_batch_size = server_args.cuda_graph_max_bs*expand_scale
         self.input_ids = torch.empty((max_batch_size,), dtype=torch.long, device=self.device_id)
         self.position_ids = torch.empty((max_batch_size,), dtype=torch.long, device=self.device_id)
-        self.out_cache_loc = torch.zeros((max_batch_size,), dtype=torch.int64, device=self.device_id)
+        # we mange eagle related cuda graph buffers in EagleWorker
+        self.create_cudagraph_buffers()
+        self.init_attn_backend_buffers()
 
-        self.num_kv_splits_buffer = torch.zeros((MAX_PROCESSED_TOKENS,), dtype=torch.int32, device="cuda")+2
-        self.kv_indptr_buffer = torch.zeros((MAX_PROCESSED_TOKENS,), dtype=torch.int32, device="cuda")
-        self.kv_indices_buffer = torch.zeros((MAX_PROCESSED_TOKENS,), dtype=torch.int64, device="cuda")
-        self.qo_indptr_buffer = torch.zeros((MAX_PROCESSED_TOKENS,), dtype=torch.int32, device="cuda")
+    def get_config(self):
+        return self.model.config
+
+    def init_attn_backend_buffers(self):
+        # attn backend related buffers
         config = self.model.config
         max_kv_splits = 16
+        max_batch_size = 512
         self.attn_logits = torch.empty(
             (
                 max_batch_size*2,
@@ -56,250 +62,167 @@ class ModelRunner:
             device="cuda",
         )
 
-        self.output_logits = {}
-        self.cuda_graphs = {}
-        self.graph_pool = torch.cuda.graph_pool_handle()
+    def init_memory_pool(self, num_blocks: int = None):
+        self.block_memory_manager = BlockMemoryManager(
+            self.server_args, self.get_config(), num_blocks=num_blocks
+        )
 
-    def init_capture_graph(self, memory_pool):
+    def wrap_target_model(self, target_model_runner: 'ModelRunner'):
+        self.attn_logits = target_model_runner.attn_logits
+        self.attn_lse = target_model_runner.attn_lse
+        self.compute_stream = target_model_runner.compute_stream
+        self.copy_in_stream = target_model_runner.copy_in_stream
+        self.graph_pool = target_model_runner.graph_pool
+
+    def create_cudagraph_buffers(self):
+        # cuda graph
+        device_id = self.device_id
+        server_args = self.server_args
+        if not self.is_draft:
+            self.compute_stream = torch.cuda.Stream(device=device_id)
+            self.copy_in_stream = torch.cuda.Stream(device=device_id)
+            self.graph_pool = torch.cuda.graph_pool_handle()
+        self.cuda_graph_max_bs = server_args.cuda_graph_max_bs
+        ind = bisect.bisect_right(DEFAULT_CUDA_GRAPH_BATCH_SIZES, self.cuda_graph_max_bs)
+        self.capture_batch_size = DEFAULT_CUDA_GRAPH_BATCH_SIZES[:ind]
+        self.capture_batch_size = self.capture_batch_size[:ind]
+
+        expand_scale = self.server_args.speculative_num_steps* self.server_args.speculative_eagle_topk if self.is_draft else 1
+        max_batch_size = max(self.capture_batch_size)*expand_scale
+        # for draft extend, out_cache_loc size = batch_size * speculative_num_steps*topk
+        self.out_cache_loc = torch.zeros((max_batch_size,), dtype=torch.int64, device=self.device_id)
+        self.output_logits = {}
+        self.output_logits_target_verify = {}
+        self.output_logits_extend = {}
+        self.cuda_graphs = {}
+        self.cuda_graphs_extend = {}
+        self.cuda_graphs_target_verify = {}
+
+        self.num_kv_splits_buffer = torch.zeros((MAX_PROCESSED_TOKENS,), dtype=torch.int32, device="cuda")+2
+        self.kv_indptr_buffer = torch.zeros((max_batch_size+2,), dtype=torch.int32, device="cuda")
+        self.kv_indices_buffer = torch.zeros((MAX_PROCESSED_TOKENS,), dtype=torch.int64, device="cuda")
+        self.qo_indptr_buffer = torch.zeros((max_batch_size+4,), dtype=torch.int32, device="cuda")
+        self.mask_indptr_buffer = torch.zeros((max_batch_size+2,), dtype=torch.int32, device="cuda")
+        self.custom_mask_buffer = torch.zeros((256*160+2,), dtype=torch.bool, device="cuda")
+
+        if self.is_draft:
+            self.hidden_states_buffer = torch.empty(
+                (max_batch_size, self.get_config().hidden_size*3),
+                dtype=self.dtype,
+                device=self.device_id
+            )
+
+    def init_capture_cudagraph(self, forward_mode: ForwardMode = ForwardMode.DECODE):
         if self.server_args.disable_cuda_graph is False:
-            self.capture_graph(memory_pool)
+            if forward_mode == ForwardMode.DRAFT_EXTEND:
+                self.capture_cudagraph_draft_extend()
+            elif forward_mode == ForwardMode.TARGET_VERIFY:
+                self.capture_cudagraph_target_verify()
+            else:
+                self.capture_cudagraph_decode()
 
     def get_max_context_length(self):
         return self.model.config.max_position_embeddings
     
     def prepare_inputs(self, scheduled_batch: ScheduleBatch) -> Dict[str, Any]:
         batch_size = len(scheduled_batch)
-        forward_metadata = scheduled_batch.forward_metadata
-        padded_batch_size = batch_size + forward_metadata.padded_token
-        total_seq_len = forward_metadata.kv_indices.shape[0]
+        forward_batch = scheduled_batch.forward_batch
+        padded_batch_size = batch_size + forward_batch.padded_token
+        forward_batch.attn_logits = self.attn_logits
+        forward_batch.attn_lse = self.attn_lse
+        forward_batch.num_kv_splits = self.num_kv_splits_buffer[:padded_batch_size]
 
-        forward_metadata.attn_logits = self.attn_logits
-        forward_metadata.attn_lse = self.attn_lse
-        if forward_metadata.forward_mode == ForwardMode.EXTEND:
-            ori_data = forward_metadata.kv_indptr
-            forward_metadata.kv_indptr = self.kv_indptr_buffer[: batch_size + 1]
-            forward_metadata.kv_indptr[1:].copy_(ori_data, non_blocking=True)
-            ori_data = forward_metadata.kv_indices
-            forward_metadata.kv_indices = self.kv_indices_buffer[
-                :total_seq_len
-            ]
-            forward_metadata.kv_indices.copy_(ori_data, non_blocking=True)
-            ori_data = forward_metadata.qo_indptr
-            forward_metadata.qo_indptr = self.qo_indptr_buffer[
-                : batch_size + 1
-            ]
-            forward_metadata.qo_indptr[1:].copy_(ori_data, non_blocking=True)
-        else:
-            ori_data = forward_metadata.kv_indptr
-            forward_metadata.kv_indptr = self.kv_indptr_buffer[
-                : padded_batch_size + 1
-            ]
-            forward_metadata.kv_indptr[1:].copy_(ori_data, non_blocking=True)
-            ori_data = forward_metadata.kv_indices
-            forward_metadata.kv_indices = self.kv_indices_buffer[
-                :total_seq_len
-            ]
-            forward_metadata.kv_indices.copy_(ori_data, non_blocking=True)
-            forward_metadata.num_kv_splits = (
-                self.num_kv_splits_buffer[:padded_batch_size]
-            )
+        assert forward_batch.out_cache_loc is None or forward_batch.out_cache_loc.dtype == torch.long
+        assert forward_batch.qo_indptr is None or forward_batch.qo_indptr.dtype == torch.int32
+        assert forward_batch.kv_indptr is None or forward_batch.kv_indptr.dtype == torch.int32
+        assert forward_batch.mask_indptr is None or forward_batch.mask_indptr.dtype == torch.int32
+        assert forward_batch.kv_indices is None or forward_batch.kv_indices.dtype == torch.long
+        assert forward_batch.custom_mask is None or forward_batch.custom_mask.dtype == torch.bool
+
         return {
             "input_ids": scheduled_batch.input_ids,
             "position_ids": scheduled_batch.position_ids,
             # "attention_mask": attention_mask,
-            "forward_metadata": forward_metadata,
+            "forward_batch": forward_batch,
         }
-    def prepare_inputs1(self, scheduled_batch: ScheduleBatch) -> Dict[str, Any]:
-        cur_seq_lens_list = []
-        input_ids_list = []
-        position_ids_list = []
-        cache_loc_ids_list = []
-        kv_indices_list = []
-        prefix_lens_list = []
-        batch_size = len(scheduled_batch)
-        if len(scheduled_batch[-1].new_tokens) == len(scheduled_batch[-1].tokens):
-            self.forward_metadata.forward_mode = ForwardMode.EXTEND
-        else:
-            self.forward_metadata.forward_mode = ForwardMode.DECODE
-
-        padded_batch_size = batch_size
-        padded_token = 0
-        if (
-            # self.server_args.disable_cuda_graph and 
-            self.forward_metadata.forward_mode == ForwardMode.DECODE
-            and batch_size < self.cuda_graph_max_bs
-        ):
-            padded_batch_size = self.capture_batch_size[
-                bisect.bisect_left(self.capture_batch_size, batch_size)
-            ]
-            padded_token = padded_batch_size - batch_size
-
-        for sequence in scheduled_batch:
-            cur_seq_lens_list.append(len(sequence.new_tokens))
-            input_ids_list.extend(sequence.new_tokens)
-            start_pos = len(sequence.tokens) - len(sequence.new_tokens)
-            position_ids_list.extend(
-                list(range(start_pos, start_pos+cur_seq_lens_list[-1]))
-            )
-            prefix_lens_list.append(start_pos)
-            cache_loc_ids_list.extend(sequence.cache_loc_ids[-len(sequence.new_tokens):])
-            kv_indices_list.extend(sequence.cache_loc_ids)
-
-        if padded_token > 0:
-            input_ids_list.extend([0]*padded_token)
-            position_ids_list.extend([0]*padded_token)
-            cur_seq_lens_list.extend([1]*padded_token)
-            cache_loc_ids_list.extend([0]*padded_token)
-            kv_indices_list.extend([0]*padded_token)
-            prefix_lens_list.extend([0]*padded_token)
-
-        input_ids = torch.tensor(input_ids_list, dtype=torch.long, pin_memory=True).to(self.device_id, non_blocking=True)
-        position_ids = torch.tensor(
-            position_ids_list, dtype=torch.long, pin_memory=True).to(self.device_id, non_blocking=True)
-        cur_seq_lens = torch.tensor(cur_seq_lens_list, dtype=torch.int32, pin_memory=True).to(self.device_id, non_blocking=True)
-        cache_loc_ids = torch.tensor(cache_loc_ids_list, dtype=torch.int64, pin_memory=True).to(self.device_id, non_blocking=True)
-        kv_indices = torch.tensor(kv_indices_list, dtype=torch.int64, pin_memory=True).to(self.device_id, non_blocking=True)
-        prefix_lens = torch.tensor(prefix_lens_list, dtype=torch.int32, pin_memory=True).to(self.device_id, non_blocking=True)
-
-        total_seq_len = kv_indices.shape[0]
-        if self.forward_metadata.forward_mode == ForwardMode.EXTEND:
-            self.forward_metadata.max_extend_len = max(cur_seq_lens_list)
-            self.forward_metadata.kv_indptr = self.forward_metadata.kv_indptr_buffer[
-                : batch_size + 1
-            ]
-            self.forward_metadata.kv_indptr[1:].copy_(
-                prefix_lens.cumsum(dim=-1), non_blocking=True
-            )
-
-            self.forward_metadata.kv_indices = self.forward_metadata.kv_indices_buffer[
-                :total_seq_len
-            ]
-            self.forward_metadata.kv_indices.copy_(kv_indices, non_blocking=True)
-
-            self.forward_metadata.qo_indptr = self.forward_metadata.qo_indptr_buffer[
-                : batch_size + 1
-            ]
-            self.forward_metadata.qo_indptr[1:].copy_(cur_seq_lens.cumsum(dim=-1), non_blocking=True)
-        else:
-            self.forward_metadata.kv_indptr = self.forward_metadata.kv_indptr_buffer[
-                : padded_batch_size + 1
-            ]
-            self.forward_metadata.kv_indptr[1:].copy_((prefix_lens+1).cumsum(dim=-1), non_blocking=True)
-            
-            self.forward_metadata.kv_indices = self.forward_metadata.kv_indices_buffer[
-                :total_seq_len
-            ]
-            self.forward_metadata.kv_indices.copy_(kv_indices, non_blocking=True)
-            self.forward_metadata.num_kv_splits = (
-                self.forward_metadata.num_kv_splits_buffer[:padded_batch_size]
-            )
-        self.forward_metadata.padded_token = padded_token
-
-        self.forward_metadata.out_cache_loc = cache_loc_ids.to(self.forward_metadata.kv_indices.device, non_blocking=True)
-
-        return {
-            "input_ids": input_ids,
-            "position_ids": position_ids,
-            # "attention_mask": attention_mask,
-            "forward_metadata": self.forward_metadata,
-        }
-
-    def prepare_sample(self, seqs: ScheduleBatch) -> torch.Tensor:
-        # if self.forward_metadata.sampling_batch_info is not None:
-        #     return
-        temperatures = []
-        top_ps = []
-        top_ks = []
-        for seq in seqs:
-            temperatures.append(seq.sampling_params.temperature)
-            top_ps.append(seq.sampling_params.top_p)
-            top_ks.append(seq.sampling_params.top_k)
-        temperatures = torch.tensor(temperatures, dtype=torch.float32, pin_memory=True).cuda(non_blocking=True)
-        top_ks = torch.tensor(top_ks, dtype=torch.int32, pin_memory=True).cuda(non_blocking=True)
-        top_ps = torch.tensor(top_ps, dtype=torch.float32, pin_memory=True).cuda(non_blocking=True)
-        self.forward_metadata.sampling_batch_info = SamplingBatchInfo(
-            temperatures=temperatures,
-            top_ps=top_ps,
-            top_ks=top_ks,
-            min_ps=torch.zeros_like(top_ps),
-            is_all_greedy=all(seq.sampling_params.is_greedy for seq in seqs),
-        )
 
     def prepare_replay(self, inputs: Dict[str, Any], scheduled_batch: ScheduleBatch):
-        bs_size = len(scheduled_batch)
-        forward_metadata = inputs["forward_metadata"]
-        padded_bs_size = bs_size + forward_metadata.padded_token
-        self.input_ids[:padded_bs_size].copy_(inputs["input_ids"], non_blocking=True)
-        self.position_ids[:padded_bs_size].copy_(
-            inputs["position_ids"], non_blocking=True
-        )
-        self.out_cache_loc[:padded_bs_size].copy_(
-            forward_metadata.out_cache_loc, non_blocking=True
-        )
-        # self.attention_mask[:bs_size].copy_(inputs["attention_mask"], non_blocking=True)
-
-
-    def forward(self, scheduled_batch: ScheduleBatch):
-        forward_metadata = scheduled_batch.forward_metadata
-        inputs = self.prepare_inputs(scheduled_batch)
-        # self.prepare_sample(scheduled_batch) if self.rank == 0 else None
-        bs_size = len(scheduled_batch)
-        pad_bs_size = forward_metadata.padded_token + bs_size
-        if (
-            forward_metadata.forward_mode == ForwardMode.DECODE
-            and self.cuda_graphs.get(pad_bs_size) is not None
-        ):
-            self.prepare_replay(inputs, scheduled_batch)
-            self.cuda_graphs[pad_bs_size].replay()
-            logits = self.output_logits[pad_bs_size][:bs_size]
+        batch_size = len(scheduled_batch)
+        forward_batch = inputs["forward_batch"]
+        total_seq_len = forward_batch.kv_indices.shape[0]
+        padded_bs_size = batch_size + forward_batch.padded_token
+        if forward_batch.forward_mode == ForwardMode.DRAFT_EXTEND:
+            padded_extend_batch_size = scheduled_batch.input_ids.shape[0]
+        elif forward_batch.forward_mode == ForwardMode.TARGET_VERIFY:
+            padded_extend_batch_size = batch_size * self.server_args.speculative_num_draft_tokens
         else:
-            logits = self.model(**inputs)[:bs_size]
+            padded_extend_batch_size = padded_bs_size
 
-        token_ids = (
-            self.sampler(logits, forward_metadata.sampling_batch_info) if self.rank == 0 else None
-        )
-        return token_ids
+        self.input_ids[:padded_extend_batch_size].copy_(inputs["input_ids"])
+        self.position_ids[:padded_extend_batch_size].copy_(inputs["position_ids"])
+        self.out_cache_loc[:padded_extend_batch_size].copy_(forward_batch.out_cache_loc)
+        self.kv_indices_buffer[:total_seq_len].copy_(forward_batch.kv_indices)
+        if forward_batch.forward_mode == ForwardMode.DRAFT_EXTEND:
+            self.kv_indptr_buffer[: padded_extend_batch_size + 1].copy_(forward_batch.kv_indptr)
+            self.qo_indptr_buffer[: padded_extend_batch_size + 1].copy_(forward_batch.qo_indptr)
+            if not self.server_args.disable_cuda_graph:
+                if self.is_draft and forward_batch.spec_info.hidden_states is not None :
+                    self.hidden_states_buffer[:padded_extend_batch_size].copy_(forward_batch.spec_info.hidden_states)
+        elif forward_batch.forward_mode == ForwardMode.TARGET_VERIFY:
+            self.qo_indptr_buffer[: padded_bs_size + 1].copy_(forward_batch.qo_indptr)
+            self.kv_indptr_buffer[: padded_bs_size + 1].copy_(forward_batch.kv_indptr)
+            # shape:seq_lens_sum * num_verify_tokens+ num_verify_tokens * num_verify_tokens * bs,
+            self.custom_mask_buffer[:forward_batch.custom_mask.shape[0]].copy_(forward_batch.custom_mask)
+            self.mask_indptr_buffer[: padded_bs_size + 1].copy_(forward_batch.mask_indptr)
+        else:
+            if self.is_draft:
+                padded_bs_size = scheduled_batch.input_ids.shape[-1]
+            self.kv_indptr_buffer[: padded_bs_size + 1].copy_(forward_batch.kv_indptr)
 
-    def profile_run(self):
+
+    def profile_run(self, forward_batch: ForwardBatch = None):
         logger.info("Profiling run to reserve activation memory...")
+        profile_batch = 64
         self.input_ids.fill_(0)
         self.position_ids.fill_(0)
-        forward_metadata = ForwardBatch(None)
-        forward_metadata.qo_indptr = self.qo_indptr_buffer[: 1]
-        forward_metadata.qo_indptr[0] = 0
+        if forward_batch is None:
+            forward_batch = ForwardBatch(None)
+        qo_indptr_buffer = self.input_ids.view(dtype=torch.int32)
+        forward_batch.qo_indptr = qo_indptr_buffer[: 1]
+        forward_batch.qo_indptr[0] = 0
         with torch.no_grad():
             self.model(
-                self.input_ids*0,
-                position_ids=self.position_ids*0,
-                forward_metadata=forward_metadata,
+                self.input_ids[:profile_batch]*0,
+                position_ids=self.position_ids[:profile_batch]*0,
+                forward_batch=forward_batch,
             )
 
-
-    def capture_graph(self, memory_pool):
+    @torch.inference_mode()
+    def capture_cudagraph_decode(self):
+        memory_pool = self.block_memory_manager
         batch_size = 1
-        forward_metadata = ForwardBatch(memory_pool)
-        forward_metadata.attn_logits = self.attn_logits
-        forward_metadata.attn_lse = self.attn_lse
+        forward_batch = ForwardBatch(memory_pool)
+        forward_batch.attn_logits = self.attn_logits
+        forward_batch.attn_lse = self.attn_lse
         input_ids = self.input_ids[:batch_size]
-        forward_metadata.kv_indptr = self.kv_indptr_buffer[: batch_size + 1]
-        forward_metadata.kv_indices = self.kv_indices_buffer[
+        forward_batch.kv_indptr = self.kv_indptr_buffer[: batch_size + 1]
+        forward_batch.kv_indices = self.kv_indices_buffer[
             : input_ids.shape[0]
         ]
-        forward_metadata.num_kv_splits = self.num_kv_splits_buffer[:batch_size]
-        forward_metadata.forward_mode = ForwardMode.DECODE
-        forward_metadata.out_cache_loc = forward_metadata.kv_indices
+        forward_batch.num_kv_splits = self.num_kv_splits_buffer[:batch_size]
+        forward_batch.forward_mode = ForwardMode.DECODE
+        forward_batch.out_cache_loc = forward_batch.kv_indices
         self.compute_stream.synchronize()
 
-        with torch.no_grad():
-            self.model(
-                self.input_ids[:batch_size],
-                position_ids=self.position_ids[:batch_size],
-                forward_metadata=forward_metadata,
-            )
+        self.model(
+            self.input_ids[:batch_size],
+            position_ids=self.position_ids[:batch_size],
+            forward_batch=forward_batch,
+        )
 
         for batch_size in tqdm.tqdm(self.capture_batch_size, desc="Capturing CUDA Graphs"):
-            forward_metadata.kv_indptr = self.kv_indptr_buffer[: batch_size + 1]
-            forward_metadata.out_cache_loc = self.out_cache_loc[:batch_size]
+            forward_batch.kv_indptr = self.kv_indptr_buffer[: batch_size + 1]
+            forward_batch.out_cache_loc = self.out_cache_loc[:batch_size]
             torch.cuda.synchronize()
             cudagraph = torch.cuda.CUDAGraph()
             # attention_mask = torch.empty((batch_size), dtype=torch.long, device=self.device_id)
@@ -307,19 +230,159 @@ class ModelRunner:
                 output = self.model(
                     self.input_ids[:batch_size],
                     position_ids=self.position_ids[:batch_size],
-                    forward_metadata=forward_metadata,
+                    forward_batch=forward_batch,
                 )
             torch.cuda.synchronize()
             self.output_logits[batch_size] = output
             self.cuda_graphs[batch_size] = cudagraph
             
         self.cuda_graphs[1].replay()
+
+    @torch.inference_mode()
+    def capture_cudagraph_target_verify(self):
+        draft_tokens_expand = self.server_args.speculative_num_draft_tokens
+        memory_pool = self.block_memory_manager
+        batch_size = 1
+        forward_batch = ForwardBatch(memory_pool)
+        forward_batch.forward_mode = ForwardMode.TARGET_VERIFY
+        forward_batch.attn_logits = self.attn_logits
+        forward_batch.attn_lse = self.attn_lse
+
+        forward_batch.qo_indptr = self.qo_indptr_buffer[: batch_size + 1]
+        forward_batch.kv_indptr = self.kv_indptr_buffer[: batch_size + 1]
+        forward_batch.kv_indices = self.kv_indices_buffer[: batch_size + 1]
+        forward_batch.num_kv_splits = self.num_kv_splits_buffer[:batch_size]
+        forward_batch.out_cache_loc = self.out_cache_loc[:batch_size]
+        forward_batch.custom_mask = self.custom_mask_buffer[: batch_size]
+        forward_batch.mask_indptr = self.mask_indptr_buffer[: batch_size + 1]
+        forward_batch.max_extend_len = draft_tokens_expand
+        forward_batch.max_kv_split = 16
+        self.compute_stream.synchronize()
+
+        self.model(
+            self.input_ids[:batch_size],
+            position_ids=self.position_ids[:batch_size],
+            forward_batch=forward_batch,
+        )
+
+        for batch_size in tqdm.tqdm(self.capture_batch_size, desc="Capturing CUDA Graphs"):
+            forward_batch.kv_indptr = self.kv_indptr_buffer[: batch_size*draft_tokens_expand + 1]
+            forward_batch.qo_indptr = self.qo_indptr_buffer[: batch_size*draft_tokens_expand + 1]
+            forward_batch.out_cache_loc = self.out_cache_loc[:batch_size*draft_tokens_expand]
+            torch.cuda.synchronize()
+            cudagraph = torch.cuda.CUDAGraph()
+            # attention_mask = torch.empty((batch_size), dtype=torch.long, device=self.device_id)
+            with torch.cuda.graph(cudagraph, stream=self.compute_stream, pool=self.graph_pool):
+                output = self.model(
+                    self.input_ids[:batch_size*draft_tokens_expand],
+                    position_ids=self.position_ids[:batch_size*draft_tokens_expand],
+                    forward_batch=forward_batch,
+                )
+            torch.cuda.synchronize()
+            self.output_logits_target_verify[batch_size] = output
+            self.cuda_graphs_target_verify[batch_size] = cudagraph
+            
+        self.cuda_graphs_target_verify[1].replay()
+    
+    @torch.inference_mode()
+    def capture_cudagraph_draft_extend(self):
+        from sfllm.spec_decoding.spec_utils import EagleSpecInput
+        memory_pool = self.block_memory_manager
+        batch_size = 1
+        forward_batch = ForwardBatch(memory_pool)
+        forward_batch.attn_logits = self.attn_logits
+        forward_batch.attn_lse = self.attn_lse
+        forward_batch.kv_indptr = self.kv_indptr_buffer[: batch_size + 1]
+        forward_batch.kv_indices = self.kv_indices_buffer[: batch_size]
+        forward_batch.qo_indptr = self.qo_indptr_buffer[: batch_size + 1]
+        forward_batch.num_kv_splits = self.num_kv_splits_buffer[:batch_size]
+        forward_batch.forward_mode = ForwardMode.EXTEND
+        forward_batch.out_cache_loc = forward_batch.kv_indices
+
+        if self.is_draft:
+            forward_batch.spec_info = EagleSpecInput(
+                hidden_states=self.hidden_states_buffer[:batch_size],
+            )
+
+        self.model(
+            self.input_ids[:batch_size],
+            position_ids=self.position_ids[:batch_size],
+            forward_batch=forward_batch,
+        )
+        self.compute_stream.synchronize()
+        for batch_size in tqdm.tqdm(range(1, 32), desc="Capturing CUDA Graphs"):
+            forward_batch.kv_indptr = self.kv_indptr_buffer[: batch_size + 1]
+            forward_batch.kv_indices = self.kv_indices_buffer
+            forward_batch.out_cache_loc = self.out_cache_loc[:batch_size]
+            forward_batch.qo_indptr = self.qo_indptr_buffer[: batch_size + 1]
+            forward_batch.max_extend_len = self.server_args.speculative_num_steps
+            if self.is_draft:
+                forward_batch.spec_info.hidden_states = self.hidden_states_buffer[:batch_size]
+
+            cudagraph = torch.cuda.CUDAGraph()
+
+            with torch.cuda.graph(cudagraph, stream=self.compute_stream, pool=self.graph_pool):
+
+                output = self.model(
+                    self.input_ids[:batch_size],
+                    position_ids=self.position_ids[:batch_size],
+                    forward_batch=forward_batch,
+                )
+            torch.cuda.synchronize()
+            self.output_logits_extend[batch_size] = output
+            self.cuda_graphs_extend[batch_size] = cudagraph
+            
+        self.cuda_graphs_extend[1].replay()
     
     def tokenize(self, prompt):
-        return self.model.tokenizer.encode(prompt)
+        return self.tokenizer.encode(prompt)
 
 
     def detokenize(self, tokens):
-        return self.model.tokenizer.decode(
+        return self.tokenizer.decode(
             tokens, skip_special_tokens=True, spaces_between_special_tokens=True
         )
+
+    @torch.inference_mode()
+    def forward(self, scheduled_batch: ScheduleBatch):
+        forward_batch = scheduled_batch.forward_batch
+        inputs = self.prepare_inputs(scheduled_batch)
+
+        bs_size = len(scheduled_batch)
+        extend_bs_size = inputs["input_ids"].shape[0]
+        pad_bs_size = forward_batch.padded_token + bs_size
+        aux_hidden_states = None
+        if (
+            forward_batch.forward_mode == ForwardMode.DECODE
+            and self.cuda_graphs.get(pad_bs_size) is not None
+        ):
+            self.prepare_replay(inputs, scheduled_batch)
+            self.cuda_graphs[pad_bs_size].replay()
+            logits, aux_hidden_states = self.output_logits[pad_bs_size]
+        elif (forward_batch.forward_mode == ForwardMode.DRAFT_EXTEND
+              and self.cuda_graphs_extend.get(extend_bs_size) is not None and False
+              ):
+            self.prepare_replay(inputs, scheduled_batch)
+            self.cuda_graphs_extend[extend_bs_size].replay()
+            logits, aux_hidden_states = self.output_logits_extend[extend_bs_size]
+        elif (forward_batch.forward_mode == ForwardMode.TARGET_VERIFY
+              and self.cuda_graphs_target_verify.get(pad_bs_size) is not None
+              ):
+            self.prepare_replay(inputs, scheduled_batch)
+            self.cuda_graphs_target_verify[pad_bs_size].replay()
+            logits, aux_hidden_states = self.output_logits_target_verify[pad_bs_size]
+        else:
+            logits, aux_hidden_states = self.model(**inputs)
+        if forward_batch.padded_token > 0:
+            logits = logits[:bs_size]
+            aux_hidden_states = aux_hidden_states[:
+                                                  bs_size] if aux_hidden_states is not None else None
+
+        if forward_batch.padded_token_extend > 0:
+            logits = logits[:-forward_batch.padded_token_extend]
+
+        token_ids = (
+            self.sampler(
+                logits, forward_batch.sampling_batch_info) if self.rank == 0 else None
+        )
+        return BatchResult(token_ids, logits, aux_hidden_states)

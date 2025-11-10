@@ -1,7 +1,11 @@
 
 from collections import deque
 import logging
+import itertools
 import torch
+from typing import List
+from sfllm.server_args import ServerArgs
+
 logger = logging.getLogger(__name__)
 
 class BlockMemory:
@@ -29,23 +33,25 @@ class BlockMemory:
 
 class BlockMemoryManager:
     """A simple block memory manager."""
-    def __init__(self, server_args):
+    def __init__(self, server_args: ServerArgs, model_config, num_blocks: int = None):
         dtype = server_args.model_config.dtype
         self.dtype = (
             dtype if server_args.dtype == "auto" else getattr(torch, server_args.dtype)
         )
+        self.config = model_config
 
+        self.num_blocks = num_blocks
         self.num_blocks, self.block_shape = self.get_num_blocks(server_args)
         self.blocks = [BlockMemory(i) for i in range(self.num_blocks)]
         self.free_block_ids = deque(range(self.num_blocks))
         self.free_block_ids.popleft()  # reserve block 0
         self.release_block_ids = []
         self.used_block_ids = set([0])
-        self.physical_memory_pool = []
+        self.kv_buffers = []
         self.create_physical_memory_pool(server_args)
 
     def get_num_blocks(self, server_args) -> int:
-        config = server_args.model_config
+        config = self.config
         dim = (
             getattr(config, "head_dim", None)
             or config.hidden_size // config.num_attention_heads
@@ -58,6 +64,8 @@ class BlockMemoryManager:
             // one_token_size
             // config.num_hidden_layers
         )
+        if self.num_blocks is not None:
+            max_length = min(max_length, self.num_blocks)
         logger.info(
             f"GPU memory free: {free / (1024**3):.2f} GB, total: {total / (1024**3):.2f} GB"
             f", max tokens per layer: {max_length}"
@@ -65,17 +73,21 @@ class BlockMemoryManager:
         return max_length, (n_heads, dim)
 
     def create_physical_memory_pool(self, server_args):
-        config = server_args.model_config
+        config = self.config
+        kv_buffers = (
+                torch.zeros((config.num_hidden_layers,
+                    self.num_blocks, *self.block_shape), dtype=self.dtype, device="cuda"
+                ),
+                torch.zeros((config.num_hidden_layers,
+                    self.num_blocks, *self.block_shape), dtype=self.dtype, device="cuda"),
+        )
         for _ in range(config.num_hidden_layers):
-            self.physical_memory_pool.append(
+            self.kv_buffers.append(
                 (
-                    torch.zeros(
-                        self.num_blocks, *self.block_shape, dtype=self.dtype
-                    ).cuda(),
-                    torch.zeros(self.num_blocks, *self.block_shape, dtype=self.dtype).cuda(),
+                    kv_buffers[0][_],
+                    kv_buffers[1][_],
                 )
             )
-
 
     def _alloc_block_by_id(self, block_id: int, token_id: int, hashv: int) -> BlockMemory:
         """Allocate a block of memory by block ID."""
@@ -91,17 +103,26 @@ class BlockMemoryManager:
         self.used_block_ids.remove(block_id)
         self.release_block_ids.append(block_id)
 
+    def sort_free_blocks(self):
+        """Sort the free blocks."""
+        self.release_block_ids.extend(self.free_block_ids)
+        self.free_block_ids.clear()
+        self.release_block_ids.sort()
+        self.free_block_ids.extend(self.release_block_ids)
+        self.release_block_ids.clear()
+
     def can_alloc(self, token_len: int) -> bool:
         """Check if a block of memory can be allocated."""
         if len(self.free_block_ids) < token_len:
-            self.release_block_ids.extend(self.free_block_ids)
-            self.free_block_ids.clear()
-            self.release_block_ids.sort()
-            self.free_block_ids.extend(self.release_block_ids)
-            self.release_block_ids.clear()
+            self.sort_free_blocks()
         return len(self.free_block_ids) >= token_len
 
-    def alloc_block(self, token_ids: list[int], hashv: int) -> BlockMemory:
+    def persist_alloc_block_from_rear(self, num_tokens: int) -> List[int]:
+        popped = [self.free_block_ids.pop() for _ in range(min(num_tokens, len(self.free_block_ids)))]
+        popped.reverse()
+        return popped
+
+    def alloc_block(self, token_ids: List[int], hashv: int) -> List[int]:
         """Allocate a block of memory."""
         block_ids = []
         for token_id in token_ids:
@@ -109,11 +130,18 @@ class BlockMemoryManager:
             self._alloc_block_by_id(block_ids[-1], token_id, hashv)
 
         return block_ids
-    
-    def free_block(self, block_ids: list[int]):
+
+    def borrow_disposable_block(self, token_nums: int) -> List[int]:
+        """Borrow disposable blocks of memory without tracking."""
+        block_ids = list(itertools.islice(self.free_block_ids, token_nums))
+        return block_ids
+
+    def free_block(self, block_ids: List[int], force_sort: bool = False):
         """Free a block of memory."""
         for block_id in block_ids:
             self._free_block_by_id(block_id)
+        if force_sort:
+            self.sort_free_blocks()
     
     def num_available_blocks(self) -> int:
         """Get the number of available blocks."""
@@ -123,3 +151,46 @@ class BlockMemoryManager:
         """Get the memory usage percentage."""
         used_blocks = len(self.used_block_ids)
         return (used_blocks / self.num_blocks) * 100.0
+
+# for draft model like eagle2/eagle3, those draft model has only one or two layers
+# but we expect they have the same kv shape as the main model
+class SpecMemoryManager:
+    """A simple shadow memory manager."""
+    def __init__(self, mem_manager: BlockMemoryManager, draft_config):
+        self.mem_manager = mem_manager
+        self.dtype = mem_manager.dtype
+        self.num_blocks = 1024
+        self.blocks = [BlockMemory(i) for i in range(self.num_blocks)]
+        self.free_block_ids = deque(range(self.num_blocks))
+        self.free_block_ids.popleft()  # reserve block 0
+        self.release_block_ids = []
+        self.used_block_ids = set([0])
+        self.kv_buffers = []
+        self.create_physical_memory_pool(draft_config)
+
+    def create_physical_memory_pool(self, draft_config):
+        for _ in range(draft_config.num_hidden_layers):
+            self.kv_buffers.append(
+                (
+                    torch.zeros(
+                        self.num_blocks, *self.block_shape, dtype=self.dtype
+                    ).cuda(),
+                    torch.zeros(self.num_blocks, *self.block_shape, dtype=self.dtype).cuda(),
+                )
+            )
+
+    def alloc_block(self, token_ids: List[int], block_ids: List[int]):
+        """Allocate a shadow block of memory."""
+        for token_id, block_id in zip(token_ids, block_ids):
+            if token_id not in self.tokenid2blockids:
+                self.tokenid2blockids[token_id] = []
+            self.tokenid2blockids[token_id].append(block_id)
+
+    def free_block(self, token_ids: List[int]) -> List[int]:
+        """Free a shadow block of memory."""
+        freed_block_ids = []
+        for token_id in token_ids:
+            if token_id in self.tokenid2blockids:
+                freed_block_ids.extend(self.tokenid2blockids[token_id])
+                del self.tokenid2blockids[token_id]
+        return freed_block_ids

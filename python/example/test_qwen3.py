@@ -38,7 +38,7 @@ if __name__ == "__main__":
     model_path = r"D:\\work\\Qwen3-0.6B"
 
     config = transformers.AutoConfig.from_pretrained(model_path)
-    forward_metadata = ForwardBatch(config)
+    forward_batch = ForwardBatch(config)
     tokenizer = transformers.AutoTokenizer.from_pretrained(model_path, use_fast=False)
     with TorchDefaultDtype(config.dtype):
         model = Qwen3ForCausalLM(config).cuda()
@@ -54,6 +54,6 @@ if __name__ == "__main__":
     outputs = model(
         input_ids=input_ids,
         attention_mask=attention_mask,
-        forward_metadata=forward_metadata,
+        forward_batch=forward_batch,
     )
     print(outputs[0].shape)  # logits shape

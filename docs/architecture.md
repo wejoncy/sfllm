@@ -130,7 +130,7 @@ class InferenceEngine:
 ```python
 class ModelRunner:
     def forward(self, sequence_group: SequenceGroup) -> List[int]
-    def capture_graph(self) -> None
+    def capture_cudagraph(self) -> None
     def prepare_inputs(self, sequences) -> Dict[str, Any]
 ```
 
