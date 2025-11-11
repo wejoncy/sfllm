@@ -259,12 +259,12 @@ class InferenceEngine:
         
         thread.join()
 
-    def start_profile(self):
+    def start_profiler(self):
         """Start profiling the inference engine."""
         from sfllm.utils.profiler import SchedulerProfilerMixin
         self.profiler = SchedulerProfilerMixin()
-        SchedulerProfilerMixin.start_profile()
+        SchedulerProfilerMixin.start_profiler()
     
-    def stop_profile(self):
+    def stop_profiler(self):
         """Stop profiling the inference engine."""
-        self.profiler.stop_profile()
+        self.profiler.stop_profiler()

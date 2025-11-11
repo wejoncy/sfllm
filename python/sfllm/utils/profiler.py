@@ -64,8 +64,8 @@ class SchedulerProfilerMixin:
             self.libcudart.cudaProfilerStop()
             logger.info("Nsys profiling detected, skip torch profiler...")
             return
+        logger.info(f"Stop profiling..., saving to {self.torch_profiler_output_dir}/trace.json")
         self.torch_profiler_output_dir.mkdir(parents=True, exist_ok=True)
         self.torch_profiler.stop()
         self.torch_profiler.export_chrome_trace(self.torch_profiler_output_dir / "trace.json")
         self.profile_in_progress = False
-        logger.info("Stop profiling...")
