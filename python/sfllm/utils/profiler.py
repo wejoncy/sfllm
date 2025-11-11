@@ -20,6 +20,7 @@ class SchedulerProfilerMixin:
         self.profile_in_progress: bool = False
         self.forward_ct:int = 0
         self.init_profile(None, None, None)
+        self.profile_id = str(time.time())
 
     def init_profile(
         self,
@@ -41,6 +42,9 @@ class SchedulerProfilerMixin:
         return
 
     def start_profiler(self):
+        logger.info(
+            f"Profiling starts. Traces will be saved to: {self.torch_profiler_output_dir} (with profile id: {self.profile_id})",
+        )
         if os.getenv("NSYS_PROFILING_SESSION_ID") is not None:
             self.profile_in_progress = True
             import ctypes
@@ -65,8 +69,8 @@ class SchedulerProfilerMixin:
             self.libcudart.cudaProfilerStop()
             logger.info("Nsys profiling detected, skip torch profiler...")
             return
-        logger.info(f"Stop profiling..., saving to {self.torch_profiler_output_dir}/trace.json")
+        logger.info("Stop profiling...")
         self.torch_profiler_output_dir.mkdir(parents=True, exist_ok=True)
         self.torch_profiler.stop()
-        self.torch_profiler.export_chrome_trace(self.torch_profiler_output_dir / "trace.json")
+        self.torch_profiler.export_chrome_trace(str(self.torch_profiler_output_dir / "trace.json"))
         self.profile_in_progress = False
