@@ -19,7 +19,7 @@ import transformers
 
 
 logger = logging.getLogger(__name__)
-
+_DEBUG = False
 class EagleWorker:
     def __init__(self,server_args:ServerArgs):
         self.draft_model_runner = ModelRunner(server_args, is_draft=True)
@@ -332,7 +332,8 @@ class EagleWorker:
         spec_info.accept_length_cpu = ret.draft_input.accept_length_cpu
         logits_output.spec_info = spec_info
 
-        bs = len(scheduled_batch)
-        self.total_accepted_tokens += len(ret.verified_id)-bs
-        logger.info(f"Speculative decoding: accepted {len(ret.verified_id) - bs} tokens, total accepted {self.total_accepted_tokens}.")
+        if _DEBUG:
+            bs = len(scheduled_batch)
+            self.total_accepted_tokens += len(ret.verified_id)-bs
+            logger.info(f"Speculative decoding: accepted {len(ret.verified_id) - bs} tokens, total accepted {self.total_accepted_tokens}.")
         return logits_output

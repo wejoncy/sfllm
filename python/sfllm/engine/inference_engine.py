@@ -1,7 +1,9 @@
 
 """
 nsys profile  --force-overwrite=true  -o baseline-report  --trace=cuda,nvtx,osrt,cudnn --cuda-graph-trace=node  python python/sfllm/engine/inference_engine.py
-HIP_TRACE_API=1 is useful for ROCm error tracing
+HIP_TRACE_API=1 
+export HSA_TOOLS_LIB=/opt/rocm/lib/librocm-debug-agent.so.2
+export HSA_ENABLE_DEBUG=1 is useful for ROCm error tracing
 """
 import logging
 import torch
