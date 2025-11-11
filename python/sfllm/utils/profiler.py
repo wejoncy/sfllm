@@ -72,5 +72,9 @@ class SchedulerProfilerMixin:
         logger.info("Stop profiling...")
         self.torch_profiler_output_dir.mkdir(parents=True, exist_ok=True)
         self.torch_profiler.stop()
-        self.torch_profiler.export_chrome_trace(str(self.torch_profiler_output_dir / "trace.json"))
+        trace_file = os.path.join(
+            self.torch_profiler_output_dir,
+            self.profile_id + "-TP-0.trace.json.gz",
+        )
+        self.torch_profiler.export_chrome_trace(trace_file)
         self.profile_in_progress = False
