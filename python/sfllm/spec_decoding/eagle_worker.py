@@ -229,7 +229,6 @@ class EagleWorker:
         self.pre_forward_last_verify_token(scheduled_batch)
         spec_info.verified_id = scheduled_batch.input_ids# TODO,only works for bs=1
 
-        seq_lens = scheduled_batch.forward_batch.seq_lens
         #prepare kv cache loc
         orig_forward_batch = scheduled_batch.forward_batch
         seq_lens_sum = scheduled_batch.forward_batch.seq_lens_sum
@@ -248,7 +247,7 @@ class EagleWorker:
             parent_list, top_scores_index, draft_tokens = self.eagle_cuda_graph_runner.forward(
                 spec_info, scheduled_batch)
 
-        scheduled_batch.forward_batch = orig_forward_batch
+        seq_lens = orig_forward_batch.seq_lens
         (
             tree_mask,
             position,
@@ -267,6 +266,7 @@ class EagleWorker:
             self.speculative_num_steps,
             self.speculative_num_draft_tokens,
         )
+        scheduled_batch.forward_batch = orig_forward_batch
         return EagleVerifyInput(
             draft_token=draft_tokens,
             custom_mask=tree_mask,
