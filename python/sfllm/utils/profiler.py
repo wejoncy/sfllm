@@ -19,6 +19,7 @@ class SchedulerProfilerMixin:
         self.profiler_start_forward_ct: Optional[int] = None
         self.profile_in_progress: bool = False
         self.forward_ct:int = 0
+        self.init_profile(None, None, None)
 
     def init_profile(
         self,
