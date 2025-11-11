@@ -25,7 +25,7 @@ class EagleCudaGraphRunner():
         self.qo_indptr_buffer = draft_model_runner.qo_indptr_buffer
         self.num_kv_splits_buffer = draft_model_runner.num_kv_splits_buffer
         self.hidden_states_buffer = draft_model_runner.hidden_states_buffer.view(-1, draft_model_runner.get_config().hidden_size)
-        self.input_ids = draft_model_runner.input_ids
+        # self.input_ids = draft_model_runner.input_ids
         self.position_ids = draft_model_runner.position_ids
         self.kv_indices_mtd_buffer = draft_model_runner.kv_indices_buffer
         self.cuda_graphs = {}
@@ -44,7 +44,6 @@ class EagleCudaGraphRunner():
         forward_batch.seq_lens_sum = 0 # never used in cuda graph
         forward_batch.kv_indices_mtd = self.kv_indices_mtd_buffer[:batch_size] # fake, should be sequence length , but it does not matter
         forward_batch.kv_indptr = self.kv_indptr_buffer[:batch_size+1]
-        # out_cache_loc_tensor = self.out_cache_loc_buffer[:batch_size*self.topk*running_steps]
         scheduled_batch.position_ids = self.position_ids[:batch_size]
         spec_info = EagleSpecInput(
             hidden_states=self.hidden_states_buffer[:batch_size], logits=self.logits_buffer[:batch_size],
@@ -55,10 +54,11 @@ class EagleCudaGraphRunner():
 
     @torch.inference_mode()
     def init_cuda_graph(self):
+        from sfllm.engine.model_runner import freeze_gc
         spec_info, scheduled_batch = self.prepare_cudagraph_inputs_for_capture(batch_size=1)
         self.model_func(spec_info, scheduled_batch)
         self.compute_stream.synchronize()
-        for batch_size in tqdm.tqdm(range(1, 32), desc="Capturing CUDA Graphs"):
+        for batch_size in tqdm.tqdm(list(reversed(range(1, 32))), desc="Capturing CUDA Graphs"):
             (spec_info, scheduled_batch) = self.prepare_cudagraph_inputs_for_capture(batch_size)
             cudagraph = torch.cuda.CUDAGraph()
 
@@ -67,7 +67,7 @@ class EagleCudaGraphRunner():
             torch.cuda.synchronize()
             self.graph_outputs[batch_size] = output
             self.cuda_graphs[batch_size] = cudagraph
-            
+           
         self.cuda_graphs[1].replay()
 
     # @torch.compile

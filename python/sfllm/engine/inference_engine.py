@@ -258,3 +258,13 @@ class InferenceEngine:
             yield from self.response(new_batch, stream=stream)
         
         thread.join()
+
+    def start_profile(self):
+        """Start profiling the inference engine."""
+        from sfllm.utils.profiler import SchedulerProfilerMixin
+        self.profiler = SchedulerProfilerMixin()
+        SchedulerProfilerMixin.start_profile()
+    
+    def stop_profile(self):
+        """Stop profiling the inference engine."""
+        self.profiler.stop_profile()

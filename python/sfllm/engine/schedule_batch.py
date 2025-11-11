@@ -126,9 +126,6 @@ class ScheduleBatch:
         positions_outs = []
         batch_size = len(self.sequences)
         server_args = get_global_server_args()
-        # for cuda graph compatibility, we may need to padding kv_indptr/qo_indptr to certain size
-        padding_for_extend_cuda_graph = False if server_args.disable_cuda_graph else True
-        extend_batch_size = self.spec_info.verified_id.shape[0] if padding_for_extend_cuda_graph else batch_size
         update_accept_length_cpu = self.spec_info.accept_length_cpu + 1
         for i in range(len(position_ids_list)):
             positions_outs.append(range(
@@ -164,15 +161,13 @@ class ScheduleBatch:
                         0 if ALIGN_EAGLE_WITH_SGLANG_ else (self.spec_info.accept_length_cpu + 1))
         # sglang dropped the first token
         # leading zero
-        self.forward_batch_spec.padded_token_extend = extend_batch_size - batch_size
-        self.forward_batch_spec.kv_indptr = torch.zeros((extend_batch_size + 1,), dtype=torch.int32, device=device)
-        self.forward_batch_spec.kv_indptr[1:batch_size+1] = (self.forward_batch.kv_indptr[1:] -
-            minux_const.to(self.device, non_blocking=True))
+        self.forward_batch_spec.kv_indptr = self.forward_batch.kv_indptr.clone()
+        self.forward_batch_spec.kv_indptr[1:].sub_(minux_const.to(self.device, non_blocking=True))
         self.forward_batch_spec.kv_indices = kv_indices_spec
         self.forward_batch_spec.kv_indices_mtd = kv_indices_mtd_spec
         self.forward_batch_spec.padded_token = padded_token
         self.forward_batch_spec.out_cache_loc = out_cache_loc_spec
-        self.forward_batch_spec.qo_indptr = torch.zeros((extend_batch_size + 1,), dtype=torch.int32, device=device)
+        self.forward_batch_spec.qo_indptr = self.forward_batch.kv_indptr.clone()
         self.forward_batch_spec.qo_indptr[1:batch_size + 1] = (1 + self.spec_info.accept_length).cumsum(dim=0, dtype=torch.int32)
         self.forward_batch_spec.max_extend_len = max(self.spec_info.accept_length_cpu.tolist())+1
         self.forward_batch_spec.position_ids_extend = torch.tensor(
