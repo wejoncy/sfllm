@@ -16,6 +16,9 @@ SFLLM (Serving Framework for Large Language Models) 旨在为大语言模型提�
 - **CUDA优化**: CUDA图和自定义内核实现最大性能
 - **内存高效**: 优化的KV缓存管理和内存分配
 - **生产就绪**: 内置健康检查和错误处理机制
+- **Eagle3投机解码**: 采用先进的Eagle3算法进行投机解码，显著提升生成速度
+- **重叠调度**: 智能的计算与通信重叠调度，提高整体吞吐量
+- **Eagle3 CUDA图加速**: 结合CUDA图优化的Eagle3实现，极致性能表现
 
 ## 安装
 
@@ -43,9 +46,21 @@ pip install -e .
 
 ### 1. 启动服务器
 
+**基础用法：**
 ```bash
 python python/sfllm/serving/app.py \
   --model /path/to/your/model \
+  --port 8081 \
+  --dtype float16
+```
+
+**启用Eagle3投机解码：**
+```bash
+python python/sfllm/serving/app.py \
+  --model /path/to/your/model \
+  --draft-model-path /path/to/eagle3/draft/model \
+  --speculative-algorithm eagle3 \
+  --speculative-num-steps 4 \
   --port 8081 \
   --dtype float16
 ```
@@ -95,6 +110,10 @@ curl http://localhost:8081/health
 | `--max-context-length` | 最大上下文长度 | 4096 |
 | `--cuda-graph-max-bs` | CUDA图最大批处理大小 | 32 |
 | `--disable-cuda-graph` | 禁用CUDA图 | False |
+| `--speculative-algorithm` | 投机解码算法 (eagle3) | None |
+| `--draft-model-path` | Eagle3草稿模型路径 | None |
+| `--speculative-num-steps` | 投机解码步数 | 4 |
+| `--disable-overlap` | 禁用重叠调度 | False |
 
 ## 开源许可
 

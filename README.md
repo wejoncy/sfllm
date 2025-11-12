@@ -16,6 +16,9 @@ SFLLM (Serving Framework for Large Language Models) is designed to provide effic
 - **CUDA Optimizations**: CUDA graphs and custom kernels for maximum performance
 - **Memory Efficient**: Optimized KV-cache management and memory allocation
 - **Production Ready**: Built-in health checks and error handling
+- **Eagle3 Speculative Decoding**: Advanced speculative decoding with Eagle3 algorithm for faster generation
+- **Overlap Scheduling**: Intelligent overlapping of computation and communication for improved throughput
+- **Eagle3 with CUDA Graph**: Optimized Eagle3 implementation with CUDA graph acceleration
 
 ## Installation
 
@@ -43,9 +46,21 @@ pip install -e .
 
 ### 1. Start the Server
 
+**Basic Usage:**
 ```bash
 python python/sfllm/serving/app.py \
   --model /path/to/your/model \
+  --port 8081 \
+  --dtype float16
+```
+
+**With Eagle3 Speculative Decoding:**
+```bash
+python python/sfllm/serving/app.py \
+  --model /path/to/your/model \
+  --draft-model-path /path/to/eagle3/draft/model \
+  --speculative-algorithm eagle3 \
+  --speculative-num-steps 4 \
   --port 8081 \
   --dtype float16
 ```
@@ -95,6 +110,10 @@ curl http://localhost:8081/health
 | `--max-context-length` | Maximum context length | 4096 |
 | `--cuda-graph-max-bs` | Max CUDA graph batch size | 32 |
 | `--disable-cuda-graph` | Disable CUDA graphs | False |
+| `--speculative-algorithm` | Speculative decoding algorithm (eagle3) | None |
+| `--draft-model-path` | Path to Eagle3 draft model | None |
+| `--speculative-num-steps` | Number of speculative steps | 4 |
+| `--disable-overlap` | Disable overlap scheduling | False |
 
 ## License
 
