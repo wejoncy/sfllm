@@ -305,7 +305,7 @@ class ModelRunner:
         forward_batch.kv_indices = self.kv_indices_buffer[: batch_size]
         forward_batch.qo_indptr = self.qo_indptr_buffer[: batch_size + 1]
         forward_batch.num_kv_splits = self.num_kv_splits_buffer[:batch_size]
-        forward_batch.forward_mode = ForwardMode.EXTEND
+        forward_batch.forward_mode = ForwardMode.DRAFT_EXTEND
         forward_batch.max_extend_len = self.server_args.speculative_num_steps+1
         forward_batch.out_cache_loc = self.out_cache_loc[:token_nums]
 

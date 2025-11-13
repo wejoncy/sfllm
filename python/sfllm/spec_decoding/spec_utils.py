@@ -499,14 +499,17 @@ def build_tree_kernel_efficient(
     # where each row indicates the attending pattern of each draft token
     # if use_partial_packed_tree_mask is True, tree_mask: num_draft_token (flattened, packed)
 
-    tree_mask = torch.full(
-        (
-            seq_lens_sum * num_verify_tokens
-            + num_verify_tokens * num_verify_tokens * bs,
-        ),
-        True,
-        device=device,
-    )
+    if tree_mask_buf is not None:
+        tree_mask = tree_mask_buf
+    else:
+        tree_mask = torch.full(
+            (
+                seq_lens_sum * num_verify_tokens
+                + num_verify_tokens * num_verify_tokens * bs,
+            ),
+            True,
+            device=device,
+        )
     # TODO: make them torch.empty and fuse them into `sgl_build_tree_kernel`
     retrive_buf = torch.full(
         (3, bs, num_verify_tokens), -1, device=device, dtype=torch.long

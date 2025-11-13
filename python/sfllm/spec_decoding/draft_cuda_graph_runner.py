@@ -40,7 +40,7 @@ class EagleCudaGraphRunner():
         from sfllm.spec_decoding.spec_utils import EagleSpecInput
         from sfllm.engine.schedule_batch import ScheduleBatch
         scheduled_batch = ScheduleBatch([0]*batch_size, None)
-        forward_batch = ForwardBatch(None)
+        forward_batch = ForwardBatch(self.block_memory_manager)
         forward_batch.seq_lens_sum = 0 # never used in cuda graph
         forward_batch.kv_indices_mtd = self.kv_indices_mtd_buffer[:batch_size] # fake, should be sequence length , but it does not matter
         forward_batch.kv_indptr = self.kv_indptr_buffer[:batch_size+1]
