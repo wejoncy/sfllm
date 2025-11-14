@@ -2,11 +2,11 @@ import dataclasses
 import torch
 import itertools
 import bisect
-from typing import Dict, List, Any, Optional, Union
+from typing import List, Optional, Union
 from contextlib import contextmanager
 
 from sfllm.engine.forward_params import ForwardBatch,ForwardMode
-from sfllm.utils.nutils import DEFAULT_CUDA_GRAPH_BATCH_SIZES, MAX_PROCESSED_TOKENS
+from sfllm.utils.nutils import DEFAULT_CUDA_GRAPH_BATCH_SIZES
 from sfllm.layers.sampler import SamplingBatchInfo
 from sfllm.server_args import get_global_server_args
 from sfllm.spec_decoding.spec_common import SpecInput
@@ -16,7 +16,6 @@ class ScheduleBatch:
     def __init__(self, sequences, mem_pool, draft_mem_pool=None):
         self.sequences = sequences
         self.device = torch.device("cuda:0")
-        self.mem_pool = mem_pool
         self.forward_batch = ForwardBatch(mem_pool)
         self.forward_batch_spec = ForwardBatch(draft_mem_pool) if draft_mem_pool is not None else None
         self.fake_ids = None
@@ -248,7 +247,6 @@ class ScheduleBatch:
 
         prefix_lens = torch.tensor(prefix_lens_list, dtype=torch.int32, pin_memory=True).to(device, non_blocking=True)
 
-        total_seq_len = kv_indices.shape[0] # this would be wrong if speculative decoding with draft model
         if self.forward_batch.forward_mode == ForwardMode.EXTEND:
             self.forward_batch.max_extend_len = max(cur_seq_lens_list)
             self.forward_batch.kv_indptr = prefix_lens.cumsum(dim=-1, dtype=torch.int32)

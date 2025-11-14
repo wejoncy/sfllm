@@ -22,6 +22,7 @@ import transformers
 
 logger = logging.getLogger(__name__)
 
+for_comparation = None
 class EagleWorker:
     def __init__(self,server_args:ServerArgs):
         self.draft_model_runner = ModelRunner(server_args, is_draft=True)
@@ -56,7 +57,7 @@ class EagleWorker:
         
         self.eagle_cuda_graph_runner = EagleCudaGraphRunner(self.draft_model_runner, self.draft_parallel_decode_forward)
         self.eagle_e2e_cuda_graph_runner = EagleE2ECudaGraphRunner(self.draft_model_runner, self.target_model_runner, 
-                                                                   self.forward_decode_e2e)
+                                                                   self.multi_step_speculative_decode)
 
         self.hot_token_id = self.draft_model_runner.model.hot_token_id.to("cuda")
         self.attn_metadatas = []
@@ -94,7 +95,7 @@ class EagleWorker:
 
     def init_capture_cudagraph(self):
         if not self.server_args.disable_cuda_graph:
-            self.eagle_e2e_cuda_graph_runner.init_cuda_graph()
+            # self.eagle_e2e_cuda_graph_runner.init_cuda_graph()
             self.target_model_runner.init_capture_cudagraph(forward_mode=ForwardMode.TARGET_VERIFY)
             self.draft_model_runner.init_capture_cudagraph(forward_mode=ForwardMode.DRAFT_EXTEND)
             self.eagle_cuda_graph_runner.init_cuda_graph()
@@ -118,8 +119,29 @@ class EagleWorker:
             batch_output.spec_info = spec_info
             return batch_output
         elif scheduled_batch.forward_batch.forward_mode == ForwardMode.DECODE:
+            # if scheduled_batch.spec_info.hidden_states.shape[-1] > self.target_model_runner.get_config().hidden_size:
+            #     # forward_decode_e2e
+            #     global for_comparation
+            #     for_comparation = self.eagle_e2e_cuda_graph_runner.forward(scheduled_batch)
+            # else:
             with torch.cuda.nvtx.range("eagle_spec_decode"):
-                return self.multi_step_speculative_decode(scheduled_batch)
+                out_args = self.multi_step_speculative_decode(scheduled_batch)
+
+            def diff_tensors(a_tuple, b_tuple):
+                if len(a_tuple) != len(b_tuple):
+                    raise ValueError(
+                        f"Tuple length mismatch: {len(a_tuple)} vs {len(b_tuple)}"
+                    )
+
+                for i, (ta, tb) in enumerate(zip(a_tuple, b_tuple)):
+                    if i == 0:
+                        ta = ta.hidden_states
+                        tb = tb.hidden_states
+                    if not torch.equal(ta, tb):
+                        print(f"Tensor at index {i} is different.")
+            # if for_comparation is not None:
+            #     diff_tensors(for_comparation, out_args)
+            return self.forward_decode_e2e_post_process(scheduled_batch, *out_args)
     
     def draft_forward_extend(self, batch_output:BatchResult, scheduled_batch:ScheduleBatch):
         next_token_ids = batch_output.next_token_ids
@@ -149,9 +171,10 @@ class EagleWorker:
         with torch.cuda.nvtx.range("verify_propose"):
             return self.verify_propose(scheduled_batch, verify_input)
 
-    def draft_parallel_decode_forward(self, spec_info: EagleSpecInput, scheduled_batch: ScheduleBatch):
+    def draft_parallel_decode_forward(self, scheduled_batch: ScheduleBatch):
         # prepare inputs for draft parallel decode, those parts seems compatible with cuda graph
         bs = len(scheduled_batch)
+        spec_info = scheduled_batch.spec_info
         running_steps = self.speculative_num_steps - 1
         total_tokens = bs * self.topk * running_steps
 
@@ -250,7 +273,7 @@ class EagleWorker:
         # cuda graph runner of self.draft_parallel_decode_forward
         with torch.cuda.nvtx.range("eagle_cuda_graph_runner_forward"):
             parent_list, top_scores_index, draft_tokens = self.eagle_cuda_graph_runner.forward(
-                spec_info, scheduled_batch)
+                scheduled_batch)
 
         seq_lens = orig_forward_batch.seq_lens
         (
@@ -296,8 +319,8 @@ class EagleWorker:
         old_position_ids = scheduled_batch.position_ids
 
         forward_batch_spec.forward_mode = ForwardMode.DRAFT_EXTEND
-        scheduled_batch.input_ids = spec_info.verified_id
-        scheduled_batch.position_ids = scheduled_batch.forward_batch_spec.position_ids_extend
+        scheduled_batch.input_ids = spec_info.verified_id  # the real input_ids
+        scheduled_batch.position_ids = scheduled_batch.forward_batch_spec.position_ids_extend # the real position_ids
         forward_batch_spec.spec_info = spec_info
 
         # Run forward
@@ -305,7 +328,7 @@ class EagleWorker:
             with scheduled_batch.switch_spec_forward_batch():
                 logits_output = self.draft_model_runner.forward(scheduled_batch)
 
-        spec_info.hidden_states = logits_output.aux_hidden_states[0][(spec_info.accept_length+1).cumsum(dim=0)-1]
+        spec_info.hidden_states = logits_output.aux_hidden_states[0][(forward_batch_spec.qo_indptr[1:]-1)]
         spec_info.logits = logits_output.next_token_logits
         scheduled_batch.position_ids = old_position_ids
         scheduled_batch.input_ids = old_input_ids
@@ -325,24 +348,25 @@ class EagleWorker:
         verify_input.hidden_states = torch.cat(logits_output.aux_hidden_states, dim=-1)
 
         accept_index, accept_length, predict = verify_input.verify(scheduled_batch, logits_output, 1)
-        ret = verify_input.verify_post_process(
-            scheduled_batch, accept_index, accept_length, predict, logits_output, self.main_mem_pool, page_size=1
-        )
-        logits_output.next_token_ids = ret.verified_id
-        logits_output.next_token_logits = logits_output.next_token_logits[ret.accepted_indices]
-        spec_info = scheduled_batch.spec_info
-        spec_info.verified_id = ret.verified_id
-        spec_info.logits = logits_output.next_token_logits
-        spec_info.hidden_states = verify_input.hidden_states[ret.accepted_indices]
-        spec_info.accept_length = ret.draft_input.accept_length
-        spec_info.accept_length_cpu = ret.draft_input.accept_length_cpu
-        logits_output.spec_info = spec_info
+        return verify_input, logits_output.next_token_logits, accept_index, accept_length, predict
+        # ret = verify_input.verify_post_process(
+        #     scheduled_batch, accept_index, accept_length, predict, logits_output, self.main_mem_pool, page_size=1
+        # )
+        # logits_output.next_token_ids = ret.verified_id
+        # logits_output.next_token_logits = logits_output.next_token_logits[ret.accepted_indices]
+        # spec_info = scheduled_batch.spec_info
+        # spec_info.verified_id = ret.verified_id
+        # spec_info.logits = logits_output.next_token_logits
+        # spec_info.hidden_states = verify_input.hidden_states[ret.accepted_indices]
+        # spec_info.accept_length = ret.draft_input.accept_length
+        # spec_info.accept_length_cpu = ret.draft_input.accept_length_cpu
+        # logits_output.spec_info = spec_info
 
-        if _DEBUG:
-            bs = len(scheduled_batch)
-            self.total_accepted_tokens += len(ret.verified_id)-bs
-            logger.info(f"Speculative decoding: accepted {len(ret.verified_id) - bs} tokens, total accepted {self.total_accepted_tokens}.")
-        return logits_output
+        # if _DEBUG:
+        #     bs = len(scheduled_batch)
+        #     self.total_accepted_tokens += len(ret.verified_id)-bs
+        #     logger.info(f"Speculative decoding: accepted {len(ret.verified_id) - bs} tokens, total accepted {self.total_accepted_tokens}.")
+        # return logits_output
 
     def forward_decode_e2e(self, scheduled_batch:ScheduleBatch):
         #enmulate input tensors
@@ -374,7 +398,7 @@ class EagleWorker:
         # Run forward
         with scheduled_batch.switch_spec_forward_batch():
             logits_output = self.draft_model_runner.forward(scheduled_batch)
-        spec_info.hidden_states = logits_output.aux_hidden_states[0][spec_info.accept_length.cumsum(dim=0)-1]
+        spec_info.hidden_states = logits_output.aux_hidden_states[0][(spec_info.accept_length+1).cumsum(dim=0)-1]
         spec_info.logits = logits_output.next_token_logits
         scheduled_batch.position_ids = old_position_ids
         scheduled_batch.input_ids = old_input_ids
@@ -511,14 +535,15 @@ class EagleWorker:
         verify_input.hidden_states = torch.cat(logits_output.aux_hidden_states, dim=-1)
 
         accept_index, accept_length, predict = verify_input.verify(scheduled_batch, logits_output, 1)
-        return accept_index, accept_length, predict
+        return verify_input, logits_output.next_token_logits, accept_index, accept_length, predict
 
         ##===========post cuda graph================
     def forward_decode_e2e_post_process(self, scheduled_batch:ScheduleBatch, verify_input:EagleVerifyInput, 
-                                        logits_output:BatchResult,accept_index:torch.Tensor, 
+                                        next_token_logits:torch.Tensor, accept_index:torch.Tensor, 
                                         accept_length:torch.Tensor, predict:torch.Tensor):
+        logits_output = BatchResult(None, next_token_logits, None)
         ret = verify_input.verify_post_process(
-            scheduled_batch, accept_index, accept_length, predict, logits_output, self.main_mem_pool, page_size=1
+            scheduled_batch, accept_index, accept_length, predict, self.main_mem_pool, page_size=1
         )
         logits_output.next_token_ids = ret.verified_id
         logits_output.next_token_logits = logits_output.next_token_logits[ret.accepted_indices]
@@ -529,4 +554,8 @@ class EagleWorker:
         spec_info.accept_length = ret.draft_input.accept_length
         spec_info.accept_length_cpu = ret.draft_input.accept_length_cpu
         logits_output.spec_info = spec_info
+        if _DEBUG:
+            bs = len(scheduled_batch)
+            self.total_accepted_tokens += len(ret.verified_id)-bs
+            logger.info(f"Speculative decoding: accepted {len(ret.verified_id) - bs} tokens, total accepted {self.total_accepted_tokens}.")
         return logits_output

@@ -50,20 +50,21 @@ class EagleCudaGraphRunner():
         )
         scheduled_batch.forward_batch_spec = forward_batch
         scheduled_batch.forward_batch = forward_batch
-        return spec_info, scheduled_batch
+        scheduled_batch.spec_info = spec_info
+        return scheduled_batch
 
     @torch.inference_mode()
     def init_cuda_graph(self):
         from sfllm.engine.model_runner import freeze_gc
-        spec_info, scheduled_batch = self.prepare_cudagraph_inputs_for_capture(batch_size=1)
-        self.model_func(spec_info, scheduled_batch)
+        scheduled_batch = self.prepare_cudagraph_inputs_for_capture(batch_size=1)
+        self.model_func(scheduled_batch)
         self.compute_stream.synchronize()
         for batch_size in tqdm.tqdm(list(reversed(range(1, 32))), desc="Capturing CUDA Graphs"):
-            (spec_info, scheduled_batch) = self.prepare_cudagraph_inputs_for_capture(batch_size)
+            scheduled_batch = self.prepare_cudagraph_inputs_for_capture(batch_size)
             cudagraph = torch.cuda.CUDAGraph()
 
             with torch.cuda.graph(cudagraph, stream=self.compute_stream, pool=self.graph_pool):
-                output = self.model_func(spec_info, scheduled_batch)
+                output = self.model_func(scheduled_batch)
             torch.cuda.synchronize()
             self.graph_outputs[batch_size] = output
             self.cuda_graphs[batch_size] = cudagraph
@@ -71,7 +72,8 @@ class EagleCudaGraphRunner():
         self.cuda_graphs[1].replay()
 
     # @torch.compile
-    def prepare_replay(self, spec_info, scheduled_batch):
+    def prepare_replay(self, scheduled_batch):
+        spec_info = scheduled_batch.spec_info
         batch_size = len(scheduled_batch)
         self.hidden_states_buffer[:batch_size].copy_(spec_info.hidden_states)
         self.logits_buffer[:batch_size].copy_(spec_info.logits)
@@ -89,14 +91,14 @@ class EagleCudaGraphRunner():
 
 
     @torch.inference_mode()
-    def forward(self, spec_info, scheduled_batch):
+    def forward(self, scheduled_batch):
         batch_size = len(scheduled_batch)
         if batch_size in self.cuda_graphs:
-            self.prepare_replay(spec_info, scheduled_batch)
+            self.prepare_replay(scheduled_batch)
             self.cuda_graphs[batch_size].replay()
             output = self.graph_outputs[batch_size]
         else:
-            output = self.model_func(spec_info, scheduled_batch)
+            output = self.model_func(scheduled_batch)
         # we can't guarantee they are exactly the same for all steps
         # output1 = self.model_func(spec_info, scheduled_batch)
         # assert all([torch.allclose(o1, o2) for o1, o2 in zip(output1, output)])

@@ -13,7 +13,8 @@ from sfllm.engine.forward_params import ForwardMode, ForwardBatch
 from sfllm.engine.memory_pool import BlockMemoryManager
 from sfllm.layers.sampler import Sampler
 from sfllm.server_args import ServerArgs
-from sfllm.utils.nutils import DEFAULT_CUDA_GRAPH_BATCH_SIZES, MAX_PROCESSED_TOKENS, _DEBUG
+from sfllm.utils.nutils import DEFAULT_CUDA_GRAPH_BATCH_SIZES, MAX_PROCESSED_TOKENS
+import sfllm.utils.nutils as nutils
 
 logger = logging.getLogger(__name__)
 
@@ -160,25 +161,25 @@ class ModelRunner:
         assert forward_batch.kv_indices is None or forward_batch.kv_indices.dtype == torch.long
         assert forward_batch.custom_mask is None or forward_batch.custom_mask.dtype == torch.bool
 
-        return {
-            "input_ids": scheduled_batch.input_ids,
-            "position_ids": scheduled_batch.position_ids,
-            # "attention_mask": attention_mask,
-            "forward_batch": forward_batch,
-        }
 
-    def prepare_replay(self, inputs: Dict[str, Any], scheduled_batch: ScheduleBatch):
+    def prepare_replay(self, scheduled_batch: ScheduleBatch):
         batch_size = len(scheduled_batch)
-        forward_batch = inputs["forward_batch"]
+        forward_batch = scheduled_batch.forward_batch
         total_seq_len = forward_batch.kv_indices.shape[0]
         padded_bs_size = batch_size + forward_batch.padded_token
-        num_tokens = inputs["input_ids"].shape[0]
-        self.input_ids[:num_tokens].copy_(inputs["input_ids"])
-        self.position_ids[:num_tokens].copy_(inputs["position_ids"])
+        input_ids = scheduled_batch.input_ids
+        position_ids = scheduled_batch.position_ids
+        num_tokens = input_ids.shape[0]
+        self.input_ids[:num_tokens].copy_(input_ids)
+        self.position_ids[:num_tokens].copy_(position_ids)
         self.out_cache_loc[:num_tokens].copy_(forward_batch.out_cache_loc)
         self.kv_indices_buffer[:total_seq_len].copy_(forward_batch.kv_indices)
         self.kv_indptr_buffer[: padded_bs_size + 1].copy_(forward_batch.kv_indptr)
         if forward_batch.forward_mode == ForwardMode.DRAFT_EXTEND:
+            padded_token_nums = (self.server_args.speculative_num_steps+1)*padded_bs_size
+            self.input_ids[num_tokens:padded_token_nums].fill_(0)
+            self.position_ids[num_tokens:padded_token_nums].fill_(0)
+            self.out_cache_loc[num_tokens:padded_token_nums].fill_(0)
             self.qo_indptr_buffer[: padded_bs_size + 1].copy_(forward_batch.qo_indptr)
             self.hidden_states_buffer[:num_tokens].copy_(forward_batch.spec_info.hidden_states)
         elif forward_batch.forward_mode == ForwardMode.TARGET_VERIFY:
@@ -355,38 +356,42 @@ class ModelRunner:
     @torch.inference_mode()
     def forward(self, scheduled_batch: ScheduleBatch):
         forward_batch = scheduled_batch.forward_batch
-        inputs = self.prepare_inputs(scheduled_batch)
+        self.prepare_inputs(scheduled_batch)
 
         bs_size = len(scheduled_batch)
-        num_tokens = inputs["input_ids"].shape[0]
+        num_tokens = scheduled_batch.input_ids.shape[0]
         pad_bs_size = forward_batch.padded_token + bs_size
         aux_hidden_states = None
         if (
             forward_batch.forward_mode == ForwardMode.DECODE
             and self.cuda_graphs.get(pad_bs_size) is not None
         ):
-            self.prepare_replay(inputs, scheduled_batch)
+            self.prepare_replay(scheduled_batch)
             self.cuda_graphs[pad_bs_size].replay()
             logits, aux_hidden_states = self.output_logits[pad_bs_size]
         elif (forward_batch.forward_mode == ForwardMode.DRAFT_EXTEND
               and self.cuda_graphs_extend.get(pad_bs_size) is not None
               ):
-            self.prepare_replay(inputs, scheduled_batch)
+            self.prepare_replay(scheduled_batch)
             self.cuda_graphs_extend[pad_bs_size].replay()
             logits, aux_hidden_states = self.output_logits_extend[pad_bs_size]
             aux_hidden_states = [i[:num_tokens] for i in aux_hidden_states]
         elif (forward_batch.forward_mode == ForwardMode.TARGET_VERIFY
               and self.cuda_graphs_target_verify.get(pad_bs_size) is not None
               ):
-            self.prepare_replay(inputs, scheduled_batch)
+            self.prepare_replay(scheduled_batch)
             self.cuda_graphs_target_verify[pad_bs_size].replay()
             logits, aux_hidden_states = self.output_logits_target_verify[pad_bs_size]
         else:
-            logits, aux_hidden_states = self.model(**inputs)
+            logits, aux_hidden_states = self.model(input_ids=scheduled_batch.input_ids,
+                                                   position_ids=scheduled_batch.position_ids,
+                                                   forward_batch=forward_batch)
 
-        if _DEBUG and not torch.cuda.is_current_stream_capturing():  # _DEBUG
+        if nutils._DEBUG and not torch.cuda.is_current_stream_capturing():  # _DEBUG
             # debug mode to compare with non-cuda graph results
-            logits_ref, aux_hidden_states_ref = self.model(**inputs)
+            logits_ref, aux_hidden_states_ref = self.model(input_ids=scheduled_batch.input_ids,
+                                                           position_ids=scheduled_batch.position_ids,
+                                                           forward_batch=forward_batch)
             assert torch.allclose(logits, logits_ref, atol=2e-2)
             if aux_hidden_states is not None:
                 for h1, h2 in zip(aux_hidden_states, aux_hidden_states_ref):
