@@ -3,7 +3,7 @@
 import logging
 import torch
 from typing import List
-from sfllm.engine.schedule_batch import ScheduleBatch,BatchResult, ALIGN_EAGLE_WITH_SGLANG_
+from sfllm.engine.schedule_batch import ScheduleBatch,BatchResult
 from sfllm.engine.forward_params import ForwardMode, ForwardBatch
 from sfllm.server_args import ServerArgs
 from sfllm.engine.model_runner import ModelRunner
@@ -154,8 +154,8 @@ class EagleWorker:
                 (input_ids[1:], next_token_ids[i].reshape(1))
             )
             pt += extend_len
-        if not ALIGN_EAGLE_WITH_SGLANG_:
-            scheduled_batch.position_ids.add_(1) # we should update it accordingly
+        # if not ALIGN_EAGLE_WITH_SGLANG_:
+        #     scheduled_batch.position_ids.add_(1) # we should update it accordingly
         with scheduled_batch.switch_spec_forward_batch():
             logits_output = self.draft_model_runner.forward(scheduled_batch)
         if True:

@@ -11,7 +11,6 @@ from sfllm.layers.sampler import SamplingBatchInfo
 from sfllm.server_args import get_global_server_args
 from sfllm.spec_decoding.spec_common import SpecInput
 
-ALIGN_EAGLE_WITH_SGLANG_ = True
 class ScheduleBatch:
     def __init__(self, sequences, mem_pool, draft_mem_pool=None):
         self.sequences = sequences
@@ -140,7 +139,7 @@ class ScheduleBatch:
         for sequence in self.sequences:
             total_draft_len = sequence.accept_length_cpu[0] + 1
             spec_out_cache_loc_list.extend(sequence.out_cache_loc_spec[-total_draft_len:])
-            total_draft_len_past = 0 if ALIGN_EAGLE_WITH_SGLANG_ else total_draft_len
+            total_draft_len_past = 0
             if total_draft_len_past == 0:
                 total_draft_len_past = -len(sequence.out_cache_loc_spec)
             spec_kv_indices_list.extend(sequence.out_cache_loc_spec[:-total_draft_len_past]) # actually, it's for extend. it's weird here.
@@ -155,9 +154,7 @@ class ScheduleBatch:
         kv_indices_mtd_spec = torch.tensor(spec_kv_indices_mtd_list, dtype=torch.int64, pin_memory=True).to(device, non_blocking=True)
 
         #kv_indptr would be used in two place, extend forward for the latest accepted token,, the other is multi-step draft decode path
-        minux_const = torch.arange(1, len(self.sequences)+1, dtype=torch.int32, 
-                        pin_memory=True).add_(
-                        0 if ALIGN_EAGLE_WITH_SGLANG_ else (self.spec_info.accept_length_cpu + 1))
+        minux_const = torch.arange(1, len(self.sequences)+1, dtype=torch.int32, pin_memory=True)
         # sglang dropped the first token
         # leading zero
         self.forward_batch_spec.kv_indptr = self.forward_batch.kv_indptr.clone()
