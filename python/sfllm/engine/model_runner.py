@@ -387,7 +387,7 @@ class ModelRunner:
                                                    position_ids=scheduled_batch.position_ids,
                                                    forward_batch=forward_batch)
 
-        if nutils._DEBUG and not torch.cuda.is_current_stream_capturing():  # _DEBUG
+        if self.server_args.enable_debug and not torch.cuda.is_current_stream_capturing():  # print debug log
             # debug mode to compare with non-cuda graph results
             logits_ref, aux_hidden_states_ref = self.model(input_ids=scheduled_batch.input_ids,
                                                            position_ids=scheduled_batch.position_ids,

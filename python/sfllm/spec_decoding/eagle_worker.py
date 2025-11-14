@@ -16,7 +16,6 @@ from sfllm.spec_decoding.spec_utils import (EagleSpecInput,
                                             generate_kv_indices_for_mtd)
 from sfllm.spec_decoding.draft_cuda_graph_runner import EagleCudaGraphRunner
 from sfllm.spec_decoding.eagle3_e2e_cuda_graph_runner import EagleE2ECudaGraphRunner
-from sfllm.utils.nutils import _DEBUG
 import transformers
 
 
@@ -538,7 +537,7 @@ class EagleWorker:
         spec_info.accept_length = ret.draft_input.accept_length
         spec_info.accept_length_cpu = ret.draft_input.accept_length_cpu
         logits_output.spec_info = spec_info
-        if _DEBUG:
+        if self.server_args.enable_debug:
             bs = len(scheduled_batch)
             self.total_accepted_tokens += len(ret.verified_id)-bs
             logger.info(f"Speculative decoding: accepted {len(ret.verified_id) - bs} tokens, total accepted {self.total_accepted_tokens}.")
