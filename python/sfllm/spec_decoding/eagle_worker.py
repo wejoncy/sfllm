@@ -57,7 +57,7 @@ class EagleWorker:
         
         self.eagle_cuda_graph_runner = EagleCudaGraphRunner(self.draft_model_runner, self.draft_parallel_decode_forward)
         self.eagle_e2e_cuda_graph_runner = EagleE2ECudaGraphRunner(self.draft_model_runner, self.target_model_runner, 
-                                                                   self.multi_step_speculative_decode)
+                                                                   self.forward_decode_e2e)
 
         self.hot_token_id = self.draft_model_runner.model.hot_token_id.to("cuda")
         self.attn_metadatas = []
@@ -95,7 +95,7 @@ class EagleWorker:
 
     def init_capture_cudagraph(self):
         if not self.server_args.disable_cuda_graph:
-            # self.eagle_e2e_cuda_graph_runner.init_cuda_graph()
+            self.eagle_e2e_cuda_graph_runner.init_cuda_graph()
             self.target_model_runner.init_capture_cudagraph(forward_mode=ForwardMode.TARGET_VERIFY)
             self.draft_model_runner.init_capture_cudagraph(forward_mode=ForwardMode.DRAFT_EXTEND)
             self.eagle_cuda_graph_runner.init_cuda_graph()
@@ -119,13 +119,14 @@ class EagleWorker:
             batch_output.spec_info = spec_info
             return batch_output
         elif scheduled_batch.forward_batch.forward_mode == ForwardMode.DECODE:
-            # if scheduled_batch.spec_info.hidden_states.shape[-1] > self.target_model_runner.get_config().hidden_size:
-            #     # forward_decode_e2e
-            #     global for_comparation
-            #     for_comparation = self.eagle_e2e_cuda_graph_runner.forward(scheduled_batch)
-            # else:
-            with torch.cuda.nvtx.range("eagle_spec_decode"):
-                out_args = self.multi_step_speculative_decode(scheduled_batch)
+            if scheduled_batch.spec_info.hidden_states.shape[-1] > self.target_model_runner.get_config().hidden_size:
+                # forward_decode_e2e
+                global for_comparation
+                for_comparation = self.eagle_e2e_cuda_graph_runner.forward(scheduled_batch)
+                out_args = for_comparation
+            if scheduled_batch.spec_info.hidden_states.shape[-1] == self.target_model_runner.get_config().hidden_size:
+                with torch.cuda.nvtx.range("eagle_spec_decode"):
+                    out_args = self.multi_step_speculative_decode(scheduled_batch)
 
             def diff_tensors(a_tuple, b_tuple):
                 if len(a_tuple) != len(b_tuple):
@@ -349,24 +350,6 @@ class EagleWorker:
 
         accept_index, accept_length, predict = verify_input.verify(scheduled_batch, logits_output, 1)
         return verify_input, logits_output.next_token_logits, accept_index, accept_length, predict
-        # ret = verify_input.verify_post_process(
-        #     scheduled_batch, accept_index, accept_length, predict, logits_output, self.main_mem_pool, page_size=1
-        # )
-        # logits_output.next_token_ids = ret.verified_id
-        # logits_output.next_token_logits = logits_output.next_token_logits[ret.accepted_indices]
-        # spec_info = scheduled_batch.spec_info
-        # spec_info.verified_id = ret.verified_id
-        # spec_info.logits = logits_output.next_token_logits
-        # spec_info.hidden_states = verify_input.hidden_states[ret.accepted_indices]
-        # spec_info.accept_length = ret.draft_input.accept_length
-        # spec_info.accept_length_cpu = ret.draft_input.accept_length_cpu
-        # logits_output.spec_info = spec_info
-
-        # if _DEBUG:
-        #     bs = len(scheduled_batch)
-        #     self.total_accepted_tokens += len(ret.verified_id)-bs
-        #     logger.info(f"Speculative decoding: accepted {len(ret.verified_id) - bs} tokens, total accepted {self.total_accepted_tokens}.")
-        # return logits_output
 
     def forward_decode_e2e(self, scheduled_batch:ScheduleBatch):
         #enmulate input tensors

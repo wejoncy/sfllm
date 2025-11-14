@@ -2,6 +2,7 @@ import argparse
 from sfllm.engine.inference_engine import InferenceEngine
 from sfllm.engine.sampling_params import SamplingParams
 from sfllm.server_args import ServerArgs
+import tqdm
 
 if __name__ == "__main__":
     # Example usage
@@ -27,8 +28,10 @@ if __name__ == "__main__":
     outputs = engine.generate(
         prompts, SamplingParams(max_new_tokens=200, top_k=1), stream=False
     )
-    for output in outputs:
+    for output in tqdm.tqdm(outputs):
         for _, output_d in output.items():
             v = f"Prompt: {output_d['prompt']}\nGenerated text: {output_d['text']}"
-            print(v)
+            # print(v)
+    print(engine.scheduler.metrics.cum_accept_tokens,
+          engine.scheduler.metrics.cum_forward_tokens)
     print("Inference step completed.")
