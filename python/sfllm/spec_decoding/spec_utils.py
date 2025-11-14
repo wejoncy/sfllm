@@ -43,11 +43,11 @@ class EagleVerifyOutput:
     # Draft input batch
     draft_input: EagleSpecInput
     # Logit outputs from target worker
-    logits_output: torch.Tensor
+    # logits_output: torch.Tensor
     # Accepted token ids including the bonus token
     verified_id: torch.Tensor
     # Accepted token length per sequence in a batch in CPU.
-    accept_length_per_req_cpu: List[int]
+    # accept_length_per_req_cpu: List[int]
     # Accepted indices from logits_output.next_token_logits
     accepted_indices: torch.Tensor
 
@@ -92,9 +92,11 @@ class EagleVerifyInput(SpecInput):
         candidates = self.draft_token.reshape(bs, self.draft_token_num)
         # sampling_info = batch.sampling_info
 
-        predict_shape = list(logits_output.next_token_logits.shape)[:-1]
-        predict_shape[-1] += 1
-        predict = torch.empty(predict_shape, dtype=torch.int32, device="cuda")
+        assert logits_output.next_token_logits.shape[0] == bs*self.draft_token_num
+        # predict_shape = list(logits_output.next_token_logits.shape)[:-1]
+        # predict_shape[-1] += 1
+        predict_shape = [bs * self.draft_token_num+1]
+        predict = torch.zeros(predict_shape, dtype=torch.int32, device="cuda")
         accept_index = torch.full(
             (bs, self.spec_steps + 1), -1, dtype=torch.int32, device="cuda"
         )
@@ -184,7 +186,7 @@ class EagleVerifyInput(SpecInput):
         accept_index: torch.Tensor,
         accept_length: torch.Tensor,
         predict: torch.Tensor,
-        logits_output: torch.Tensor,
+        # logits_output: torch.Tensor,
         token_to_kv_pool_allocator,
         page_size: int = 1,
     ):
@@ -270,8 +272,8 @@ class EagleVerifyInput(SpecInput):
             # batch.seq_lens_cpu.add_(accept_length_cpu + 1)
 
             draft_input = EagleSpecInput(
-                hidden_states=self.hidden_states[accept_index],
-                verified_id=verified_id,
+                # hidden_states=self.hidden_states[accept_index],
+                # verified_id=verified_id,
                 accept_length=accept_length,
                 accept_length_cpu=accept_length_cpu,
                 # seq_lens_for_draft_extend=batch.forward_batch.seq_lens,
@@ -281,9 +283,9 @@ class EagleVerifyInput(SpecInput):
 
             return EagleVerifyOutput(
                 draft_input=draft_input,
-                logits_output=logits_output,
+                # logits_output=logits_output,
                 verified_id=verified_id,
-                accept_length_per_req_cpu=draft_input.accept_length_cpu,
+                # accept_length_per_req_cpu=draft_input.accept_length_cpu,
                 accepted_indices=accept_index,
             )
 
@@ -499,14 +501,19 @@ def build_tree_kernel_efficient(
     # where each row indicates the attending pattern of each draft token
     # if use_partial_packed_tree_mask is True, tree_mask: num_draft_token (flattened, packed)
 
-    tree_mask = torch.full(
-        (
-            seq_lens_sum * num_verify_tokens
-            + num_verify_tokens * num_verify_tokens * bs,
-        ),
-        True,
-        device=device,
-    )
+    if tree_mask_buf is not None:
+        tree_mask = tree_mask_buf
+        tree_mask[:10000 * num_verify_tokens
+                  + num_verify_tokens * num_verify_tokens * bs].fill_(True)
+    else:
+        tree_mask = torch.full(
+            (
+                seq_lens_sum * num_verify_tokens
+                + num_verify_tokens * num_verify_tokens * bs,
+            ),
+            True,
+            device=device,
+        )
     # TODO: make them torch.empty and fuse them into `sgl_build_tree_kernel`
     retrive_buf = torch.full(
         (3, bs, num_verify_tokens), -1, device=device, dtype=torch.long

@@ -91,7 +91,6 @@ class RunningMetrics:
             self.last_refresh_time = current_time
             self.tokens_generated = 0
             self.total_accept_tokens = self.total_forward_tokens = 0
-            self.cum_accept_tokens = self.cum_forward_tokens = 0
 
         self.tokens_generated += decode_tokens * prefill_mask
 

@@ -25,7 +25,7 @@ class EagleCudaGraphRunner():
         self.qo_indptr_buffer = draft_model_runner.qo_indptr_buffer
         self.num_kv_splits_buffer = draft_model_runner.num_kv_splits_buffer
         self.hidden_states_buffer = draft_model_runner.hidden_states_buffer.view(-1, draft_model_runner.get_config().hidden_size)
-        self.input_ids = draft_model_runner.input_ids
+        # self.input_ids = draft_model_runner.input_ids
         self.position_ids = draft_model_runner.position_ids
         self.kv_indices_mtd_buffer = draft_model_runner.kv_indices_buffer
         self.cuda_graphs = {}
@@ -40,38 +40,40 @@ class EagleCudaGraphRunner():
         from sfllm.spec_decoding.spec_utils import EagleSpecInput
         from sfllm.engine.schedule_batch import ScheduleBatch
         scheduled_batch = ScheduleBatch([0]*batch_size, None)
-        forward_batch = ForwardBatch(None)
+        forward_batch = ForwardBatch(self.block_memory_manager)
         forward_batch.seq_lens_sum = 0 # never used in cuda graph
         forward_batch.kv_indices_mtd = self.kv_indices_mtd_buffer[:batch_size] # fake, should be sequence length , but it does not matter
         forward_batch.kv_indptr = self.kv_indptr_buffer[:batch_size+1]
-        # out_cache_loc_tensor = self.out_cache_loc_buffer[:batch_size*self.topk*running_steps]
         scheduled_batch.position_ids = self.position_ids[:batch_size]
         spec_info = EagleSpecInput(
             hidden_states=self.hidden_states_buffer[:batch_size], logits=self.logits_buffer[:batch_size],
         )
         scheduled_batch.forward_batch_spec = forward_batch
         scheduled_batch.forward_batch = forward_batch
-        return spec_info, scheduled_batch
+        scheduled_batch.spec_info = spec_info
+        return scheduled_batch
 
     @torch.inference_mode()
     def init_cuda_graph(self):
-        spec_info, scheduled_batch = self.prepare_cudagraph_inputs_for_capture(batch_size=1)
-        self.model_func(spec_info, scheduled_batch)
+        from sfllm.engine.model_runner import freeze_gc
+        scheduled_batch = self.prepare_cudagraph_inputs_for_capture(batch_size=1)
+        self.model_func(scheduled_batch)
         self.compute_stream.synchronize()
-        for batch_size in tqdm.tqdm(range(1, 32), desc="Capturing CUDA Graphs"):
-            (spec_info, scheduled_batch) = self.prepare_cudagraph_inputs_for_capture(batch_size)
+        for batch_size in tqdm.tqdm(list(reversed(range(1, 32))), desc="Capturing CUDA Graphs"):
+            scheduled_batch = self.prepare_cudagraph_inputs_for_capture(batch_size)
             cudagraph = torch.cuda.CUDAGraph()
 
             with torch.cuda.graph(cudagraph, stream=self.compute_stream, pool=self.graph_pool):
-                output = self.model_func(spec_info, scheduled_batch)
+                output = self.model_func(scheduled_batch)
             torch.cuda.synchronize()
             self.graph_outputs[batch_size] = output
             self.cuda_graphs[batch_size] = cudagraph
-            
+           
         self.cuda_graphs[1].replay()
 
     # @torch.compile
-    def prepare_replay(self, spec_info, scheduled_batch):
+    def prepare_replay(self, scheduled_batch):
+        spec_info = scheduled_batch.spec_info
         batch_size = len(scheduled_batch)
         self.hidden_states_buffer[:batch_size].copy_(spec_info.hidden_states)
         self.logits_buffer[:batch_size].copy_(spec_info.logits)
@@ -89,14 +91,14 @@ class EagleCudaGraphRunner():
 
 
     @torch.inference_mode()
-    def forward(self, spec_info, scheduled_batch):
+    def forward(self, scheduled_batch):
         batch_size = len(scheduled_batch)
         if batch_size in self.cuda_graphs:
-            self.prepare_replay(spec_info, scheduled_batch)
+            self.prepare_replay(scheduled_batch)
             self.cuda_graphs[batch_size].replay()
             output = self.graph_outputs[batch_size]
         else:
-            output = self.model_func(spec_info, scheduled_batch)
+            output = self.model_func(scheduled_batch)
         # we can't guarantee they are exactly the same for all steps
         # output1 = self.model_func(spec_info, scheduled_batch)
         # assert all([torch.allclose(o1, o2) for o1, o2 in zip(output1, output)])

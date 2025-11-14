@@ -57,7 +57,7 @@ class Sampler(nn.Module):
         return batch_next_token_ids
 
 
-    @maybe_compile
+    # @maybe_compile
     def forward(self, logits: torch.Tensor, sampling_batch_info: SamplingBatchInfo):
         if sampling_batch_info is None:
             return logits

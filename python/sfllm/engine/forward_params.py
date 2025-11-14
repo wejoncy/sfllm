@@ -20,8 +20,6 @@ class ForwardMode(IntEnum):
     # No sequence to forward. For data parallel attention, some workers will be IDLE if no sequence are allocated.
     IDLE = auto()
 
-MAX_PROCESSED_TOKENS = 1024*200
-
 class ForwardBatch:
     def __init__(self, mem_pool):
         # need to inilialize during prepare inputs
@@ -38,7 +36,6 @@ class ForwardBatch:
         self.max_kv_splits = 16
         self.sampling_batch_info = None
         self.padded_token = 0
-        self.padded_token_extend = 0
 
         self.position_ids_extend = None
 

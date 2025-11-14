@@ -2,11 +2,11 @@ import dataclasses
 import torch
 import itertools
 import bisect
-from typing import Dict, List, Any, Optional, Union
+from typing import List, Optional, Union
 from contextlib import contextmanager
 
 from sfllm.engine.forward_params import ForwardBatch,ForwardMode
-from sfllm.utils.nutils import DEFAULT_CUDA_GRAPH_BATCH_SIZES, MAX_PROCESSED_TOKENS
+from sfllm.utils.nutils import DEFAULT_CUDA_GRAPH_BATCH_SIZES
 from sfllm.layers.sampler import SamplingBatchInfo
 from sfllm.server_args import get_global_server_args
 from sfllm.spec_decoding.spec_common import SpecInput
@@ -16,7 +16,6 @@ class ScheduleBatch:
     def __init__(self, sequences, mem_pool, draft_mem_pool=None):
         self.sequences = sequences
         self.device = torch.device("cuda:0")
-        self.mem_pool = mem_pool
         self.forward_batch = ForwardBatch(mem_pool)
         self.forward_batch_spec = ForwardBatch(draft_mem_pool) if draft_mem_pool is not None else None
         self.fake_ids = None
@@ -126,9 +125,6 @@ class ScheduleBatch:
         positions_outs = []
         batch_size = len(self.sequences)
         server_args = get_global_server_args()
-        # for cuda graph compatibility, we may need to padding kv_indptr/qo_indptr to certain size
-        padding_for_extend_cuda_graph = False if server_args.disable_cuda_graph else True
-        extend_batch_size = self.spec_info.verified_id.shape[0] if padding_for_extend_cuda_graph else batch_size
         update_accept_length_cpu = self.spec_info.accept_length_cpu + 1
         for i in range(len(position_ids_list)):
             positions_outs.append(range(
@@ -164,15 +160,13 @@ class ScheduleBatch:
                         0 if ALIGN_EAGLE_WITH_SGLANG_ else (self.spec_info.accept_length_cpu + 1))
         # sglang dropped the first token
         # leading zero
-        self.forward_batch_spec.padded_token_extend = extend_batch_size - batch_size
-        self.forward_batch_spec.kv_indptr = torch.zeros((extend_batch_size + 1,), dtype=torch.int32, device=device)
-        self.forward_batch_spec.kv_indptr[1:batch_size+1] = (self.forward_batch.kv_indptr[1:] -
-            minux_const.to(self.device, non_blocking=True))
+        self.forward_batch_spec.kv_indptr = self.forward_batch.kv_indptr.clone()
+        self.forward_batch_spec.kv_indptr[1:].sub_(minux_const.to(self.device, non_blocking=True))
         self.forward_batch_spec.kv_indices = kv_indices_spec
         self.forward_batch_spec.kv_indices_mtd = kv_indices_mtd_spec
         self.forward_batch_spec.padded_token = padded_token
         self.forward_batch_spec.out_cache_loc = out_cache_loc_spec
-        self.forward_batch_spec.qo_indptr = torch.zeros((extend_batch_size + 1,), dtype=torch.int32, device=device)
+        self.forward_batch_spec.qo_indptr = self.forward_batch.kv_indptr.clone()
         self.forward_batch_spec.qo_indptr[1:batch_size + 1] = (1 + self.spec_info.accept_length).cumsum(dim=0, dtype=torch.int32)
         self.forward_batch_spec.max_extend_len = max(self.spec_info.accept_length_cpu.tolist())+1
         self.forward_batch_spec.position_ids_extend = torch.tensor(
@@ -253,7 +247,6 @@ class ScheduleBatch:
 
         prefix_lens = torch.tensor(prefix_lens_list, dtype=torch.int32, pin_memory=True).to(device, non_blocking=True)
 
-        total_seq_len = kv_indices.shape[0] # this would be wrong if speculative decoding with draft model
         if self.forward_batch.forward_mode == ForwardMode.EXTEND:
             self.forward_batch.max_extend_len = max(cur_seq_lens_list)
             self.forward_batch.kv_indptr = prefix_lens.cumsum(dim=-1, dtype=torch.int32)
