@@ -305,7 +305,7 @@ class EagleWorker:
             with scheduled_batch.switch_spec_forward_batch():
                 logits_output = self.draft_model_runner.forward(scheduled_batch)
 
-        spec_info.hidden_states = logits_output.aux_hidden_states[0][spec_info.accept_length.cumsum(dim=0)-1]
+        spec_info.hidden_states = logits_output.aux_hidden_states[0][(spec_info.accept_length+1).cumsum(dim=0)-1]
         spec_info.logits = logits_output.next_token_logits
         scheduled_batch.position_ids = old_position_ids
         scheduled_batch.input_ids = old_input_ids
