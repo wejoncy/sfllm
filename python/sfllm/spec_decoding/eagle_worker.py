@@ -95,9 +95,9 @@ class EagleWorker:
     def init_capture_cudagraph(self):
         if not self.server_args.disable_cuda_graph:
             self.eagle_e2e_cuda_graph_runner.init_cuda_graph()
-            self.target_model_runner.init_capture_cudagraph(forward_mode=ForwardMode.TARGET_VERIFY)
-            self.draft_model_runner.init_capture_cudagraph(forward_mode=ForwardMode.DRAFT_EXTEND)
-            self.eagle_cuda_graph_runner.init_cuda_graph()
+            # self.target_model_runner.init_capture_cudagraph(forward_mode=ForwardMode.TARGET_VERIFY)
+            # self.draft_model_runner.init_capture_cudagraph(forward_mode=ForwardMode.DRAFT_EXTEND)
+            # self.eagle_cuda_graph_runner.init_cuda_graph()
             pass
         
     @torch.inference_mode()
@@ -113,7 +113,7 @@ class EagleWorker:
             self.draft_forward_extend(batch_output, scheduled_batch)
 
             spec_info.verified_id = batch_output.next_token_ids
-            spec_info.accept_length_cpu = torch.zeros((len(scheduled_batch),), dtype=torch.int32)-1
+            spec_info.accept_length_cpu = torch.zeros((len(scheduled_batch),), dtype=torch.int32)#-1
             spec_info.accept_length = spec_info.accept_length_cpu.to(spec_info.logits.device)
             batch_output.spec_info = spec_info
             return batch_output
@@ -158,11 +158,16 @@ class EagleWorker:
             scheduled_batch.position_ids.add_(1) # we should update it accordingly
         with scheduled_batch.switch_spec_forward_batch():
             logits_output = self.draft_model_runner.forward(scheduled_batch)
-
-        pruned_states = [hd[scheduled_batch.forward_batch.qo_indptr[1:] - 1] for hd in logits_output.aux_hidden_states]
-        spec_info = scheduled_batch.spec_info
-        spec_info.hidden_states = torch.concatenate(pruned_states, dim=-1)
-        spec_info.logits = logits_output.next_token_logits
+        if True:
+            spec_info = scheduled_batch.spec_info
+            pruned_states = spec_info.hidden_states[scheduled_batch.forward_batch.qo_indptr[1:] - 1]
+            spec_info.hidden_states = pruned_states
+            spec_info.logits = logits_output.next_token_logits
+        else:
+            pruned_states = [hd[scheduled_batch.forward_batch.qo_indptr[1:] - 1] for hd in logits_output.aux_hidden_states]
+            spec_info = scheduled_batch.spec_info
+            spec_info.hidden_states = torch.concatenate(pruned_states, dim=-1)
+            spec_info.logits = logits_output.next_token_logits
         return logits_output
 
     def multi_step_speculative_decode(self, scheduled_batch:ScheduleBatch):
@@ -381,7 +386,7 @@ class EagleWorker:
         # Run forward
         with scheduled_batch.switch_spec_forward_batch():
             logits_output = self.draft_model_runner.forward(scheduled_batch)
-        spec_info.hidden_states = logits_output.aux_hidden_states[0][(spec_info.accept_length+1).cumsum(dim=0)-1]
+        spec_info.hidden_states = logits_output.aux_hidden_states[0][(forward_batch_spec.qo_indptr[1:]-1)]
         spec_info.logits = logits_output.next_token_logits
         scheduled_batch.position_ids = old_position_ids
         scheduled_batch.input_ids = old_input_ids
