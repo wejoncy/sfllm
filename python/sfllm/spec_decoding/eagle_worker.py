@@ -351,6 +351,7 @@ class EagleWorker:
         accept_index, accept_length, predict = verify_input.verify(scheduled_batch, logits_output, 1)
         return verify_input, logits_output.next_token_logits, accept_index, accept_length, predict
 
+    # why this work???
     def forward_decode_e2e(self, scheduled_batch:ScheduleBatch):
         #enmulate input tensors
         """
