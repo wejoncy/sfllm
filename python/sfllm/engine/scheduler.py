@@ -100,10 +100,11 @@ class SchedulerPolicy:
         self.memory_pool = memory_pool
         self.total_token_used = 0
         self.cur_token_used = 0
+        self.new_token_ratio = 0.7  # reserve 70% for new tokens
     
     @property
     def total_remain_tokens(self) -> int:
-        return self.memory_pool.num_available_blocks() - self.total_token_used
+        return self.memory_pool.num_available_blocks() - self.total_token_used*self.new_token_ratio
     
     @property
     def cur_remain_tokens(self) -> int:

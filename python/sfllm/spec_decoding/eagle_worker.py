@@ -569,6 +569,10 @@ class EagleWorker:
                 sequence.logits = spec_info.logits[last_verify_id_start:end] # keep batch dim
                 sequence.hidden_states = spec_info.hidden_states[last_verify_id_start:end]
                 last_verify_id_start = end
+
+                ############### adjust out_cache_loc ##################
+                # the final token is un-determined before the forward, 
+                # we have to alloc num-draft-token cache loc per batch. After, we need to adjust it here
                 if spec_info.accept_index is not None:
                     sequence.out_cache_loc = sequence.out_cache_loc[: -draft_token_num]
                     accept_len = accept_length_cpu[idx].item()+1
@@ -576,3 +580,4 @@ class EagleWorker:
                     accept_cache_loc_list = accept_cache_loc_list[accept_len:]
         if spec_info.accept_index is not None:
             self.main_mem_pool.free_block(refused_cache_loc)
+        return scheduled_batch

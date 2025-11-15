@@ -63,7 +63,9 @@ class InferenceEngine:
             else:
                 if self.is_spec_algo:
                     #TODO parallel decoding with speculative decoding, multitoken would be decoded in a single step
-                    sequence.new_tokens = sequence.verified_id.tolist()
+                    pos_offset = (batch_result.spec_info.accept_length_cpu+1).cumsum(dim=0).tolist()
+                    pos_offset = [0] + pos_offset
+                    sequence.new_tokens = token_ids[pos_offset[idx]: pos_offset[idx + 1]]
                     sequence.generated_tokens = sequence.new_tokens.copy()
                     sequence.tokens.extend(sequence.new_tokens)
                     sequence.last_generated_token_pos += len(sequence.generated_tokens)
@@ -125,7 +127,7 @@ class InferenceEngine:
             new_batch.prepare_sample()
             batch_out = self.model_worker.forward(new_batch)
             if self.is_spec_algo:
-                batch_out = self.model_worker.spec_postprocess(new_batch)
+                new_batch = self.model_worker.spec_postprocess(new_batch)
         self.post_forward(new_batch, batch_out, failed_sequences)
         new_batch.extend(failed_sequences)
         return new_batch
