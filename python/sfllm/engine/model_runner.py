@@ -94,7 +94,6 @@ class ModelRunner:
         self.attn_logits = target_model_runner.attn_logits
         self.attn_lse = target_model_runner.attn_lse
         self.compute_stream = target_model_runner.compute_stream
-        self.copy_in_stream = target_model_runner.copy_in_stream
         self.graph_pool = target_model_runner.graph_pool
 
     def create_cudagraph_buffers(self):
@@ -103,7 +102,6 @@ class ModelRunner:
         server_args = self.server_args
         if not self.is_draft:
             self.compute_stream = torch.cuda.Stream(device=device_id)
-            self.copy_in_stream = torch.cuda.Stream(device=device_id)
             self.graph_pool = torch.cuda.graph_pool_handle()
         self.cuda_graph_max_bs = server_args.cuda_graph_max_bs
         ind = bisect.bisect_right(DEFAULT_CUDA_GRAPH_BATCH_SIZES, self.cuda_graph_max_bs)

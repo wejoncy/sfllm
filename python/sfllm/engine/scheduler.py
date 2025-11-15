@@ -17,7 +17,7 @@ class RunningMetrics:
         self,
         waiting_queue: queue.Queue,
         running_queue: queue.Queue,
-        block_memory_manager: BlockMemoryManager,
+        mem_pool: BlockMemoryManager,
         server_args=None,
     ):
         self.tokens_generated = 0
@@ -30,7 +30,7 @@ class RunningMetrics:
         self.last_refresh_time = time.perf_counter()
         self.waiting_queue = waiting_queue
         self.running_queue = running_queue
-        self.block_memory_manager = block_memory_manager
+        self.mem_pool = mem_pool
         self.server_args = server_args
 
     def log_prefill_metrics(self, cur_prefill_tokens: int):
@@ -78,7 +78,7 @@ class RunningMetrics:
         tps = self.tokens_generated / elapsed
         if (tps > 0 and elapsed > refresh_interval) or (tps == 0 and elapsed > refresh_interval * 10) or is_prefill:
             msg = f"Decode batch. #running-req: {len(seq_group)}. "
-            cache_usage = self.block_memory_manager.get_usage()
+            cache_usage = self.mem_pool.get_usage()
             msg += (
                 f"gen throughput (token/s): {tps:.2f}, "
                 f"#queue-req p+d: {self.waiting_queue.qsize()}+{self.running_queue.qsize()}, "
@@ -141,14 +141,14 @@ class Scheduler:
         self.spec_algorithm = SpeculativeAlgorithm.from_string(
             server_args.speculative_algorithm
         )
-        self.block_memory_manager = model_worker.main_mem_pool
+        self.mem_pool = model_worker.main_mem_pool
         self.draft_memory_pool = model_worker.draft_mem_pool if self.spec_algorithm.is_none() is False else None
-        self.metrics = RunningMetrics(self.waiting_queue, self.running_queue, self.block_memory_manager, server_args=server_args)
-        self.scheduler_policy = SchedulerPolicy(self.block_memory_manager)
+        self.metrics = RunningMetrics(self.waiting_queue, self.running_queue, self.mem_pool, server_args=server_args)
+        self.scheduler_policy = SchedulerPolicy(self.mem_pool)
 
         # overlap Scheduling
         self.enable_overlap = not server_args.disable_overlap
-        self.flying_batch = ScheduleBatch([], self.block_memory_manager)
+        self.flying_batch = ScheduleBatch([], self.mem_pool)
 
     
     def add_request(self, sequence: RequestSequence):
@@ -183,17 +183,17 @@ class Scheduler:
                 break
             if prefill_tokens + len(tokens) > self.max_prefill_tokens:
                 break
-            assert self.block_memory_manager.can_alloc(len(tokens))
+            assert self.mem_pool.can_alloc(len(tokens))
             sequence = self.waiting_queue.get()
             sequence.status = SequenceStatus.RUNNING
             self.scheduler_policy.add_prefill_req(sequence)
             running_sequences.append(sequence)
-            running_sequences[-1].out_cache_loc.extend(self.block_memory_manager.alloc_block(tokens, hashv=0))
+            running_sequences[-1].out_cache_loc.extend(self.mem_pool.alloc_block(tokens, hashv=0))
             if not self.spec_algorithm.is_none():
                 running_sequences[-1].out_cache_loc_spec.extend(self.draft_memory_pool.alloc_block(tokens, hashv=0))
             prefill_tokens += len(tokens)
 
-        running_batch = ScheduleBatch(running_sequences, self.block_memory_manager, self.draft_memory_pool)
+        running_batch = ScheduleBatch(running_sequences, self.mem_pool, self.draft_memory_pool)
         if self.enable_overlap:
             # remove finished sequences from flying batch
             last_batch.filter()
@@ -203,10 +203,10 @@ class Scheduler:
                 for seq in self.flying_batch.sequences:
                     self.scheduler_policy.add_decode_req(seq)
                     seq.out_cache_loc.extend(
-                        self.block_memory_manager.alloc_block([-1], hashv=0)
+                        self.mem_pool.alloc_block([-1], hashv=0)
                     )
                 running_batch.merge(self.flying_batch)
-                self.flying_batch = ScheduleBatch([], self.block_memory_manager)
+                self.flying_batch = ScheduleBatch([], self.mem_pool)
         # if there is no prefill request, schedule decode requests
         elif len(running_sequences) == 0:
             while not self.running_queue.empty() and len(running_sequences) < overlap_running_size:
@@ -219,10 +219,10 @@ class Scheduler:
                 running_sequences.append(self.running_queue.get())
                 if not self.spec_algorithm.is_none():
                     target_verify_len = self.server_args.speculative_num_draft_tokens
-                    assert self.block_memory_manager.can_alloc(target_verify_len)  # the future token ids are unknown
+                    assert self.mem_pool.can_alloc(target_verify_len)  # the future token ids are unknown
                     # we will only reserver a few of them, the rest will be free after verification
                     running_sequences[-1].out_cache_loc.extend(
-                        self.block_memory_manager.alloc_block([-1]*target_verify_len, hashv=0)
+                        self.mem_pool.alloc_block([-1]*target_verify_len, hashv=0)
                     )
                     # for draft model
                     total_draft_len = running_sequences[-1].accept_length_cpu[0]+1 # the first run to setup kv cache for last verify tokens
@@ -232,8 +232,8 @@ class Scheduler:
                         self.draft_memory_pool.alloc_block([-1]*total_draft_len, hashv=0)
                     )
                 else:
-                    assert self.block_memory_manager.can_alloc(1)  # the future token ids are unknown
-                    running_sequences[-1].out_cache_loc.extend(self.block_memory_manager.alloc_block([-1], hashv=0))
+                    assert self.mem_pool.can_alloc(1)  # the future token ids are unknown
+                    running_sequences[-1].out_cache_loc.extend(self.mem_pool.alloc_block([-1], hashv=0))
             running_batch.spec_info = self.flying_batch.spec_info
             self.flying_batch = running_batch
         else:
@@ -265,7 +265,7 @@ class Scheduler:
 
         if not len(sequence.out_cache_loc):
             return
-        self.block_memory_manager.free_block(sequence.out_cache_loc)
+        self.mem_pool.free_block(sequence.out_cache_loc)
         self.scheduler_policy.release_req(sequence)
 
     def is_done(self) -> bool:

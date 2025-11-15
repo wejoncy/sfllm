@@ -35,6 +35,7 @@ class EagleWorker:
         self.tokenizer = transformers.AutoTokenizer.from_pretrained(server_args.model_path)
         self.draft_model_runner.wrap_target_model(self.target_model_runner)
         self.detokenize = self.target_model_runner.detokenize
+        self.compute_stream = self.target_model_runner.compute_stream
 
         #statistics
         self.total_accepted_tokens = 0
