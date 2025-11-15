@@ -106,22 +106,22 @@ class EagleE2ECudaGraphRunner():
     @torch.inference_mode()
     def init_cuda_graph(self):
         from sfllm.engine.model_runner import freeze_gc
-        import sfllm.utils.nutils as nutils
         scheduled_batch = self.prepare_cudagraph_inputs_for_capture(batch_size=1)
-        old_DEBUG = nutils._DEBUG
-        nutils._DEBUG = False
+        old_DEBUG = self.server_args.enable_debug
+        self.server_args.enable_debug = False
         self.model_func(scheduled_batch)
-        nutils._DEBUG = old_DEBUG
+        self.server_args.enable_debug = old_DEBUG
         self.compute_stream.synchronize()
-        for batch_size in tqdm.tqdm(list(reversed(range(1, 32))), desc="Capturing CUDA Graphs"):
-            (scheduled_batch) = self.prepare_cudagraph_inputs_for_capture(batch_size)
-            cudagraph = torch.cuda.CUDAGraph()
+        with freeze_gc(False):
+            for batch_size in tqdm.tqdm(list(reversed(range(1, 32))), desc="Capturing CUDA Graphs"):
+                (scheduled_batch) = self.prepare_cudagraph_inputs_for_capture(batch_size)
+                cudagraph = torch.cuda.CUDAGraph()
 
-            with torch.cuda.graph(cudagraph, stream=self.compute_stream, pool=self.graph_pool):
-                output = self.model_func(scheduled_batch)
-            torch.cuda.synchronize()
-            self.graph_outputs[batch_size] = output
-            self.cuda_graphs[batch_size] = cudagraph
+                with torch.cuda.graph(cudagraph, stream=self.compute_stream, pool=self.graph_pool):
+                    output = self.model_func(scheduled_batch)
+                torch.cuda.synchronize()
+                self.graph_outputs[batch_size] = output
+                self.cuda_graphs[batch_size] = cudagraph
            
         self.cuda_graphs[1].replay()
 

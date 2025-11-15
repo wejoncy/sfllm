@@ -213,10 +213,11 @@ class LlamaForCausalLMEagle3(LlamaForCausalLM):
             (".gate_up_proj", ".up_proj", 1),
         ]
 
-        for name, loaded_weight in weights.items():
+        for name, loaded_weight in weights:
             if "d2t" in name:
                 # d2t stores diffs between draft id and target id
-                self.hot_token_id = loaded_weight + torch.arange(loaded_weight.shape[0])
+                device = torch.get_default_device()
+                self.hot_token_id = loaded_weight.to(device) + torch.arange(loaded_weight.shape[0])
                 continue
 
             if "t2d" in name:

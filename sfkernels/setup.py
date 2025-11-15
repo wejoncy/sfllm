@@ -105,7 +105,7 @@ else:
         assert False, "Unsupported platform or CUDA/HIP not available."
 
 
-if gpu_target not in ["70", "86", "gfx942"]:
+if gpu_target not in ["70", "86", "80", "90", "gfx942"]:
     print(
         f"Warning: Unsupported GPU architecture detected '{gpu_target}'. Expected 'sm70' or 'sm86'."
     )

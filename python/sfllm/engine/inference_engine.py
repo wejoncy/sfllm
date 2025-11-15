@@ -36,6 +36,10 @@ class InferenceEngine:
         self.model_worker.init_capture_cudagraph()
         self.enable_overlap = not server_args.disable_overlap
 
+    @property
+    def is_spec_algo(self) -> bool:
+        return self.server_args.speculative_algorithm is not None
+
     def post_forward(
         self,
         schedule_batch: ScheduleBatch,
@@ -46,19 +50,6 @@ class InferenceEngine:
         if isinstance(token_ids, BatchResult):
             batch_result = token_ids
             token_ids = batch_result.next_token_ids.tolist()
-            if batch_result.spec_info is not None:
-                last_verify_id_start = 0
-                for idx, sequence in enumerate(schedule_batch):
-                    if sequence.status.is_active():
-                        sequence.accept_length = batch_result.spec_info.accept_length[idx:idx+1]
-                        sequence.accept_length_cpu = batch_result.spec_info.accept_length.cpu()[idx:idx+1]
-                        accept_length = sequence.accept_length_cpu[0]
-                        end = max(last_verify_id_start+accept_length+1, last_verify_id_start+1)
-                        sequence.verified_id = batch_result.spec_info.verified_id[last_verify_id_start:end]
-                        sequence.logits = batch_result.spec_info.logits[last_verify_id_start:end] # keep batch dim
-                        sequence.hidden_states = batch_result.spec_info.hidden_states[last_verify_id_start:end]
-
-                        last_verify_id_start = end
         for idx, sequence in enumerate(schedule_batch):
             if self.enable_overlap:
                 if sequence.status.is_active():
@@ -70,7 +61,7 @@ class InferenceEngine:
                     sequence.generated_tokens[0] = token_ids[idx]
                     sequence.last_generated_token_pos += 1
             else:
-                if self.server_args.speculative_algorithm is not None:
+                if self.is_spec_algo:
                     #TODO parallel decoding with speculative decoding, multitoken would be decoded in a single step
                     sequence.new_tokens = sequence.verified_id.tolist()
                     sequence.generated_tokens = sequence.new_tokens.copy()
@@ -133,6 +124,8 @@ class InferenceEngine:
             new_batch.prepare_inputs()
             new_batch.prepare_sample()
             batch_out = self.model_worker.forward(new_batch)
+            if self.is_spec_algo:
+                batch_out = self.model_worker.spec_postprocess(new_batch)
         self.post_forward(new_batch, batch_out, failed_sequences)
         new_batch.extend(failed_sequences)
         return new_batch

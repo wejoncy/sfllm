@@ -27,6 +27,7 @@ class ServerArgs:
 
     # Logging
     log_level: str = "info"
+    enable_debug: bool = False
 
     @staticmethod
     def add_cli_args(parser: argparse.ArgumentParser):
@@ -141,6 +142,11 @@ class ServerArgs:
             default=ServerArgs.speculative_num_draft_tokens,
             help="The number of draft tokens to use in speculative decoding.",
         )
+        parser.add_argument(
+            "--enable-debug",
+            action="store_true",
+            help="Enable debug mode.",
+        )
 
     @classmethod
     def from_cli_args(cls, args: argparse.Namespace):
@@ -150,8 +156,8 @@ class ServerArgs:
     def __post_init__(self):
         import platform
         if platform.system() == "Windows":
-            self.mem_fraction = min(self.mem_fraction, 0.65)
-            print("Warning: On Windows, setting mem_fraction to 0.7 for better stability.")
+            self.mem_fraction = min(self.mem_fraction, 0.56)
+            print("Warning: On Windows, setting mem_fraction to {self.mem_fraction} for better stability.")
         self.rl_on_policy_target = None
         if self.speculative_algorithm is not None:
             self.disable_overlap = True

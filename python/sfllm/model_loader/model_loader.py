@@ -9,7 +9,7 @@ from tqdm import tqdm
 import transformers
 
 
-from sfllm.models.modeling_qwen3 import Qwen3ForCausalLM
+from sfllm.models.qwen3 import Qwen3ForCausalLM
 from sfllm.models.llama_eagle import LlamaForCausalLMEagle
 from sfllm.models.llama_eagle3 import LlamaForCausalLMEagle3
 
@@ -53,13 +53,10 @@ def _get_resolved_weight_or_index_file(model_name_or_path):
     return str(weight_or_index_file)
 
 
-def _load_check_point(model, model_name_or_path, get_keys_only: bool = False):
+def _load_check_point(model_name_or_path, disable_mmap: bool = False):
     from transformers.utils.hub import cached_file
     import concurrent
     weight_or_index_file = _get_resolved_weight_or_index_file(model_name_or_path)
-    all_keys = set()
-    all_missing_keys = []
-    all_unexpected_keys = []
     if weight_or_index_file.endswith(".index.json"):
         with open(weight_or_index_file, "r") as f:
             index = json.loads(f.read())
@@ -76,43 +73,41 @@ def _load_check_point(model, model_name_or_path, get_keys_only: bool = False):
     if len(checkpoint_files) > 0:
         for i in tqdm(range(len(checkpoint_files)), desc="loading weights"):
             if not checkpoint_files[i].endswith("safetensors"):
-                weights = torch.load(checkpoint_files[i], map_location="cpu", weights_only=True)
+                weights = torch.load(checkpoint_files[i], map_location="cuda", weights_only=True)
             else:
-                weights = safetensors.torch.load_file(checkpoint_files[i], device="cpu")
-            if get_keys_only:
-                all_keys.update(weights.keys())
-                del weights
-            else:
-                if hasattr(model, 'load_weights'):
-                    model.load_weights(weights)
-                    all_missing_keys = []
-                    all_unexpected_keys = []
+                if disable_mmap:
+                    # weights = safetensors.torch.load_file(checkpoint_files[i], device="cpu")
+                    # yield weights
+                    with open(checkpoint_files[i], "rb") as f:
+                        result = safetensors.torch.load(f.read())
+                        for name, param in result.items():
+                            yield name, param
                 else:
-                    ret = model.load_state_dict(weights, strict=False)
-                    all_missing_keys.extend(ret.missing_keys)
-                    all_unexpected_keys.extend(ret.unexpected_keys)
-                del weights
+                    with safetensors.safe_open(checkpoint_files[i], framework="pt", device="cpu") as f:
+                        for name in f.keys():
+                            yield name, f.get_tensor(name)
     else:
         raise ValueError(f"{model_name_or_path} is not a folder containing weights or safetensors")
 
-    if get_keys_only:
-        return all_keys
-    return all_missing_keys, all_unexpected_keys
-
-class TorchDefaultDtype(ContextDecorator):
-    def __init__(self, dtype):
+class TorchDefaultReset(ContextDecorator):
+    def __init__(self, dtype, device="cuda"):
         if not isinstance(dtype, torch.dtype):
             raise TypeError("dtype must be a torch.dtype")
         self.new_dtype = dtype
+        self.new_device = device
         self._prev = None
+        self.orig_default_device = torch.get_default_device()
+
 
     def __enter__(self):
         self._prev = torch.get_default_dtype()
         torch.set_default_dtype(self.new_dtype)
+        torch.set_default_device(self.new_device)
         return self
 
     def __exit__(self, exc_type, exc, tb):
         torch.set_default_dtype(self._prev)
+        torch.set_default_device(self.orig_default_device)
         return False
 
 ModelRegistry = {
@@ -142,12 +137,16 @@ def load_model(model_name:str, config, dtype:torch.dtype=torch.float16):
     Returns:
         A dictionary containing model, tokenizer, and processor
     """
-    architectures = config.architectures[0] if config.architectures else "Qwen3ForCausalLM"
+    architectures = config.architectures[0]
     logger.info(f"Loading model: {model_name} {architectures} with dtype: {dtype}")
     before_avail_memory, _ = torch.cuda.mem_get_info(0)
-    with TorchDefaultDtype(dtype):
-        model = ModelRegistry[architectures](config).cuda()
-        _load_check_point(model, model_name)
+    with TorchDefaultReset(dtype, device="cuda"):
+        model = ModelRegistry[architectures](config)
+        weight_iterator = _load_check_point(model_name)
+        if hasattr(model, 'load_weights'):
+            model.load_weights(weight_iterator)
+        else:
+            ret = model.load_state_dict(next(weight_iterator), strict=False)
     model = model.eval()
     after_avail_memory,_ = torch.cuda.mem_get_info(0)
     weight_load_mem_usage = before_avail_memory - after_avail_memory

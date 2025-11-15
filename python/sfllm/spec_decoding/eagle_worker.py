@@ -3,7 +3,7 @@
 import logging
 import torch
 from typing import List
-from sfllm.engine.schedule_batch import ScheduleBatch,BatchResult, ALIGN_EAGLE_WITH_SGLANG_
+from sfllm.engine.schedule_batch import ScheduleBatch,BatchResult
 from sfllm.engine.forward_params import ForwardMode, ForwardBatch
 from sfllm.server_args import ServerArgs
 from sfllm.engine.model_runner import ModelRunner
@@ -16,7 +16,6 @@ from sfllm.spec_decoding.spec_utils import (EagleSpecInput,
                                             generate_kv_indices_for_mtd)
 from sfllm.spec_decoding.draft_cuda_graph_runner import EagleCudaGraphRunner
 from sfllm.spec_decoding.eagle3_e2e_cuda_graph_runner import EagleE2ECudaGraphRunner
-from sfllm.utils.nutils import _DEBUG
 import transformers
 
 
@@ -96,9 +95,9 @@ class EagleWorker:
     def init_capture_cudagraph(self):
         if not self.server_args.disable_cuda_graph:
             self.eagle_e2e_cuda_graph_runner.init_cuda_graph()
-            self.target_model_runner.init_capture_cudagraph(forward_mode=ForwardMode.TARGET_VERIFY)
-            self.draft_model_runner.init_capture_cudagraph(forward_mode=ForwardMode.DRAFT_EXTEND)
-            self.eagle_cuda_graph_runner.init_cuda_graph()
+            # self.target_model_runner.init_capture_cudagraph(forward_mode=ForwardMode.TARGET_VERIFY)
+            # self.draft_model_runner.init_capture_cudagraph(forward_mode=ForwardMode.DRAFT_EXTEND)
+            # self.eagle_cuda_graph_runner.init_cuda_graph()
             pass
         
     @torch.inference_mode()
@@ -114,7 +113,7 @@ class EagleWorker:
             self.draft_forward_extend(batch_output, scheduled_batch)
 
             spec_info.verified_id = batch_output.next_token_ids
-            spec_info.accept_length_cpu = torch.zeros((len(scheduled_batch),), dtype=torch.int32)-1
+            spec_info.accept_length_cpu = torch.zeros((len(scheduled_batch),), dtype=torch.int32)#-1
             spec_info.accept_length = spec_info.accept_length_cpu.to(spec_info.logits.device)
             batch_output.spec_info = spec_info
             return batch_output
@@ -124,7 +123,7 @@ class EagleWorker:
                 global for_comparation
                 for_comparation = self.eagle_e2e_cuda_graph_runner.forward(scheduled_batch)
                 out_args = for_comparation
-            if scheduled_batch.spec_info.hidden_states.shape[-1] == self.target_model_runner.get_config().hidden_size:
+            elif scheduled_batch.spec_info.hidden_states.shape[-1] == self.target_model_runner.get_config().hidden_size:
                 with torch.cuda.nvtx.range("eagle_spec_decode"):
                     out_args = self.multi_step_speculative_decode(scheduled_batch)
 
@@ -155,15 +154,20 @@ class EagleWorker:
                 (input_ids[1:], next_token_ids[i].reshape(1))
             )
             pt += extend_len
-        if not ALIGN_EAGLE_WITH_SGLANG_:
-            scheduled_batch.position_ids.add_(1) # we should update it accordingly
+        # if not ALIGN_EAGLE_WITH_SGLANG_:
+        #     scheduled_batch.position_ids.add_(1) # we should update it accordingly
         with scheduled_batch.switch_spec_forward_batch():
             logits_output = self.draft_model_runner.forward(scheduled_batch)
-
-        pruned_states = [hd[scheduled_batch.forward_batch.qo_indptr[1:] - 1] for hd in logits_output.aux_hidden_states]
-        spec_info = scheduled_batch.spec_info
-        spec_info.hidden_states = torch.concatenate(pruned_states, dim=-1)
-        spec_info.logits = logits_output.next_token_logits
+        if True:
+            spec_info = scheduled_batch.spec_info
+            pruned_states = spec_info.hidden_states[scheduled_batch.forward_batch.qo_indptr[1:] - 1]
+            spec_info.hidden_states = pruned_states
+            spec_info.logits = logits_output.next_token_logits
+        else:
+            pruned_states = [hd[scheduled_batch.forward_batch.qo_indptr[1:] - 1] for hd in logits_output.aux_hidden_states]
+            spec_info = scheduled_batch.spec_info
+            spec_info.hidden_states = torch.concatenate(pruned_states, dim=-1)
+            spec_info.logits = logits_output.next_token_logits
         return logits_output
 
     def multi_step_speculative_decode(self, scheduled_batch:ScheduleBatch):
@@ -351,6 +355,7 @@ class EagleWorker:
         accept_index, accept_length, predict = verify_input.verify(scheduled_batch, logits_output, 1)
         return verify_input, logits_output.next_token_logits, accept_index, accept_length, predict
 
+    # why this work???
     def forward_decode_e2e(self, scheduled_batch:ScheduleBatch):
         #enmulate input tensors
         """
@@ -381,7 +386,7 @@ class EagleWorker:
         # Run forward
         with scheduled_batch.switch_spec_forward_batch():
             logits_output = self.draft_model_runner.forward(scheduled_batch)
-        spec_info.hidden_states = logits_output.aux_hidden_states[0][(spec_info.accept_length+1).cumsum(dim=0)-1]
+        spec_info.hidden_states = logits_output.aux_hidden_states[0][(forward_batch_spec.qo_indptr[1:]-1)]
         spec_info.logits = logits_output.next_token_logits
         scheduled_batch.position_ids = old_position_ids
         scheduled_batch.input_ids = old_input_ids
@@ -525,20 +530,49 @@ class EagleWorker:
                                         next_token_logits:torch.Tensor, accept_index:torch.Tensor, 
                                         accept_length:torch.Tensor, predict:torch.Tensor):
         logits_output = BatchResult(None, next_token_logits, None)
-        ret = verify_input.verify_post_process(
-            scheduled_batch, accept_index, accept_length, predict, self.main_mem_pool, page_size=1
-        )
+        ret = verify_input.verify_post_process(accept_index, accept_length, predict)
         logits_output.next_token_ids = ret.verified_id
         logits_output.next_token_logits = logits_output.next_token_logits[ret.accepted_indices]
         spec_info = scheduled_batch.spec_info
         spec_info.verified_id = ret.verified_id
         spec_info.logits = logits_output.next_token_logits
         spec_info.hidden_states = verify_input.hidden_states[ret.accepted_indices]
-        spec_info.accept_length = ret.draft_input.accept_length
-        spec_info.accept_length_cpu = ret.draft_input.accept_length_cpu
+        spec_info.accept_length = ret.accept_length
+        spec_info.accept_index = ret.accepted_indices
         logits_output.spec_info = spec_info
-        if _DEBUG:
+        if self.server_args.enable_debug:
             bs = len(scheduled_batch)
             self.total_accepted_tokens += len(ret.verified_id)-bs
             logger.info(f"Speculative decoding: accepted {len(ret.verified_id) - bs} tokens, total accepted {self.total_accepted_tokens}.")
         return logits_output
+
+    def spec_postprocess(self, scheduled_batch:ScheduleBatch):
+        draft_token_num = self.server_args.speculative_num_draft_tokens
+        last_verify_id_start = 0
+        spec_info = scheduled_batch.spec_info
+        accept_length_cpu = spec_info.accept_length.cpu()
+        spec_info.accept_length_cpu = accept_length_cpu
+        out_cache_loc_cpu = scheduled_batch.forward_batch.out_cache_loc.cpu()
+        if spec_info.accept_index is not None:
+            evict_mask = torch.full((len(scheduled_batch)*draft_token_num,), True, dtype=torch.bool)
+            evict_mask[spec_info.accept_index] = False
+            accept_cache_loc_list = out_cache_loc_cpu[~evict_mask].tolist()
+            refused_cache_loc = out_cache_loc_cpu[evict_mask].tolist()
+
+        for idx, sequence in enumerate(scheduled_batch):
+            if sequence.status.is_active():
+                sequence.accept_length = spec_info.accept_length[idx:idx+1]
+                sequence.accept_length_cpu = spec_info.accept_length_cpu[idx:idx+1]
+                accept_length = sequence.accept_length_cpu[0]
+                end = max(last_verify_id_start+accept_length+1, last_verify_id_start+1)
+                sequence.verified_id = spec_info.verified_id[last_verify_id_start:end]
+                sequence.logits = spec_info.logits[last_verify_id_start:end] # keep batch dim
+                sequence.hidden_states = spec_info.hidden_states[last_verify_id_start:end]
+                last_verify_id_start = end
+                if spec_info.accept_index is not None:
+                    sequence.out_cache_loc = sequence.out_cache_loc[: -draft_token_num]
+                    accept_len = accept_length_cpu[idx].item()+1
+                    sequence.out_cache_loc.extend(accept_cache_loc_list[: accept_len])
+                    accept_cache_loc_list = accept_cache_loc_list[accept_len:]
+        if spec_info.accept_index is not None:
+            self.main_mem_pool.free_block(refused_cache_loc)
