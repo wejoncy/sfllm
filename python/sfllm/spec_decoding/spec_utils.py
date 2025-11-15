@@ -26,6 +26,7 @@ class EagleSpecInput(SpecInput):
     verified_id: torch.Tensor = None
     accept_length: torch.Tensor = None
     accept_length_cpu: List[int] = None
+    accept_index: torch.Tensor = None
 
     # Inputs for the attention backends
     # shape: (b + 1,)
@@ -41,13 +42,13 @@ class EagleSpecInput(SpecInput):
 @dataclass
 class EagleVerifyOutput:
     # Draft input batch
-    draft_input: EagleSpecInput
+    # draft_input: EagleSpecInput
     # Logit outputs from target worker
     # logits_output: torch.Tensor
     # Accepted token ids including the bonus token
     verified_id: torch.Tensor
     # Accepted token length per sequence in a batch in CPU.
-    # accept_length_per_req_cpu: List[int]
+    accept_length: torch.Tensor
     # Accepted indices from logits_output.next_token_logits
     accepted_indices: torch.Tensor
 
@@ -182,48 +183,44 @@ class EagleVerifyInput(SpecInput):
 
     def verify_post_process(
         self,
-        batch,
         accept_index: torch.Tensor,
         accept_length: torch.Tensor,
         predict: torch.Tensor,
-        # logits_output: torch.Tensor,
-        token_to_kv_pool_allocator,
         page_size: int = 1,
     ):
         # Free the KV cache for unaccepted tokens
         # TODO: fuse them
         accept_index = accept_index[accept_index != -1]
         verified_id = predict[accept_index]
-        evict_mask = torch.full_like(self.draft_token, True, dtype=torch.bool)
-        evict_mask[accept_index] = False
-        accept_length_cpu = accept_length.cpu()
+        # evict_mask = torch.full_like(self.draft_token, True, dtype=torch.bool)
+        # evict_mask[accept_index] = False
 
         if page_size == 1:
-            # TODO: boolean array index leads to a device sync. Remove it.
-            accept_cache_loc = batch.forward_batch.out_cache_loc[~evict_mask]
-            refused_cache_loc = batch.forward_batch.out_cache_loc[evict_mask]
-            accept_cache_loc_list = accept_cache_loc.tolist()
-            for locidx, seq_bt in enumerate(batch):
-                seq_bt.out_cache_loc = seq_bt.out_cache_loc[: -self.draft_token_num]
-                accept_len = accept_length_cpu[locidx].item()
-                seq_bt.out_cache_loc.extend(accept_cache_loc_list[: accept_len + 1])
-                accept_cache_loc_list = accept_cache_loc_list[accept_len + 1 :]
-            token_to_kv_pool_allocator.free_block(
-                batch.forward_batch.out_cache_loc[evict_mask].tolist()
-            )
+            # we will do it after forward finished
+            pass
+            # accept_length_cpu = accept_length.cpu()
+            # # TODO: boolean array index leads to a device sync. Remove it.
+            # accept_cache_loc = batch.forward_batch.out_cache_loc[~evict_mask]
+            # refused_cache_loc = batch.forward_batch.out_cache_loc[evict_mask]
+            # accept_cache_loc_list = accept_cache_loc.tolist()
+            # for locidx, seq_bt in enumerate(batch):
+            #     seq_bt.out_cache_loc = seq_bt.out_cache_loc[: -self.draft_token_num]
+            #     accept_len = accept_length_cpu[locidx].item()
+            #     seq_bt.out_cache_loc.extend(accept_cache_loc_list[: accept_len + 1])
+            #     accept_cache_loc_list = accept_cache_loc_list[accept_len + 1 :]
+            # token_to_kv_pool_allocator.free_block(
+            #     batch.forward_batch.out_cache_loc[evict_mask].tolist()
+            # )
         else:
             assert False, "Not implemented yet."
 
-        if page_size == 1 or self.topk == 1:
-            batch.forward_batch.out_cache_loc = batch.forward_batch.out_cache_loc[
-                accept_index
-            ]
-        draft_input = EagleSpecInput(
-            accept_length=accept_length,
-        )
+        # if page_size == 1 or self.topk == 1:
+        #     batch.forward_batch.out_cache_loc = batch.forward_batch.out_cache_loc[
+        #         accept_index
+        #     ]
         return EagleVerifyOutput(
-            draft_input=draft_input,
             verified_id=verified_id,
+            accept_length=accept_length,
             accepted_indices=accept_index,
         )
 

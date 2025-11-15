@@ -530,19 +530,49 @@ class EagleWorker:
                                         next_token_logits:torch.Tensor, accept_index:torch.Tensor, 
                                         accept_length:torch.Tensor, predict:torch.Tensor):
         logits_output = BatchResult(None, next_token_logits, None)
-        ret = verify_input.verify_post_process(
-            scheduled_batch, accept_index, accept_length, predict, self.main_mem_pool, page_size=1
-        )
+        ret = verify_input.verify_post_process(accept_index, accept_length, predict)
         logits_output.next_token_ids = ret.verified_id
         logits_output.next_token_logits = logits_output.next_token_logits[ret.accepted_indices]
         spec_info = scheduled_batch.spec_info
         spec_info.verified_id = ret.verified_id
         spec_info.logits = logits_output.next_token_logits
         spec_info.hidden_states = verify_input.hidden_states[ret.accepted_indices]
-        spec_info.accept_length = ret.draft_input.accept_length
+        spec_info.accept_length = ret.accept_length
+        spec_info.accept_index = ret.accepted_indices
         logits_output.spec_info = spec_info
         if self.server_args.enable_debug:
             bs = len(scheduled_batch)
             self.total_accepted_tokens += len(ret.verified_id)-bs
             logger.info(f"Speculative decoding: accepted {len(ret.verified_id) - bs} tokens, total accepted {self.total_accepted_tokens}.")
         return logits_output
+
+    def spec_postprocess(self, scheduled_batch:ScheduleBatch):
+        draft_token_num = self.server_args.speculative_num_draft_tokens
+        last_verify_id_start = 0
+        spec_info = scheduled_batch.spec_info
+        accept_length_cpu = spec_info.accept_length.cpu()
+        spec_info.accept_length_cpu = accept_length_cpu
+        out_cache_loc_cpu = scheduled_batch.forward_batch.out_cache_loc.cpu()
+        if spec_info.accept_index is not None:
+            evict_mask = torch.full((len(scheduled_batch)*draft_token_num,), True, dtype=torch.bool)
+            evict_mask[spec_info.accept_index] = False
+            accept_cache_loc_list = out_cache_loc_cpu[~evict_mask].tolist()
+            refused_cache_loc = out_cache_loc_cpu[evict_mask].tolist()
+
+        for idx, sequence in enumerate(scheduled_batch):
+            if sequence.status.is_active():
+                sequence.accept_length = spec_info.accept_length[idx:idx+1]
+                sequence.accept_length_cpu = spec_info.accept_length_cpu[idx:idx+1]
+                accept_length = sequence.accept_length_cpu[0]
+                end = max(last_verify_id_start+accept_length+1, last_verify_id_start+1)
+                sequence.verified_id = spec_info.verified_id[last_verify_id_start:end]
+                sequence.logits = spec_info.logits[last_verify_id_start:end] # keep batch dim
+                sequence.hidden_states = spec_info.hidden_states[last_verify_id_start:end]
+                last_verify_id_start = end
+                if spec_info.accept_index is not None:
+                    sequence.out_cache_loc = sequence.out_cache_loc[: -draft_token_num]
+                    accept_len = accept_length_cpu[idx].item()+1
+                    sequence.out_cache_loc.extend(accept_cache_loc_list[: accept_len])
+                    accept_cache_loc_list = accept_cache_loc_list[accept_len:]
+        if spec_info.accept_index is not None:
+            self.main_mem_pool.free_block(refused_cache_loc)
