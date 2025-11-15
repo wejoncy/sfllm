@@ -123,7 +123,7 @@ class EagleWorker:
                 global for_comparation
                 for_comparation = self.eagle_e2e_cuda_graph_runner.forward(scheduled_batch)
                 out_args = for_comparation
-            if scheduled_batch.spec_info.hidden_states.shape[-1] == self.target_model_runner.get_config().hidden_size:
+            elif scheduled_batch.spec_info.hidden_states.shape[-1] == self.target_model_runner.get_config().hidden_size:
                 with torch.cuda.nvtx.range("eagle_spec_decode"):
                     out_args = self.multi_step_speculative_decode(scheduled_batch)
 
@@ -540,7 +540,6 @@ class EagleWorker:
         spec_info.logits = logits_output.next_token_logits
         spec_info.hidden_states = verify_input.hidden_states[ret.accepted_indices]
         spec_info.accept_length = ret.draft_input.accept_length
-        spec_info.accept_length_cpu = ret.draft_input.accept_length_cpu
         logits_output.spec_info = spec_info
         if self.server_args.enable_debug:
             bs = len(scheduled_batch)

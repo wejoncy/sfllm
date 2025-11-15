@@ -190,43 +190,6 @@ class EagleVerifyInput(SpecInput):
         token_to_kv_pool_allocator,
         page_size: int = 1,
     ):
-        unfinished_index = []
-        unfinished_accept_index = []
-        accept_index_cpu = accept_index.tolist()
-        predict_cpu = predict.tolist()
-        has_finished = False
-
-        # Iterate every accepted token and check if req has finished after append the token
-        # should be checked BEFORE free kv cache slots
-        for i, (req, accept_index_row) in enumerate(zip(batch.sequences, accept_index_cpu)):
-            req.new_tokens = []
-            for j, idx in enumerate(accept_index_row):
-                if idx == -1:
-                    break
-                id = predict_cpu[idx]
-                req.new_tokens.append(id)
-                # req.tokens.append(id)
-                req.is_done()
-                if req.is_done():
-                    has_finished = True
-                    # set all tokens after finished token to -1 and break
-                    accept_index[i, j + 1 :] = -1
-                    break
-
-            if not req.is_done():
-                unfinished_index.append(i)
-                if idx == -1:
-                    unfinished_accept_index.append(accept_index[i, :j])
-                else:
-                    unfinished_accept_index.append(accept_index[i])
-            # req.spec_verify_ct += 1
-            # req.spec_accepted_tokens += (
-            #     sum(1 for idx in accept_index_row if idx != -1) - 1
-            # )
-
-        if has_finished:
-            accept_length = (accept_index != -1).sum(dim=1) - 1
-
         # Free the KV cache for unaccepted tokens
         # TODO: fuse them
         accept_index = accept_index[accept_index != -1]
@@ -234,60 +197,35 @@ class EagleVerifyInput(SpecInput):
         evict_mask = torch.full_like(self.draft_token, True, dtype=torch.bool)
         evict_mask[accept_index] = False
         accept_length_cpu = accept_length.cpu()
-        # FIXME: this `tolist()` fixes the numerical calculation consistency
-        # try to unify the tensor representation and list representation
-        accept_length_list = accept_length_cpu.tolist()
 
         if page_size == 1:
             # TODO: boolean array index leads to a device sync. Remove it.
-            accept_cache_loc = batch.forward_batch.out_cache_loc[~evict_mask].tolist()
+            accept_cache_loc = batch.forward_batch.out_cache_loc[~evict_mask]
+            refused_cache_loc = batch.forward_batch.out_cache_loc[evict_mask]
+            accept_cache_loc_list = accept_cache_loc.tolist()
             for locidx, seq_bt in enumerate(batch):
                 seq_bt.out_cache_loc = seq_bt.out_cache_loc[: -self.draft_token_num]
-                accept_len = accept_length_list[locidx]
-                seq_bt.out_cache_loc.extend(accept_cache_loc[: accept_len + 1])
-                accept_cache_loc = accept_cache_loc[accept_len + 1 :]
+                accept_len = accept_length_cpu[locidx].item()
+                seq_bt.out_cache_loc.extend(accept_cache_loc_list[: accept_len + 1])
+                accept_cache_loc_list = accept_cache_loc_list[accept_len + 1 :]
             token_to_kv_pool_allocator.free_block(
                 batch.forward_batch.out_cache_loc[evict_mask].tolist()
             )
-        
+        else:
+            assert False, "Not implemented yet."
 
-        # Construct EagleVerifyOutput
-        if not has_finished:
-            if page_size == 1 or self.topk == 1:
-                batch.forward_batch.out_cache_loc = batch.forward_batch.out_cache_loc[
-                    accept_index
-                ]
-            #     assign_req_to_token_pool[(bs,)](
-            #         batch.req_pool_indices,
-            #         batch.req_to_token_pool.req_to_token,
-            #         batch.seq_lens,
-            #         batch.seq_lens + accept_length + 1,
-            #         batch.out_cache_loc,
-            #         batch.req_to_token_pool.req_to_token.shape[1],
-            #         next_power_of_2(bs),
-            #     )
-            # else:
-            #     batch.out_cache_loc = tgt_cache_loc
-            # batch.seq_lens.add_(accept_length + 1)
-            # batch.seq_lens_cpu.add_(accept_length_cpu + 1)
-
-            draft_input = EagleSpecInput(
-                # hidden_states=self.hidden_states[accept_index],
-                # verified_id=verified_id,
-                accept_length=accept_length,
-                accept_length_cpu=accept_length_cpu,
-                # seq_lens_for_draft_extend=batch.forward_batch.seq_lens,
-                # seq_lens_for_draft_extend_cpu=batch.seq_lens_cpu,
-                # req_pool_indices_for_draft_extend=batch.req_pool_indices,
-            )
-
-            return EagleVerifyOutput(
-                draft_input=draft_input,
-                # logits_output=logits_output,
-                verified_id=verified_id,
-                # accept_length_per_req_cpu=draft_input.accept_length_cpu,
-                accepted_indices=accept_index,
-            )
+        if page_size == 1 or self.topk == 1:
+            batch.forward_batch.out_cache_loc = batch.forward_batch.out_cache_loc[
+                accept_index
+            ]
+        draft_input = EagleSpecInput(
+            accept_length=accept_length,
+        )
+        return EagleVerifyOutput(
+            draft_input=draft_input,
+            verified_id=verified_id,
+            accepted_indices=accept_index,
+        )
 
 
 def fast_topk(values, topk, dim):

@@ -50,8 +50,9 @@ class InferenceEngine:
                 last_verify_id_start = 0
                 for idx, sequence in enumerate(schedule_batch):
                     if sequence.status.is_active():
+                        batch_result.spec_info.accept_length_cpu = batch_result.spec_info.accept_length.cpu()
                         sequence.accept_length = batch_result.spec_info.accept_length[idx:idx+1]
-                        sequence.accept_length_cpu = batch_result.spec_info.accept_length.cpu()[idx:idx+1]
+                        sequence.accept_length_cpu = batch_result.spec_info.accept_length_cpu[idx:idx+1]
                         accept_length = sequence.accept_length_cpu[0]
                         end = max(last_verify_id_start+accept_length+1, last_verify_id_start+1)
                         sequence.verified_id = batch_result.spec_info.verified_id[last_verify_id_start:end]
