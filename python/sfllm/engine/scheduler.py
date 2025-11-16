@@ -188,23 +188,35 @@ class Scheduler:
             sequence.status = SequenceStatus.RUNNING
             self.scheduler_policy.add_prefill_req(sequence)
             running_sequences.append(sequence)
-            running_sequences[-1].out_cache_loc.extend(self.mem_pool.alloc_block(tokens, hashv=0))
+            running_sequences[-1].out_cache_loc.extend(self.mem_pool.alloc_block(len(tokens)))
             if not self.spec_algorithm.is_none():
-                running_sequences[-1].out_cache_loc_spec.extend(self.draft_memory_pool.alloc_block(tokens, hashv=0))
+                running_sequences[-1].out_cache_loc_spec.extend(self.draft_memory_pool.alloc_block(len(tokens)))
             prefill_tokens += len(tokens)
 
         running_batch = ScheduleBatch(running_sequences, self.mem_pool, self.draft_memory_pool)
         if self.enable_overlap:
             # remove finished sequences from flying batch
-            last_batch.filter()
             self.flying_batch.merge(last_batch)
+            self.flying_batch.filter()
             if len(running_sequences) == 0:
                 # if there is no prefill request, schedule decode requests
                 for seq in self.flying_batch.sequences:
                     self.scheduler_policy.add_decode_req(seq)
-                    seq.out_cache_loc.extend(
-                        self.mem_pool.alloc_block([-1], hashv=0)
-                    )
+                    if not self.spec_algorithm.is_none():
+                        # we postpone the allocation to prepare input_output, or it breaks the overlap
+                        # reason: we used list here, in overlap, we have to use cuda tensor to manage the memory
+                        pass
+                        # target_verify_len = self.server_args.speculative_num_draft_tokens
+                        # best_decode_len = self.server_args.speculative_num_steps+1
+                        # assert self.mem_pool.can_alloc(target_verify_len)  # the future token ids are unknown
+                        # we will only reserver a few of them, the rest will be free after verification
+                        # seq.out_cache_loc.extend(self.mem_pool.alloc_block(target_verify_len))
+                        # for draft model
+                        # total_draft_len = best_decode_len # we don't know how much token is accepted at this moment
+                        # assert self.draft_memory_pool.can_alloc(total_draft_len)
+                        # seq.out_cache_loc_spec.extend(self.draft_memory_pool.alloc_block(total_draft_len))
+                    else:
+                        seq.out_cache_loc.extend(self.mem_pool.alloc_block(1))
                 running_batch.merge(self.flying_batch)
                 self.flying_batch = ScheduleBatch([], self.mem_pool)
         # if there is no prefill request, schedule decode requests
@@ -222,18 +234,18 @@ class Scheduler:
                     assert self.mem_pool.can_alloc(target_verify_len)  # the future token ids are unknown
                     # we will only reserver a few of them, the rest will be free after verification
                     running_sequences[-1].out_cache_loc.extend(
-                        self.mem_pool.alloc_block([-1]*target_verify_len, hashv=0)
+                        self.mem_pool.alloc_block(target_verify_len)
                     )
                     # for draft model
                     total_draft_len = running_sequences[-1].accept_length_cpu[0]+1 # the first run to setup kv cache for last verify tokens
                     # the "+1" is for the last bonus token
                     assert self.draft_memory_pool.can_alloc(total_draft_len)
                     running_sequences[-1].out_cache_loc_spec.extend(
-                        self.draft_memory_pool.alloc_block([-1]*total_draft_len, hashv=0)
+                        self.draft_memory_pool.alloc_block(total_draft_len)
                     )
                 else:
                     assert self.mem_pool.can_alloc(1)  # the future token ids are unknown
-                    running_sequences[-1].out_cache_loc.extend(self.mem_pool.alloc_block([-1], hashv=0))
+                    running_sequences[-1].out_cache_loc.extend(self.mem_pool.alloc_block(1))
             running_batch.spec_info = self.flying_batch.spec_info
             self.flying_batch = running_batch
         else:

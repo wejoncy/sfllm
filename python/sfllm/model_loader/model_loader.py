@@ -1,6 +1,7 @@
 from contextlib import ContextDecorator
 import glob
 import json
+import os
 from pathlib import Path
 import safetensors
 import torch
@@ -74,6 +75,7 @@ def _load_check_point(model_name_or_path, disable_mmap: bool = False):
         for i in tqdm(range(len(checkpoint_files)), desc="loading weights"):
             if not checkpoint_files[i].endswith("safetensors"):
                 weights = torch.load(checkpoint_files[i], map_location="cuda", weights_only=True)
+                yield weights
             else:
                 if disable_mmap:
                     # weights = safetensors.torch.load_file(checkpoint_files[i], device="cpu")
@@ -85,7 +87,10 @@ def _load_check_point(model_name_or_path, disable_mmap: bool = False):
                 else:
                     with safetensors.safe_open(checkpoint_files[i], framework="pt", device="cpu") as f:
                         for name in f.keys():
-                            yield name, f.get_tensor(name)
+                            if os.name == "nt":
+                                yield name, f.get_tensor(name).clone()
+                            else:
+                                yield name, f.get_tensor(name)
     else:
         raise ValueError(f"{model_name_or_path} is not a folder containing weights or safetensors")
 

@@ -43,10 +43,9 @@ class BlockMemoryManager:
         self.num_blocks = num_blocks
         self.num_blocks, self.block_shape = self.get_num_blocks(server_args)
         self.blocks = [BlockMemory(i) for i in range(self.num_blocks)]
-        self.free_block_ids = deque(range(self.num_blocks))
-        self.free_block_ids.popleft()  # reserve block 0
+        self.free_block_ids = list(range(1, self.num_blocks))
         self.release_block_ids = []
-        self.used_block_ids = set([0])
+        self.used_block_ids = set([])
         self.kv_buffers = []
         self.create_physical_memory_pool(server_args)
 
@@ -98,8 +97,8 @@ class BlockMemoryManager:
     
     def _free_block_by_id(self, block_id: int):
         """Free a block of memory by block ID."""
-        block = self.blocks[block_id]
-        block.free()
+        # block = self.blocks[block_id]
+        # block.free()
         self.used_block_ids.remove(block_id)
         self.release_block_ids.append(block_id)
 
@@ -118,22 +117,15 @@ class BlockMemoryManager:
         return len(self.free_block_ids) >= token_len
 
     def persist_alloc_block_from_rear(self, num_tokens: int) -> List[int]:
-        popped = [self.free_block_ids.pop() for _ in range(min(num_tokens, len(self.free_block_ids)))]
-        popped.reverse()
+        popped = self.free_block_ids[-num_tokens:]
+        self.free_block_ids = self.free_block_ids[:-num_tokens]
         return popped
 
-    def alloc_block(self, token_ids: List[int], hashv: int) -> List[int]:
+    def alloc_block(self, token_nums: int) -> List[int]:
         """Allocate a block of memory."""
-        block_ids = []
-        for token_id in token_ids:
-            block_ids.append(self.free_block_ids.popleft())
-            self._alloc_block_by_id(block_ids[-1], token_id, hashv)
-
-        return block_ids
-
-    def borrow_disposable_block(self, token_nums: int) -> List[int]:
-        """Borrow disposable blocks of memory without tracking."""
-        block_ids = list(itertools.islice(self.free_block_ids, token_nums))
+        block_ids = self.free_block_ids[:token_nums]
+        self.free_block_ids = self.free_block_ids[token_nums:]
+        self.used_block_ids.update(block_ids)
         return block_ids
 
     def free_block(self, block_ids: List[int], force_sort: bool = False):

@@ -114,8 +114,7 @@ class EagleWorker:
             self.draft_forward_extend(batch_output, scheduled_batch)
 
             spec_info.verified_id = batch_output.next_token_ids
-            spec_info.accept_length_cpu = torch.zeros((len(scheduled_batch),), dtype=torch.int32)#-1
-            spec_info.accept_length = spec_info.accept_length_cpu.to(spec_info.logits.device)
+            spec_info.accept_length = torch.zeros((len(scheduled_batch),), dtype=torch.int32, device=spec_info.logits.device)
             batch_output.spec_info = spec_info
             return batch_output
         elif scheduled_batch.forward_batch.forward_mode == ForwardMode.DECODE:
@@ -532,11 +531,11 @@ class EagleWorker:
                                         accept_length:torch.Tensor, predict:torch.Tensor):
         logits_output = BatchResult(None, next_token_logits, None)
         ret = verify_input.verify_post_process(accept_index, accept_length, predict)
-        logits_output.next_token_ids = ret.verified_id
-        logits_output.next_token_logits = logits_output.next_token_logits[ret.accepted_indices]
+        logits_output.next_token_ids = ret.verified_id # padded for async
+        # logits_output.next_token_logits = logits_output.next_token_logits[ret.accepted_indices] #same
         spec_info = scheduled_batch.spec_info
         spec_info.verified_id = ret.verified_id
-        spec_info.logits = logits_output.next_token_logits
+        # spec_info.logits = logits_output.next_token_logits
         spec_info.hidden_states = verify_input.hidden_states[ret.accepted_indices]
         spec_info.accept_length = ret.accept_length
         spec_info.accept_index = ret.accepted_indices
@@ -547,14 +546,19 @@ class EagleWorker:
             logger.info(f"Speculative decoding: accepted {len(ret.verified_id) - bs} tokens, total accepted {self.total_accepted_tokens}.")
         return logits_output
 
-    def spec_postprocess(self, scheduled_batch:ScheduleBatch):
+    def spec_postprocess(self, scheduled_batch:ScheduleBatch, batch_output:BatchResult):
         draft_token_num = self.server_args.speculative_num_draft_tokens
         last_verify_id_start = 0
         spec_info = scheduled_batch.spec_info
         accept_length_cpu = spec_info.accept_length.cpu()
         spec_info.accept_length_cpu = accept_length_cpu
         out_cache_loc_cpu = scheduled_batch.forward_batch.out_cache_loc.cpu()
+        batch_output.next_token_ids = batch_output.next_token_ids[:(1+accept_length_cpu).sum()]
+        spec_info.verified_id = spec_info.verified_id[:(1+accept_length_cpu).sum()]
+        spec_info.hidden_states = spec_info.hidden_states[:(1+accept_length_cpu).sum()]
+
         if spec_info.accept_index is not None:
+            spec_info.accept_index = spec_info.accept_index[spec_info.accept_index!=-1]
             evict_mask = torch.full((len(scheduled_batch)*draft_token_num,), True, dtype=torch.bool)
             evict_mask[spec_info.accept_index] = False
             accept_cache_loc_list = out_cache_loc_cpu[~evict_mask].tolist()
@@ -567,7 +571,10 @@ class EagleWorker:
                 accept_length = sequence.accept_length_cpu[0]
                 end = max(last_verify_id_start+accept_length+1, last_verify_id_start+1)
                 sequence.verified_id = spec_info.verified_id[last_verify_id_start:end]
-                sequence.logits = spec_info.logits[last_verify_id_start:end] # keep batch dim
+                # for async overlap
+                if spec_info.accept_index is not None:
+                    sequence.accept_index = spec_info.accept_index[last_verify_id_start:end]
+                # sequence.logits = spec_info.logits[last_verify_id_start:end] # keep batch dim
                 sequence.hidden_states = spec_info.hidden_states[last_verify_id_start:end]
                 last_verify_id_start = end
 

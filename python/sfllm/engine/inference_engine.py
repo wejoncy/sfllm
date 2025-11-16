@@ -18,6 +18,7 @@ from sfllm.engine.sequence import RequestSequence, SequenceStatus, AbortSequence
 from sfllm.engine.schedule_batch import ScheduleBatch, BatchResult
 from sfllm.server_args import ServerArgs
 from sfllm.utils.nutils import configure_logger,resolve_future_token_ids
+from sfllm.kernels.triton_utils import split_tokens_async
 
 logger = logging.getLogger(__name__)
 class InferenceEngine:
@@ -127,7 +128,7 @@ class InferenceEngine:
             new_batch.prepare_sample()
             batch_out = self.model_worker.forward(new_batch)
             if self.is_spec_algo:
-                new_batch = self.model_worker.spec_postprocess(new_batch)
+                new_batch = self.model_worker.spec_postprocess(new_batch, batch_out)
         self.post_forward(new_batch, batch_out, failed_sequences)
         new_batch.extend(failed_sequences)
         return new_batch
@@ -146,11 +147,22 @@ class InferenceEngine:
         failed_sequences = []
         cur_batch = None
         last_batch = ScheduleBatch([], None)
-        future_limit = 1024
-        future_tokenid_bufs = torch.empty(future_limit, device="cuda", dtype=torch.int64)
+        future_limit = 1024*10
+        future_token_stride = 1
+        device_id = torch.device("cuda:0")
+        if self.is_spec_algo:
+            draft_token_len = self.server_args.speculative_num_draft_tokens
+            draft_token_steps = self.server_args.speculative_num_steps+1
+            future_token_stride = draft_token_steps
+            target_mem_pool = self.scheduler.mem_pool
+            draft_mem_pool = self.scheduler.draft_memory_pool
+            target_overlap_pool = torch.Tensor(target_mem_pool.alloc_block(4096), dtype=torch.int64, device=device_id)
+            draft_overlap_pool = torch.Tensor(draft_mem_pool.alloc_block(4096), dtype=torch.int64, device=device_id)
+        
+        future_tokenid_bufs = torch.empty(future_limit, device=device_id, dtype=torch.int64)
         import time
         compute_stream = self.model_worker.compute_stream
-        copy_in_stream = self.model_worker.copy_in_stream
+        scheduler_stream = torch.cuda.Stream(device=device_id)
         def notified():
             if event is not None:
                 return event.is_set()
@@ -166,22 +178,39 @@ class InferenceEngine:
             cur_batch = new_batch
 
             if not cur_batch.empty():
-                with torch.cuda.stream(copy_in_stream):
+                with torch.cuda.stream(scheduler_stream):
                     cur_batch.prepare_inputs()
                     cur_batch.prepare_sample()
+                # Adjust the cache for speculative decoding
+                # why we need to do this? 1. we don't know how many tokens will pass the verify steps
+                # 2. the previous one affect the draft extend tokens nums
+                # so we have to alloc draft_token_len for verify and draft_token_steps tokens for draft
+                # however, this induce a bit impact for the next scheduling, because we don't how many tokens we have 
+                # unlike the non-spec one, there is only one token each step
+                if self.is_spec_algo and cur_batch.forward_batch.is_decode():
+                    for sequence in cur_batch:
+                        sequence.out_cache_loc = sequence.out_cache_loc[:-draft_token_len]
+                        sequence.out_cache_loc_spec = sequence.out_cache_loc_spec[:-draft_token_steps]
                 with torch.cuda.stream(compute_stream):
-                    compute_stream.wait_stream(copy_in_stream)
+                    compute_stream.wait_stream(scheduler_stream)
                     if cur_batch.forward_batch.is_decode():
                         resolve_future_token_ids(cur_batch.input_ids, future_tokenid_bufs)
                     model_output = self.model_worker.forward(cur_batch)
-                    fake_tokenid_indices = cur_batch.fake_tokenid_indices(future_limit)
-                    assert model_output.next_token_ids.shape[-1] == len(cur_batch)
-                    cur_batch.add_placeholder_token(future_limit)
-                    future_tokenid_bufs[fake_tokenid_indices] = model_output.next_token_ids
+                    fake_tokenid_indices = cur_batch.fake_tokenid_indices(future_limit, future_token_stride)
+                    cur_batch.add_placeholder_token(future_limit, future_token_stride)
+                    if not self.is_spec_algo:
+                        assert model_output.next_token_ids.shape[-1] == len(cur_batch)
+                        future_tokenid_bufs[fake_tokenid_indices] = model_output.next_token_ids
+                    else:
+                        accept_length = model_output.spec_info.accept_length+1
+                        next_token_ids = model_output.next_token_ids
+                        future_token_out_buffer = future_tokenid_bufs[fake_tokenid_indices].view(len(cur_batch), -1)
+                        split_tokens_async(next_token_ids, accept_length, future_token_out_buffer)
+                        model_output.spec_info.accept_length_cpu = model_output.spec_info.accept_length.to("cpu", non_blocking=True)
+                        cur_batch.future_spec_info = model_output.spec_info
                     cur_batch.next_token_ids = model_output.next_token_ids.to("cpu", non_blocking=True)
                     cur_batch.copy_done = torch.cuda.Event()
                     cur_batch.copy_done.record(compute_stream)
-
 
             if not last_batch.empty():
                 copy_done, next_token_ids = last_batch.copy_done, last_batch.next_token_ids
@@ -195,7 +224,7 @@ class InferenceEngine:
 
         logger.info("Inference engine event loop exited.")
 
-    def response(self, new_batch: ScheduleBatch, stream: bool) -> List[Dict[str, Any]]:
+    def response(self, new_batch: ScheduleBatch, stream: bool) -> Generator[Dict[str, Any], Any, Any]:
         seq_outputs = {}
         for sequence in new_batch:
             if stream:
