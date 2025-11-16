@@ -87,7 +87,7 @@ def split_tokens_async(
 ) -> List[torch.Tensor]:
     device = next_token_ids.device
     batch_size = accept_length.shape[0]
-    total_tokens = next_token_ids.shape[0]
+    total_tokens = output_buffers.shape[-1]
     
     cumsum_offsets = torch.cat([torch.zeros(1, device=device, dtype=accept_length.dtype), 
                                torch.cumsum(accept_length, dim=0)])
@@ -207,7 +207,7 @@ def compact_non_negative_kernel(
     tl.store(output_ptr + output_positions, compacted, mask=load_mask)
 
 
-def compact_non_negative_one(
+def move_neg1_to_tail(
     input_tensor: torch.Tensor
 ) -> tuple[torch.Tensor, torch.Tensor]:
     batch_size, seq_len = 1, input_tensor.shape[0]
@@ -247,12 +247,243 @@ def compact_non_negative_pytorch_reference(
     return output_tensor, valid_counts
 
 
+@triton.jit
+def batch_split_kernel(
+    # Input tensor
+    input_ptr,              # Input tensor [total_batch, hidden_size]
+    accept_length_ptr,      # Accept lengths for each output batch [num_outputs]
+    cumsum_offsets_ptr,     # Pre-computed cumulative offsets [num_outputs + 1]
+    # Output tensor
+    output_ptr,             # Output tensor [num_outputs, max_batch_size, hidden_size]
+    # Dimensions
+    num_outputs: tl.constexpr,
+    max_batch_size: tl.constexpr,
+    hidden_size: tl.constexpr,
+    total_batch: tl.constexpr,
+    BLOCK_SIZE_HIDDEN: tl.constexpr,
+):
+    """
+    Kernel for splitting batch dimension dynamically.
+    
+    Each output group gets a variable number of batch items based on accept_length.
+    Processes one (output_id, batch_idx) pair per program, vectorized over hidden_size.
+    
+    Args:
+        input_ptr: Input tensor [total_batch, hidden_size]
+        accept_length_ptr: Number of batch items for each output [num_outputs]
+        cumsum_offsets_ptr: Cumulative sum of accept_length [num_outputs + 1]
+        output_ptr: Output tensor [num_outputs, max_batch_size, hidden_size]
+    """
+    # Get 2D program ID
+    output_id = tl.program_id(0)
+    batch_idx = tl.program_id(1)
+    
+    if output_id >= num_outputs or batch_idx >= max_batch_size:
+        return
+    
+    # Load metadata for this output group
+    accept_len = tl.load(accept_length_ptr + output_id)
+    input_batch_start = tl.load(cumsum_offsets_ptr + output_id)
+    
+    # Check if this batch index is valid for current output
+    if batch_idx >= accept_len:
+        # Fill with zeros for out-of-range batch indices
+        hidden_offsets = tl.arange(0, BLOCK_SIZE_HIDDEN)
+        num_blocks = (hidden_size + BLOCK_SIZE_HIDDEN - 1) // BLOCK_SIZE_HIDDEN
+        
+        for block_idx in range(num_blocks):
+            block_start = block_idx * BLOCK_SIZE_HIDDEN
+            indices = block_start + hidden_offsets
+            mask = indices < hidden_size
+            
+            output_offset = (output_id * max_batch_size + batch_idx) * hidden_size + indices
+            zeros = tl.zeros([BLOCK_SIZE_HIDDEN], dtype=tl.float16)
+            tl.store(output_ptr + output_offset, zeros, mask=mask)
+    else:
+        # Copy from input to output
+        input_batch_idx = input_batch_start + batch_idx
+        
+        hidden_offsets = tl.arange(0, BLOCK_SIZE_HIDDEN)
+        num_blocks = (hidden_size + BLOCK_SIZE_HIDDEN - 1) // BLOCK_SIZE_HIDDEN
+        
+        for block_idx in range(num_blocks):
+            block_start = block_idx * BLOCK_SIZE_HIDDEN
+            indices = block_start + hidden_offsets
+            mask = indices < hidden_size
+            
+            # Load from input
+            input_offset = input_batch_idx * hidden_size + indices
+            input_mask = mask & (input_batch_idx < total_batch)
+            data = tl.load(input_ptr + input_offset, mask=input_mask, other=0.0)
+            
+            # Store to output
+            output_offset = (output_id * max_batch_size + batch_idx) * hidden_size + indices
+            tl.store(output_ptr + output_offset, data, mask=mask)
+
+
+def split_batch_async(
+    input_tensor: torch.Tensor,
+    accept_length: torch.Tensor,
+    output_buffers: Optional[torch.Tensor] = None
+) -> torch.Tensor:
+    """
+    Split input tensor along batch dimension according to accept_length.
+    
+    Args:
+        input_tensor: Input tensor [total_batch, hidden_size]
+        accept_length: Number of batch items for each output [num_outputs]
+        output_buffers: Optional pre-allocated output [num_outputs, max_batch_size, hidden_size]
+    
+    Returns:
+        Output tensor [num_outputs, max_batch_size, hidden_size]
+    """
+    device = input_tensor.device
+    total_batch, hidden_size = input_tensor.shape
+    num_outputs = accept_length.shape[0]
+    
+    # Compute cumulative offsets
+    cumsum_offsets = torch.cat([
+        torch.zeros(1, device=device, dtype=accept_length.dtype),
+        torch.cumsum(accept_length, dim=0)
+    ])
+    
+    # Determine max batch size
+    
+    # Allocate or validate output buffer
+    if output_buffers is not None:
+        max_batch_size = output_buffers.shape[0]
+        assert output_buffers.is_contiguous()
+        output_tensor = output_buffers
+    else:
+        max_batch_size = accept_length.max().item()
+        output_tensor = torch.zeros(
+            num_outputs, max_batch_size, hidden_size,
+            dtype=input_tensor.dtype,
+            device=device
+        )
+    
+    # Kernel configuration
+    BLOCK_SIZE_HIDDEN = 128  # Vectorize over hidden dimension
+    
+    # Launch kernel with 2D grid
+    grid = (num_outputs, max_batch_size)
+    
+    batch_split_kernel[grid](
+        input_tensor,
+        accept_length,
+        cumsum_offsets,
+        output_tensor,
+        num_outputs,
+        max_batch_size,
+        hidden_size,
+        total_batch,
+        BLOCK_SIZE_HIDDEN
+    )
+    
+    return output_tensor
+
+
+def split_batch_pytorch_reference(
+    input_tensor: torch.Tensor,
+    accept_length: torch.Tensor
+) -> torch.Tensor:
+    """
+    Reference PyTorch implementation for batch splitting.
+    
+    Args:
+        input_tensor: Input tensor [total_batch, hidden_size]
+        accept_length: Number of batch items for each output [num_outputs]
+    
+    Returns:
+        Output tensor [num_outputs, max_batch_size, hidden_size]
+    """
+    device = input_tensor.device
+    num_outputs = accept_length.shape[0]
+    max_batch_size = accept_length.max().item()
+    hidden_size = input_tensor.shape[1]
+    
+    output_tensor = torch.zeros(
+        num_outputs, max_batch_size, hidden_size,
+        dtype=input_tensor.dtype,
+        device=device
+    )
+    
+    cumsum_lengths = torch.cumsum(
+        torch.cat([torch.zeros(1, device=device, dtype=accept_length.dtype), accept_length]),
+        dim=0
+    )
+    
+    for i in range(num_outputs):
+        start = cumsum_lengths[i]
+        end = cumsum_lengths[i + 1]
+        batch_size = accept_length[i]
+        output_tensor[i, :batch_size] = input_tensor[start:end]
+    
+    return output_tensor
+
+
 if __name__ == "__main__":
     # Test the compact non-negative implementation
     device = "cuda" if torch.cuda.is_available() else "cpu"
     
-    # Test case: Compact non-negative numbers
-    print("\nTest case: Compact non-negative numbers")
+    # Test case 1: Batch dimension split
+    print("=" * 60)
+    print("Test case 1: Batch dimension split")
+    print("=" * 60)
+    
+    # Create test data: [total_batch=10, hidden_size=4096]
+    total_batch = 10
+    hidden_size = 4096
+    input_tensor = torch.randn(total_batch, hidden_size, device=device, dtype=torch.float16)
+    
+    # Split into 3 groups with sizes [3, 4, 3]
+    accept_length = torch.tensor([3, 4, 3], device=device, dtype=torch.int64)
+    
+    print(f"Input shape: {input_tensor.shape}")
+    print(f"Accept lengths: {accept_length.tolist()}")
+    print(f"Total batches: {accept_length.sum().item()}")
+    
+    # PyTorch reference
+    pytorch_result = split_batch_pytorch_reference(input_tensor, accept_length)
+    print(f"PyTorch output shape: {pytorch_result.shape}")
+    
+    # Triton implementation
+    if device == "cuda":
+        triton_result = split_batch_async(input_tensor, accept_length)
+        print(f"Triton output shape: {triton_result.shape}")
+        
+        # Verify results match
+        result_match = torch.allclose(pytorch_result, triton_result, atol=1e-3, rtol=1e-3)
+        max_diff = (pytorch_result - triton_result).abs().max().item()
+        print(f"Results match: {result_match}")
+        print(f"Max difference: {max_diff:.6e}")
+        
+        # Verify each group
+        cumsum = torch.cat([torch.zeros(1, device=device, dtype=torch.int64), 
+                           torch.cumsum(accept_length, dim=0)])
+        for i in range(accept_length.shape[0]):
+            start = cumsum[i]
+            end = cumsum[i + 1]
+            batch_size = accept_length[i]
+            
+            # Check if split matches original
+            original_group = input_tensor[start:end]
+            pytorch_group = pytorch_result[i, :batch_size]
+            triton_group = triton_result[i, :batch_size]
+            
+            orig_vs_pytorch = torch.allclose(original_group, pytorch_group, atol=1e-5)
+            orig_vs_triton = torch.allclose(original_group, triton_group, atol=1e-5)
+            
+            print(f"  Group {i} (size={batch_size}): PyTorch={orig_vs_pytorch}, Triton={orig_vs_triton}")
+    else:
+        print("CUDA not available, skipping Triton test")
+    
+    print()
+    
+    # Test case 2: Compact non-negative numbers
+    print("=" * 60)
+    print("Test case 2: Compact non-negative numbers")
+    print("=" * 60)
     input_data = torch.tensor([
         [1, -1, 3, -1, 5, -1],
         [-1, 2, -1, 4, -1, 6],
@@ -269,7 +500,7 @@ if __name__ == "__main__":
     
     # Triton implementation
     if device == "cuda":
-        triton_result, triton_counts = compact_non_negative_one(input_data)
+        triton_result, triton_counts = move_neg1_to_tail(input_data)
         print(f"Triton result: {triton_result.tolist()}")
         print(f"Triton counts: {triton_counts.tolist()}")
         

@@ -5,7 +5,7 @@ import logging
 import math
 import triton
 import triton.language as tl
-from sfllm.kernels.triton_utils import compact_non_negative_one
+from sfllm.kernels.triton_utils import move_neg1_to_tail
 
 import sf_kernel
 from sfllm.spec_decoding.spec_common import SpecInput, SpecInputType
@@ -191,7 +191,7 @@ class EagleVerifyInput(SpecInput):
     ):
         # Free the KV cache for unaccepted tokens
         # TODO: fuse them
-        accept_index = compact_non_negative_one(accept_index.view(-1))
+        accept_index = move_neg1_to_tail(accept_index.view(-1))
         # accept_index = accept_index[accept_index != -1]
         verified_id = predict[accept_index]
         # evict_mask = torch.full_like(self.draft_token, True, dtype=torch.bool)

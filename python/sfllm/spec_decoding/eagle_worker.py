@@ -36,6 +36,8 @@ class EagleWorker:
         self.draft_model_runner.wrap_target_model(self.target_model_runner)
         self.detokenize = self.target_model_runner.detokenize
         self.compute_stream = self.target_model_runner.compute_stream
+        self.dtype = self.target_model_runner.dtype
+        self.config = self.target_model_runner.model.config
 
         #statistics
         self.total_accepted_tokens = 0
@@ -395,7 +397,8 @@ class EagleWorker:
 
         ##### draft propose begin ##################
         spec_info = scheduled_batch.spec_info
-        spec_info.verified_id = scheduled_batch.input_ids
+        # spec_info.verified_id = scheduled_batch.input_ids #TODO!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+        spec_info.verified_id = spec_info.verified_id[scheduled_batch.forward_batch_spec.qo_indptr[1:]-1]
 
         #prepare kv cache loc
         orig_forward_batch = scheduled_batch.forward_batch

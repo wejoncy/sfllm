@@ -45,6 +45,7 @@ class ScheduleBatch:
         self.sequences = []
     
     def merge(self, other:'ScheduleBatch'):
+        self.spec_info = other.spec_info
         self.sequences = list(
             {s.sequence_id: s for s in self.sequences + other.sequences}.values()
         )
@@ -66,8 +67,8 @@ class ScheduleBatch:
     def fake_tokenid_indices(self, future_limit: int, future_token_stride: int = 1):
         starts = torch.tensor(
             [(seq.sequence_id * future_token_stride) % future_limit for seq in self.sequences],
-            dtype=torch.int64, pin_memory=True).to("cuda", non_blocking=True)
-        offsets = torch.arange(-(future_token_stride - 1), 1, dtype=torch.int64, device="cuda")
+            dtype=torch.int64, pin_memory=True)#.to("cpu", non_blocking=True)
+        offsets = torch.arange(-(future_token_stride - 1), 1, dtype=torch.int64, device="cpu")
         result = (starts[:, None] + offsets).view(-1)
 
         # fake_ids = [range((seq.sequence_id*future_token_stride) % future_limit) for seq in self.sequences]
@@ -145,6 +146,7 @@ class ScheduleBatch:
             total_draft_len = len(sequence.new_tokens)
             spec_out_cache_loc_list.extend(sequence.out_cache_loc_spec[-total_draft_len:])
             total_draft_len_past = -len(sequence.out_cache_loc_spec)
+            # spec_kv_indices_list.extend(sequence.out_cache_loc_spec[:-total_draft_len]) # this is correct, right?
             spec_kv_indices_list.extend(sequence.out_cache_loc_spec[:-total_draft_len_past]) # actually, it's for extend. it's weird here.
             spec_kv_indices_mtd_list.extend(sequence.out_cache_loc_spec)
 
@@ -188,7 +190,7 @@ class ScheduleBatch:
         minux_const = torch.arange(1, len(self.sequences)+1, dtype=torch.int32, device=device)
         forward_batch_target.kv_indptr[1:].sub_(minux_const)
 
-    def prepare_inputs(self):
+    def prepare_inputs(self, is_overlap:bool=False):
         cur_seq_lens_list = [0]
         input_ids_list = []
         position_ids_list = []
@@ -224,9 +226,13 @@ class ScheduleBatch:
             position_ids_list.extend(list(range(start_pos, start_pos+cur_seq_lens_list[-1])))
             prefix_lens_list.append(start_pos)
             if self.forward_batch_spec is not None and self.forward_batch.forward_mode == ForwardMode.DECODE:
+                if is_overlap:
+                    true_lens = len(sequence.tokens) - len(sequence.new_tokens)
+                else:
+                    true_lens = len(sequence.tokens) - 1
                 # target model used for verify, speculative_num_draft_tokens cache loc
-                out_cache_loc_list.extend(sequence.out_cache_loc[len(sequence.tokens)-1:])
-                kv_indices_list.extend(sequence.out_cache_loc[:len(sequence.tokens)-1])
+                out_cache_loc_list.extend(sequence.out_cache_loc[true_lens:])
+                kv_indices_list.extend(sequence.out_cache_loc[:true_lens])
             else:
                 out_cache_loc_list.extend(sequence.out_cache_loc[-len(sequence.new_tokens):])
                 kv_indices_list.extend(sequence.out_cache_loc)

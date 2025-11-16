@@ -77,7 +77,7 @@ def _load_check_point(model_name_or_path, disable_mmap: bool = False):
                 weights = torch.load(checkpoint_files[i], map_location="cuda", weights_only=True)
                 yield weights
             else:
-                if disable_mmap:
+                if disable_mmap:# or os.name == "nt":
                     # weights = safetensors.torch.load_file(checkpoint_files[i], device="cpu")
                     # yield weights
                     with open(checkpoint_files[i], "rb") as f:
@@ -87,10 +87,7 @@ def _load_check_point(model_name_or_path, disable_mmap: bool = False):
                 else:
                     with safetensors.safe_open(checkpoint_files[i], framework="pt", device="cpu") as f:
                         for name in f.keys():
-                            if os.name == "nt":
-                                yield name, f.get_tensor(name).clone()
-                            else:
-                                yield name, f.get_tensor(name)
+                            yield name, f.get_tensor(name)
     else:
         raise ValueError(f"{model_name_or_path} is not a folder containing weights or safetensors")
 

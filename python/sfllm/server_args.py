@@ -158,9 +158,8 @@ class ServerArgs:
         if platform.system() == "Windows":
             self.mem_fraction = min(self.mem_fraction, 0.56)
             print("Warning: On Windows, setting mem_fraction to {self.mem_fraction} for better stability.")
-        self.rl_on_policy_target = None
-        if self.speculative_algorithm is not None:
-            self.disable_overlap = True
+        # if self.speculative_algorithm is not None:
+        #     self.disable_overlap = True
         set_global_server_args_for_scheduler(self)
 
 # NOTE: This is a global variable to hold the server args for scheduler.
