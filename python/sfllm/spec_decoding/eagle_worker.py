@@ -544,9 +544,9 @@ class EagleWorker:
         spec_info.accept_index = ret.accepted_indices
         logits_output.spec_info = spec_info
         if self.server_args.enable_debug:
-            bs = len(scheduled_batch)
-            self.total_accepted_tokens += len(ret.verified_id)-bs
-            logger.info(f"Speculative decoding: accepted {len(ret.verified_id) - bs} tokens, total accepted {self.total_accepted_tokens}.")
+            acn = ret.accept_length.sum().item()
+            self.total_accepted_tokens += acn
+            logger.info(f"Speculative decoding: accepted {(acn)} tokens, total accepted {self.total_accepted_tokens}.")
         return logits_output
 
     def spec_postprocess(self, scheduled_batch:ScheduleBatch, batch_output:BatchResult):
