@@ -29,6 +29,9 @@ class ServerArgs:
     log_level: str = "info"
     enable_debug: bool = False
 
+    # debug options
+    enable_debug: bool = False
+
     @staticmethod
     def add_cli_args(parser: argparse.ArgumentParser):
         # Model and tokenizer

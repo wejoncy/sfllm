@@ -29,6 +29,8 @@ class EagleSpecInput(SpecInput):
     accept_length_cpu: List[int] = None
     accept_index: torch.Tensor = None
 
+    # used in overlap mode to delay the update of out_cache_loc
+    out_cache_loc: torch.Tensor = None
     # Inputs for the attention backends
     # shape: (b + 1,)
     kv_indptr: torch.Tensor = None
@@ -184,6 +186,7 @@ class EagleVerifyInput(SpecInput):
 
     def verify_post_process(
         self,
+        scheduled_batch,
         accept_index: torch.Tensor,
         accept_length: torch.Tensor,
         predict: torch.Tensor,
@@ -198,7 +201,10 @@ class EagleVerifyInput(SpecInput):
         # evict_mask[accept_index] = False
 
         if page_size == 1:
-            # we will do it after forward finished
+            # first token is the root token TODO batch size support
+            last_out_cache_loc = scheduled_batch.forward_batch.out_cache_loc
+            scheduled_batch.spec_info.out_cache_loc = torch.where(accept_index == -1, -torch.ones(
+                [1], dtype=torch.long, device=predict.device), last_out_cache_loc[accept_index])
             pass
             # accept_length_cpu = accept_length.cpu()
             # # TODO: boolean array index leads to a device sync. Remove it.

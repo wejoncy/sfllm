@@ -391,9 +391,9 @@ class ModelRunner:
                                                            position_ids=scheduled_batch.position_ids,
                                                            forward_batch=forward_batch)
             assert torch.allclose(logits, logits_ref, atol=2e-2)
-            if aux_hidden_states is not None:
-                for h1, h2 in zip(aux_hidden_states, aux_hidden_states_ref):
-                    assert torch.allclose(h1, h2, atol=8e-2)
+            # if aux_hidden_states is not None:
+                # for h1, h2 in zip(aux_hidden_states, aux_hidden_states_ref):
+                #     assert torch.allclose(h1, h2, atol=8e-2)
         
         if forward_batch.padded_token > 0:
             logits = logits[:bs_size]

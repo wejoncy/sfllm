@@ -125,6 +125,8 @@ class ScheduleBatch:
             self.spec_info.verified_id = torch.cat([seq.verified_id for seq in self.sequences], dim=-1)
             self.spec_info.accept_length = torch.cat([seq.accept_length for seq in self.sequences], dim=-1)
             self.spec_info.hidden_states = torch.cat([seq.hidden_states for seq in self.sequences])
+            if self.sequences[0].out_cache_loc_lazy is not None:
+                self.spec_info.out_cache_loc = torch.cat([seq.out_cache_loc_lazy for seq in self.sequences])
             # self.spec_info.logits = torch.cat([seq.logits for seq in self.sequences])
 
         # prepare position_ids for draft model extend for last verified tokens
@@ -230,7 +232,7 @@ class ScheduleBatch:
                     true_lens = len(sequence.tokens) - len(sequence.new_tokens)
                 else:
                     true_lens = len(sequence.tokens) - 1
-                # target model used for verify, speculative_num_draft_tokens cache loc
+                # target model used for verify, speculative_num_draft_tokens cache loc, different from normal decode
                 out_cache_loc_list.extend(sequence.out_cache_loc[true_lens:])
                 kv_indices_list.extend(sequence.out_cache_loc[:true_lens])
             else:

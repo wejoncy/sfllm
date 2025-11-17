@@ -117,6 +117,7 @@ class EagleWorker:
 
             spec_info.verified_id = batch_output.next_token_ids
             spec_info.accept_length = torch.zeros((len(scheduled_batch),), dtype=torch.int32, device=spec_info.logits.device)
+            # spec_info.accept_index = torch.ones((len(scheduled_batch),), dtype=torch.int32, device=spec_info.logits.device)
             batch_output.spec_info = spec_info
             return batch_output
         elif scheduled_batch.forward_batch.forward_mode == ForwardMode.DECODE:
@@ -351,7 +352,7 @@ class EagleWorker:
 
         with torch.cuda.nvtx.range("target_model_runner_forward"):
             logits_output = self.target_model_runner.forward(scheduled_batch)
-
+        forward_batch.forward_mode = ForwardMode.DECODE
         verify_input.hidden_states = torch.cat(logits_output.aux_hidden_states, dim=-1)
 
         accept_index, accept_length, predict = verify_input.verify(scheduled_batch, logits_output, 1)
@@ -522,6 +523,7 @@ class EagleWorker:
         forward_batch.custom_mask = verify_input.custom_mask
 
         logits_output = self.target_model_runner.forward(scheduled_batch)
+        forward_batch.forward_mode = ForwardMode.DECODE
 
         verify_input.hidden_states = torch.cat(logits_output.aux_hidden_states, dim=-1)
 
@@ -533,7 +535,7 @@ class EagleWorker:
                                         next_token_logits:torch.Tensor, accept_index:torch.Tensor, 
                                         accept_length:torch.Tensor, predict:torch.Tensor):
         logits_output = BatchResult(None, next_token_logits, None)
-        ret = verify_input.verify_post_process(accept_index, accept_length, predict)
+        ret = verify_input.verify_post_process(scheduled_batch, accept_index, accept_length, predict)
         logits_output.next_token_ids = ret.verified_id # padded for async
         # logits_output.next_token_logits = logits_output.next_token_logits[ret.accepted_indices] #same
         spec_info = scheduled_batch.spec_info
@@ -541,7 +543,7 @@ class EagleWorker:
         # spec_info.logits = logits_output.next_token_logits
         spec_info.hidden_states = verify_input.hidden_states[ret.accepted_indices]
         spec_info.accept_length = ret.accept_length
-        spec_info.accept_index = ret.accepted_indices
+        # spec_info.accept_index = ret.accepted_indices
         logits_output.spec_info = spec_info
         if self.server_args.enable_debug:
             acn = ret.accept_length.sum().item()
@@ -549,46 +551,82 @@ class EagleWorker:
             logger.info(f"Speculative decoding: accepted {(acn)} tokens, total accepted {self.total_accepted_tokens}.")
         return logits_output
 
-    def spec_postprocess(self, scheduled_batch:ScheduleBatch, batch_output:BatchResult):
+    def spec_postprocess(self, scheduled_batch:ScheduleBatch, batch_output:BatchResult, async_overlap:bool=False):
         draft_token_num = self.server_args.speculative_num_draft_tokens
         last_verify_id_start = 0
-        spec_info = scheduled_batch.spec_info
-        accept_length_cpu = spec_info.accept_length.cpu()
-        spec_info.accept_length_cpu = accept_length_cpu
-        out_cache_loc_cpu = scheduled_batch.forward_batch.out_cache_loc.cpu()
-        batch_output.next_token_ids = batch_output.next_token_ids[:(1+accept_length_cpu).sum()]
-        spec_info.verified_id = spec_info.verified_id[:(1+accept_length_cpu).sum()]
-        spec_info.hidden_states = spec_info.hidden_states[:(1+accept_length_cpu).sum()]
+        
+        if async_overlap:
+            spec_info = batch_output.spec_info
+            accept_length_cpu = spec_info.accept_length_cpu
+            out_cache_loc_cpu = batch_output.out_cache_loc
+        else:
+            spec_info = scheduled_batch.spec_info
+            accept_length_cpu = spec_info.accept_length.cpu()
+            spec_info.accept_length_cpu = accept_length_cpu
+            out_cache_loc_cpu = scheduled_batch.forward_batch.out_cache_loc.cpu()
+            batch_output.next_token_ids = batch_output.next_token_ids[:(1+accept_length_cpu).sum()]
+            spec_info.verified_id = spec_info.verified_id[:(1+accept_length_cpu).sum()]
+            spec_info.hidden_states = spec_info.hidden_states[:(1+accept_length_cpu).sum()]
 
-        if spec_info.accept_index is not None:
-            spec_info.accept_index = spec_info.accept_index[spec_info.accept_index!=-1]
-            evict_mask = torch.full((len(scheduled_batch)*draft_token_num,), True, dtype=torch.bool)
-            evict_mask[spec_info.accept_index] = False
-            accept_cache_loc_list = out_cache_loc_cpu[~evict_mask].tolist()
-            refused_cache_loc = out_cache_loc_cpu[evict_mask].tolist()
-
-        for idx, sequence in enumerate(scheduled_batch):
-            if sequence.status.is_active():
-                sequence.accept_length = spec_info.accept_length[idx:idx+1]
-                sequence.accept_length_cpu = spec_info.accept_length_cpu[idx:idx+1]
-                accept_length = sequence.accept_length_cpu[0]
-                end = max(last_verify_id_start+accept_length+1, last_verify_id_start+1)
-                sequence.verified_id = spec_info.verified_id[last_verify_id_start:end]
-                # for async overlap
-                if spec_info.accept_index is not None:
-                    sequence.accept_index = spec_info.accept_index[last_verify_id_start:end]
-                # sequence.logits = spec_info.logits[last_verify_id_start:end] # keep batch dim
-                sequence.hidden_states = spec_info.hidden_states[last_verify_id_start:end]
-                last_verify_id_start = end
-
-                ############### adjust out_cache_loc ##################
-                # the final token is un-determined before the forward, 
-                # we have to alloc num-draft-token cache loc per batch. After, we need to adjust it here
-                if spec_info.accept_index is not None:
+        # the prefill batch won't have accept_index
+        # hanlde out_cache_loc_lazy
+        if spec_info.out_cache_loc is not None:
+            # spec_info.accept_index = spec_info.accept_index[spec_info.accept_index!=-1]
+            # accept_index = spec_info.accept_index.cpu()
+            # evict_mask = torch.full((len(scheduled_batch)*draft_token_num,), True, dtype=torch.bool)
+            # evict_mask[accept_index] = False
+            accept_out_cache_loc = spec_info.out_cache_loc.cpu() # in overlap mode,spec_info.out_cache_loc is in CPU already
+            accept_cache_loc_list = accept_out_cache_loc[accept_out_cache_loc != -1].tolist()
+            refused_cache_loc = list(set(out_cache_loc_cpu.tolist())-set(accept_cache_loc_list))
+            assert len(refused_cache_loc)+len(accept_cache_loc_list) == len(out_cache_loc_cpu)
+            self.main_mem_pool.free_block(refused_cache_loc)
+            if not async_overlap:
+                for idx, sequence in enumerate(scheduled_batch):
+                    ############### adjust out_cache_loc ##################
+                    # the final token is un-determined before the forward, 
+                    # we have to alloc num-draft-token cache loc per batch. After, we need to adjust it here
                     sequence.out_cache_loc = sequence.out_cache_loc[: -draft_token_num]
                     accept_len = accept_length_cpu[idx].item()+1
                     sequence.out_cache_loc.extend(accept_cache_loc_list[: accept_len])
                     accept_cache_loc_list = accept_cache_loc_list[accept_len:]
-        if spec_info.accept_index is not None:
-            self.main_mem_pool.free_block(refused_cache_loc)
+                    # for async overlap ????
+                    # sequence.accept_index = spec_info.accept_index[last_verify_id_start:end]
+            else:
+                num_steps = self.speculative_num_steps
+                for idx, sequence in enumerate(scheduled_batch):
+                    accept_len = accept_length_cpu[idx].item()
+                    start = draft_token_num + num_steps
+                    # -1 means the root token, we have kept it in the last step
+                    sequence.out_cache_loc[-start: -start + accept_len] = accept_cache_loc_list[: accept_len]
+                    sequence.out_cache_loc[-start + accept_len:-start + num_steps] = []
+
+                ######################################################
+        # but we will alloc draft_steps+1 tokens cache loc per sequence, so also need to free the unused ones
+        if async_overlap:
+            num_steps = self.speculative_num_steps
+            num_draft_tokens = self.server_args.speculative_num_draft_tokens
+            for idx, seq in enumerate(scheduled_batch):
+                ac_len = batch_output.spec_info.accept_length_cpu[idx].item()
+                seq.out_cache_loc_spec, extral_loc = seq.out_cache_loc_spec[
+                    :-(num_steps-ac_len)], seq.out_cache_loc_spec[-(num_steps-ac_len):]
+                self.draft_mem_pool.free_block(extral_loc, force_sort=True)
+                # we can't release the verify loc here, but we can set it as neg to indicate unknown yet
+                # the root token is alway accepted, so we can keep one less
+                seq.out_cache_loc, seq.out_cache_loc_lazy_cpu = seq.out_cache_loc[
+                    :-(num_draft_tokens-1)], seq.out_cache_loc[-(num_draft_tokens-1):]
+                # placeholder for the final accepted token loc
+                seq.out_cache_loc.extend([-1] * (num_steps))#TODO +1 or not?
+
+        if not async_overlap:
+            for idx, sequence in enumerate(scheduled_batch):
+                if sequence.status.is_active():
+                    sequence.accept_length = spec_info.accept_length[idx:idx+1]
+                    sequence.accept_length_cpu = spec_info.accept_length_cpu[idx:idx+1]
+                    accept_length = max(spec_info.accept_length_cpu[0], 0)
+                    end = last_verify_id_start+accept_length+1
+                    sequence.verified_id = spec_info.verified_id[last_verify_id_start:end]
+                    # sequence.logits = spec_info.logits[last_verify_id_start:end] # keep batch dim
+                    sequence.hidden_states = spec_info.hidden_states[last_verify_id_start:end]
+                    last_verify_id_start = end
+
         return scheduled_batch

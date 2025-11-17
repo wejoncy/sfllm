@@ -59,7 +59,10 @@ class RunningMetrics:
         prefill_mask = int(not is_prefill)
         if running_batch.spec_info is not None:
             # each sequence at least generate one token
-            accept_tokens = running_batch.spec_info.accept_length_cpu.sum().item()
+            if running_batch.spec_info.accept_length_cpu is not None:
+                accept_tokens = running_batch.spec_info.accept_length_cpu.sum().item()
+            else:
+                accept_tokens = 0
             decode_tokens += max(0, accept_tokens)
             self.total_accept_tokens += decode_tokens
             self.total_forward_tokens += len(seq_group)
@@ -221,7 +224,7 @@ class Scheduler:
                 running_batch.spec_info = self.flying_batch.spec_info
                 self.flying_batch = ScheduleBatch([], self.mem_pool)
         # if there is no prefill request, schedule decode requests
-        elif len(running_sequences) == 0:
+        elif len(running_sequences) == 0: # no overlap
             while not self.running_queue.empty() and len(running_sequences) < overlap_running_size:
                 if self.running_queue.queue[0].sequence_id in self.abort_requests:
                     sequence = self.running_queue.get()

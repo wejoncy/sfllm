@@ -18,8 +18,8 @@ from sfllm.engine.sequence import RequestSequence, SequenceStatus, AbortSequence
 from sfllm.engine.schedule_batch import ScheduleBatch, BatchResult
 from sfllm.server_args import ServerArgs
 from sfllm.utils.nutils import configure_logger,resolve_future_token_ids
-from sfllm.kernels.triton_utils import split_tokens_async
-from sfllm.kernels.triton_utils import move_neg1_to_tail, split_batch_async
+from sfllm.kernels.triton_utils import split_lastdim_async
+from sfllm.kernels.triton_utils import move_neg1_to_tail, split_firstdim_async
 
 logger = logging.getLogger(__name__)
 class InferenceEngine:
@@ -45,13 +45,17 @@ class InferenceEngine:
     def post_forward(
         self,
         schedule_batch: ScheduleBatch,
-        token_ids: Union[List[int], BatchResult],
+        batch_result: BatchResult,
         failed_sequences: List[RequestSequence],
     ) -> None:
         """Post-process the model outputs and update the sequences."""
-        if isinstance(token_ids, BatchResult):
-            batch_result = token_ids
-            token_ids = batch_result.next_token_ids.tolist()
+        if not isinstance(batch_result, BatchResult):
+            assert False, "Only BatchResult is supported now."
+        token_ids = batch_result.next_token_ids.tolist()
+        if self.is_spec_algo:
+            # TODO parallel decoding with speculative decoding, multitoken would be decoded in a single step
+            cum_token_cnts = (batch_result.spec_info.accept_length_cpu+1).cumsum(dim=0).tolist()
+            cum_token_cnts = [0] + cum_token_cnts
         for idx, sequence in enumerate(schedule_batch):
             if self.enable_overlap:
                 if sequence.status.is_active():
@@ -59,15 +63,21 @@ class InferenceEngine:
                         "Last token should be placeholder"
                     )
                     assert token_ids[idx] >= 0, "Generated token should be valid"
-                    sequence.tokens[sequence.last_generated_token_pos] = token_ids[idx]
-                    sequence.generated_tokens[0] = token_ids[idx]
-                    sequence.last_generated_token_pos += 1
+                    if self.is_spec_algo:
+                        draft_token_steps = self.server_args.speculative_num_steps+1
+                        new_token = token_ids[cum_token_cnts[idx]: cum_token_cnts[idx + 1]]
+                        last_pos = sequence.last_generated_token_pos
+                        sequence.tokens[last_pos:last_pos+len(new_token)] = new_token
+                        sequence.tokens[last_pos+len(new_token): last_pos+draft_token_steps] = []
+                        sequence.generated_tokens = new_token
+                        sequence.last_generated_token_pos += len(sequence.generated_tokens)
+                    else:
+                        sequence.tokens[sequence.last_generated_token_pos] = token_ids[idx]
+                        sequence.generated_tokens[0] = token_ids[idx]
+                        sequence.last_generated_token_pos += 1
             else:
                 if self.is_spec_algo:
-                    #TODO parallel decoding with speculative decoding, multitoken would be decoded in a single step
-                    pos_offset = (batch_result.spec_info.accept_length_cpu+1).cumsum(dim=0).tolist()
-                    pos_offset = [0] + pos_offset
-                    sequence.new_tokens = token_ids[pos_offset[idx]: pos_offset[idx + 1]]
+                    sequence.new_tokens = token_ids[cum_token_cnts[idx]: cum_token_cnts[idx + 1]]
                     sequence.generated_tokens = sequence.new_tokens.copy()
                     sequence.tokens.extend(sequence.new_tokens)
                     sequence.last_generated_token_pos += len(sequence.generated_tokens)
@@ -141,6 +151,7 @@ class InferenceEngine:
         except queue.Empty:
             return []
 
+    @torch.inference_mode()
     def event_loop_overlap(self, event=None):
         """Process a single inference request with overlap."""
         logger.info("Inference engine event loop started.============")
@@ -186,85 +197,116 @@ class InferenceEngine:
                 with torch.cuda.stream(scheduler_stream):
                     cur_batch.prepare_inputs(is_overlap=True)
                     cur_batch.prepare_sample()
-                # Adjust the cache for speculative decoding
-                # why we need to do this? 1. we don't know how many tokens will pass the verify steps
-                # 2. the previous one affect the draft extend tokens nums
-                # so we have to alloc num_draft_tokens for verify and draft_token_steps tokens for draft
-                # however, this induce a bit impact for the next scheduling, because we don't how many tokens we have 
-                # unlike the non-spec one, there is only one token each step
-                # kv_indptr position_ids seq_lens  mask_indptr
-                # kv_indices_mtd kv_indptr 
-                # may verified_id
-                if self.is_spec_algo and cur_batch.forward_batch.is_decode():
-                    accept_length = torch.cat([sequence.accept_length for sequence in cur_batch])+1
-                    extra_length = draft_token_steps - accept_length
-                    cum_extra_length = extra_length.cumsum(dim=0)
-                    cur_batch.forward_batch.kv_indptr[1:] -= cum_extra_length
-                    cur_batch.position_ids -= extra_length
-                    cur_batch.forward_batch.seq_lens -= extra_length
-                    seq_mask_len = num_draft_tokens * (cur_batch.forward_batch.seq_lens + num_draft_tokens)
-                    cum_seq_mask_len = torch.cumsum(seq_mask_len, dim=0, dtype=torch.int32)
-                    cur_batch.forward_batch.mask_indptr[1:] = cum_seq_mask_len
-                    x = cur_batch.forward_batch_spec.kv_indices_mtd
-                    b = cur_batch.forward_batch_spec.kv_indptr[1:]+1
-                    mask = ((x.unsqueeze(1) > (b - extra_length)) & (x.unsqueeze(1) <= b)).any(dim=1)
-                    cur_batch.forward_batch_spec.kv_indices_mtd[mask] = -1
-                    x[:] = move_neg1_to_tail(x)
-                    # cur_batch.forward_batch_spec.kv_indices_mtd -= extra_length # can't handle it here, may generate_kv_indices_kernel
-                    cur_batch.forward_batch_spec.kv_indptr[1:] -= cum_extra_length
+                    # Adjust the cache for speculative decoding
+                    # why we need to do this? 1. we don't know how many tokens will pass the verify steps
+                    # 2. the previous one affect the draft extend tokens nums
+                    # so we have to alloc num_draft_tokens for verify and draft_token_steps tokens for draft
+                    # however, this induce a bit impact for the next scheduling, because we don't how many tokens we have 
+                    # unlike the non-spec one, there is only one token each step
+                    # kv_indptr position_ids seq_lens  mask_indptr
+                    # kv_indices_mtd kv_indptr 
+                    # may verified_id, out_cache_loc
+                with torch.cuda.stream(compute_stream):
+                    compute_stream.wait_stream(scheduler_stream)
+                    if self.is_spec_algo and cur_batch.forward_batch.is_decode():
+                        accept_length = cur_batch.spec_info.accept_length+1
+                        extra_length = draft_token_steps - accept_length
+                        cum_extra_length = extra_length.cumsum(dim=0)
+                        cur_batch.forward_batch.kv_indptr[1:] -= cum_extra_length
+                        cur_batch.position_ids -= extra_length
+                        cur_batch.forward_batch.seq_lens -= extra_length
+                        seq_mask_len = num_draft_tokens * (cur_batch.forward_batch.seq_lens + num_draft_tokens)
+                        cum_seq_mask_len = torch.cumsum(seq_mask_len, dim=0, dtype=torch.int32)
+                        cur_batch.forward_batch.mask_indptr[1:] = cum_seq_mask_len
+                        x = cur_batch.forward_batch_spec.kv_indices_mtd
+                        b = cur_batch.forward_batch_spec.kv_indptr[1:]+1
+                        mask = ((x.unsqueeze(1) > (b - extra_length)) & (x.unsqueeze(1) <= b)).any(dim=1)
+                        cur_batch.forward_batch_spec.kv_indices_mtd[mask] = -1
+                        x[:] = move_neg1_to_tail(x)
+                        # cur_batch.forward_batch_spec.kv_indices_mtd -= extra_length # can't handle it here, may generate_kv_indices_kernel
+                        cur_batch.forward_batch_spec.kv_indptr[1:] -= cum_extra_length
+                        if cur_batch.spec_info.out_cache_loc is not None:
+                            # even we don't know the accept index yet, we can adjust it in GPU async
+                            # would it affect when this is in the scheduler stream?
+                            # first token is the root token
+                            # TODO check it, we uncheck the root token here as this is known to be accepted
+                            resolve_out_cache_loc = cur_batch.spec_info.out_cache_loc
+                            resolve_out_cache_loc[0] = -1
+                            resolve_out_cache_loc[accept_length.cumsum(dim=0)[:-1]] = -1
+                            resolve_out_cache_loc = move_neg1_to_tail(resolve_out_cache_loc)[:draft_token_steps-len(cur_batch)]
+                            cur_batch.forward_batch.out_cache_loc[:draft_token_steps-len(cur_batch)] = resolve_out_cache_loc
+                            cur_batch.forward_batch.out_cache_loc[:] = move_neg1_to_tail(cur_batch.forward_batch.out_cache_loc)
+                            cur_batch.forward_batch.out_cache_loc = cur_batch.forward_batch.out_cache_loc[:len(cur_batch)*num_draft_tokens]
 
-                    # the first time to decode, we know it musts be 1, so we have to adjust cur_batch.position_ids
-                    if cur_batch.spec_info.verified_id.shape[0] != cur_batch.forward_batch_spec.position_ids_extend.shape[0]:
-                        ind_mask = torch.arange(0, len(cur_batch)*5, 5, device=device_id)
-                        cur_batch.forward_batch_spec.position_ids_extend = cur_batch.forward_batch_spec.position_ids_extend[ind_mask]
-                        cur_batch.forward_batch_spec.out_cache_loc = cur_batch.forward_batch_spec.out_cache_loc[ind_mask]
 
-                    # cur_batch.spec_info.verified_id = torch.cat([sequence.verified_id for sequence in cur_batch], dim=0)
+                        # the first time to decode, we know it musts be 1, so we have to adjust cur_batch.position_ids
+                        if cur_batch.spec_info.verified_id.shape[0] != cur_batch.forward_batch_spec.position_ids_extend.shape[0]:
+                            ind_mask = torch.arange(0, len(cur_batch)*5, 5, device=device_id)
+                            cur_batch.forward_batch_spec.position_ids_extend = cur_batch.forward_batch_spec.position_ids_extend[ind_mask]
+                            cur_batch.forward_batch_spec.out_cache_loc = cur_batch.forward_batch_spec.out_cache_loc[ind_mask]
+
+                        # cur_batch.spec_info.verified_id = torch.cat([sequence.verified_id for sequence in cur_batch], dim=0)
 
                 with torch.cuda.stream(compute_stream):
                     compute_stream.wait_stream(scheduler_stream)
                     if cur_batch.forward_batch.is_decode():
                         resolve_future_token_ids(cur_batch.input_ids, future_tokenid_bufs)
-                    model_output = self.model_worker.forward(cur_batch)
+                    model_output:BatchResult = self.model_worker.forward(cur_batch)
                     fake_tokenid_indices = cur_batch.fake_tokenid_indices(future_limit, future_token_stride)
                     cur_batch.add_placeholder_token(future_limit, future_token_stride)
                     if not self.is_spec_algo:
                         assert model_output.next_token_ids.shape[-1] == len(cur_batch)
                         future_tokenid_bufs[fake_tokenid_indices] = model_output.next_token_ids
                     else:
-                        accept_length = model_output.spec_info.accept_length+1
+                        raw_accept_length = model_output.spec_info.accept_length
+                        update_accept_length = raw_accept_length+1
                         next_token_ids = model_output.next_token_ids
                         # assert fake_tokenid_indices[:-1]-fake_tokenid_indices[1:] == -1
                         # must !!!!!!!!!!
                         future_token_out_buffer = future_tokenid_bufs[
                             fake_tokenid_indices[0]:fake_tokenid_indices[-1]+1].view(len(cur_batch), -1)
-                        split_tokens_async(next_token_ids, accept_length, future_token_out_buffer)
-                        model_output.spec_info.accept_length_cpu = model_output.spec_info.accept_length.to(
-                            "cpu", non_blocking=True)
+                        split_lastdim_async(next_token_ids, update_accept_length, future_token_out_buffer)
 
                         if cur_batch.forward_batch.is_decode():
-                            cur_batch.forward_batch.out_cache_loc
-                            cur_batch.forward_batch_spec.out_cache_loc
-                            split_batch_async(model_output.spec_info.hidden_states, accept_length, hidden_states_buf)
+                            # cur_batch.forward_batch.out_cache_loc
+                            # cur_batch.forward_batch_spec.out_cache_loc
+                            split_firstdim_async(model_output.spec_info.hidden_states, update_accept_length, hidden_states_buf)
+                            # cur_batch.spec_info.out_cache_loc = cur_batch.forward_batch.out_cache_loc
+
+                            # even we don't know the accept index yet, we can adjust it in GPU async
+                            # would it affect when this is in the scheduler stream?                            
+                            
                         for idx, seq in enumerate(cur_batch):
-                            seq.accept_length = model_output.spec_info.accept_length[idx:idx+1]
+                            seq.accept_length = raw_accept_length[idx:idx+1]
                             if cur_batch.forward_batch.is_decode():
                                 seq.verified_id = future_token_out_buffer[idx:idx+1]
                                 seq.hidden_states = hidden_states_buf[idx*draft_token_steps:(idx+1)*draft_token_steps]
+                                seq.out_cache_loc_lazy = cur_batch.forward_batch.out_cache_loc.view(len(cur_batch), num_draft_tokens)[idx]
                             else:
                                 # the first token generated from prefill
                                 seq.verified_id = model_output.spec_info.verified_id[idx:idx+1]
                                 seq.hidden_states = model_output.spec_info.hidden_states[idx:idx+1]
+                        # replace the spec_info with cpu version
+                        async_spec_info = model_output.spec_info
+                        model_output.spec_info = model_output.spec_info.raw_new()
+                        model_output.spec_info.accept_length_cpu = raw_accept_length.to("cpu", non_blocking=True)
+                        # if async_spec_info.accept_index is not None:
+                        #     model_output.spec_info.accept_index = async_spec_info.accept_index.to("cpu", non_blocking=True)
+                        if async_spec_info.out_cache_loc is not None:
+                            model_output.spec_info.out_cache_loc = async_spec_info.out_cache_loc.to("cpu", non_blocking=True)
+                        model_output.out_cache_loc = cur_batch.forward_batch.out_cache_loc.to("cpu", non_blocking=True)
 
-                    cur_batch.next_token_ids = model_output.next_token_ids.to("cpu", non_blocking=True)
+                    model_output.next_token_ids = model_output.next_token_ids.to("cpu", non_blocking=True)
+                    cur_batch.model_output = model_output
                     cur_batch.copy_done = torch.cuda.Event()
                     cur_batch.copy_done.record(compute_stream)
 
             if not last_batch.empty():
-                copy_done, next_token_ids = last_batch.copy_done, last_batch.next_token_ids
+                copy_done, model_output = last_batch.copy_done, last_batch.model_output
                 copy_done.synchronize()
-                token_ids = next_token_ids.tolist()
-                self.post_forward(last_batch, token_ids, failed_sequences)
+                if self.is_spec_algo:
+                    self.model_worker.spec_postprocess(last_batch, model_output, async_overlap=True)
+                self.post_forward(last_batch, model_output, failed_sequences)
                 self.output_batch_queue.put(last_batch)
 
             last_batch = cur_batch

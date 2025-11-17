@@ -12,7 +12,7 @@ import triton.language as tl
 from typing import List, Optional
 
 @triton.jit  
-def optimized_batch_split_kernel(
+def split_lastdim_kernel(
     # Input tensors
     next_token_ids_ptr,     # Input tokens [total_tokens]
     accept_length_ptr,      # Accept lengths [batch_size]
@@ -80,7 +80,7 @@ def optimized_batch_split_kernel(
                         mask=within_output_mask)
 
 
-def split_tokens_async(
+def split_lastdim_async(
     next_token_ids: torch.Tensor,
     accept_length: torch.Tensor,
     output_buffers: Optional[torch.Tensor] = None
@@ -106,7 +106,7 @@ def split_tokens_async(
     grid_size = (batch_size + SEQUENCES_PER_BLOCK - 1) // SEQUENCES_PER_BLOCK
     
     grid = (grid_size,)
-    optimized_batch_split_kernel[grid](
+    split_lastdim_kernel[grid](
         next_token_ids,
         accept_length,
         cumsum_offsets,
@@ -128,7 +128,8 @@ def split_tokens_async(
     
     return segments
 
-def split_tokens_pytorch_reference(
+
+def split_lastdim_pytorch_reference(
     next_token_ids: torch.Tensor,
     accept_length: torch.Tensor  
 ) -> List[torch.Tensor]:
@@ -154,7 +155,7 @@ def split_tokens_pytorch_reference(
 
 
 @triton.jit
-def compact_non_negative_kernel(
+def move_neg1_to_tail_kernel(
     # Input tensor
     input_ptr,              # Input tensor [batch_size, seq_len]
     # Output tensors
@@ -214,7 +215,7 @@ def move_neg1_to_tail(
     output_tensor = torch.zeros_like(input_tensor)
     BLOCK_SIZE = triton.next_power_of_2(seq_len)
     grid = (batch_size,)
-    compact_non_negative_kernel[grid](
+    move_neg1_to_tail_kernel[grid](
         input_tensor,
         output_tensor,
         batch_size,
@@ -225,7 +226,7 @@ def move_neg1_to_tail(
     return output_tensor
 
 
-def compact_non_negative_pytorch_reference(
+def move_neg1_to_tail_pytorch_reference(
     input_tensor: torch.Tensor
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """
@@ -248,7 +249,7 @@ def compact_non_negative_pytorch_reference(
 
 
 @triton.jit
-def batch_split_kernel(
+def split_firstdim_kernel(
     # Input tensor
     input_ptr,              # Input tensor [total_batch, hidden_size]
     accept_length_ptr,      # Accept lengths for each output batch [num_outputs]
@@ -321,7 +322,7 @@ def batch_split_kernel(
             tl.store(output_ptr + output_offset, data, mask=mask)
 
 
-def split_batch_async(
+def split_firstdim_async(
     input_tensor: torch.Tensor,
     accept_length: torch.Tensor,
     output_buffers: Optional[torch.Tensor] = None
@@ -368,7 +369,7 @@ def split_batch_async(
     # Launch kernel with 2D grid
     grid = (num_outputs, max_batch_size)
     
-    batch_split_kernel[grid](
+    split_firstdim_kernel[grid](
         input_tensor,
         accept_length,
         cumsum_offsets,
@@ -383,20 +384,10 @@ def split_batch_async(
     return output_tensor
 
 
-def split_batch_pytorch_reference(
+def split_firstdim_pytorch_reference(
     input_tensor: torch.Tensor,
     accept_length: torch.Tensor
 ) -> torch.Tensor:
-    """
-    Reference PyTorch implementation for batch splitting.
-    
-    Args:
-        input_tensor: Input tensor [total_batch, hidden_size]
-        accept_length: Number of batch items for each output [num_outputs]
-    
-    Returns:
-        Output tensor [num_outputs, max_batch_size, hidden_size]
-    """
     device = input_tensor.device
     num_outputs = accept_length.shape[0]
     max_batch_size = accept_length.max().item()
@@ -444,12 +435,12 @@ if __name__ == "__main__":
     print(f"Total batches: {accept_length.sum().item()}")
     
     # PyTorch reference
-    pytorch_result = split_batch_pytorch_reference(input_tensor, accept_length)
+    pytorch_result = split_firstdim_pytorch_reference(input_tensor, accept_length)
     print(f"PyTorch output shape: {pytorch_result.shape}")
     
     # Triton implementation
     if device == "cuda":
-        triton_result = split_batch_async(input_tensor, accept_length)
+        triton_result = split_firstdim_async(input_tensor, accept_length)
         print(f"Triton output shape: {triton_result.shape}")
         
         # Verify results match
@@ -494,7 +485,7 @@ if __name__ == "__main__":
     print(f"Input: {input_data.tolist()}")
     
     # PyTorch reference
-    pytorch_result, pytorch_counts = compact_non_negative_pytorch_reference(input_data)
+    pytorch_result, pytorch_counts = move_neg1_to_tail_pytorch_reference(input_data)
     print(f"PyTorch result: {pytorch_result.tolist()}")
     print(f"PyTorch counts: {pytorch_counts.tolist()}")
     
