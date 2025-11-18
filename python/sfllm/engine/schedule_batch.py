@@ -148,8 +148,11 @@ class ScheduleBatch:
             total_draft_len = len(sequence.new_tokens)
             spec_out_cache_loc_list.extend(sequence.out_cache_loc_spec[-total_draft_len:])
             total_draft_len_past = -len(sequence.out_cache_loc_spec)
+            # the first decode step, accept_length_cpu is -1
             # spec_kv_indices_list.extend(sequence.out_cache_loc_spec[:-total_draft_len]) # this is correct, right?
             spec_kv_indices_list.extend(sequence.out_cache_loc_spec[:-total_draft_len_past]) # actually, it's for extend. it's weird here.
+            # extend attention use the current qk and past kv cache, so need to include the last verified token indeed
+            # no!!!, self attention use the current qk and and all kv cache(including current qk)
             spec_kv_indices_mtd_list.extend(sequence.out_cache_loc_spec)
 
         padded_token = self.forward_batch.padded_token

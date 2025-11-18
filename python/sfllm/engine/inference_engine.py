@@ -54,7 +54,8 @@ class InferenceEngine:
         token_ids = batch_result.next_token_ids.tolist()
         if self.is_spec_algo:
             # TODO parallel decoding with speculative decoding, multitoken would be decoded in a single step
-            cum_token_cnts = (batch_result.spec_info.accept_length_cpu+1).cumsum(dim=0).tolist()
+            accept_length_cpu = batch_result.spec_info.accept_length_cpu.clamp(min=0)
+            cum_token_cnts = (accept_length_cpu+1).cumsum(dim=0).tolist()
             cum_token_cnts = [0] + cum_token_cnts
         for idx, sequence in enumerate(schedule_batch):
             if self.enable_overlap:

@@ -18,7 +18,7 @@ from sfllm.spec_decoding.draft_cuda_graph_runner import EagleCudaGraphRunner
 from sfllm.spec_decoding.eagle3_e2e_cuda_graph_runner import EagleE2ECudaGraphRunner
 import transformers
 
-
+ALIGN_EAGLE_WITH_SGLANG_ = True
 logger = logging.getLogger(__name__)
 
 for_comparation = None
@@ -116,7 +116,7 @@ class EagleWorker:
             self.draft_forward_extend(batch_output, scheduled_batch)
 
             spec_info.verified_id = batch_output.next_token_ids
-            spec_info.accept_length = torch.zeros((len(scheduled_batch),), dtype=torch.int32, device=spec_info.logits.device)
+            spec_info.accept_length = torch.zeros((len(scheduled_batch),), dtype=torch.int32, device=spec_info.logits.device) - 1
             # spec_info.accept_index = torch.ones((len(scheduled_batch),), dtype=torch.int32, device=spec_info.logits.device)
             batch_output.spec_info = spec_info
             return batch_output
@@ -157,20 +157,17 @@ class EagleWorker:
                 (input_ids[1:], next_token_ids[i].reshape(1))
             )
             pt += extend_len
-        # if not ALIGN_EAGLE_WITH_SGLANG_:
-        #     scheduled_batch.position_ids.add_(1) # we should update it accordingly
         with scheduled_batch.switch_spec_forward_batch():
             logits_output = self.draft_model_runner.forward(scheduled_batch)
-        if True:
-            spec_info = scheduled_batch.spec_info
+
+        spec_info = scheduled_batch.spec_info
+        if not ALIGN_EAGLE_WITH_SGLANG_:
             pruned_states = spec_info.hidden_states[scheduled_batch.forward_batch.qo_indptr[1:] - 1]
-            spec_info.hidden_states = pruned_states
-            spec_info.logits = logits_output.next_token_logits
         else:
             pruned_states = [hd[scheduled_batch.forward_batch.qo_indptr[1:] - 1] for hd in logits_output.aux_hidden_states]
-            spec_info = scheduled_batch.spec_info
-            spec_info.hidden_states = torch.concatenate(pruned_states, dim=-1)
-            spec_info.logits = logits_output.next_token_logits
+            pruned_states = torch.concatenate(pruned_states, dim=-1)
+        spec_info.hidden_states = pruned_states
+        spec_info.logits = logits_output.next_token_logits
         return logits_output
 
     def multi_step_speculative_decode(self, scheduled_batch:ScheduleBatch):
@@ -558,11 +555,13 @@ class EagleWorker:
         if async_overlap:
             spec_info = batch_output.spec_info
             accept_length_cpu = spec_info.accept_length_cpu
+            accept_length_cpu = accept_length_cpu.clamp(min=0)
             out_cache_loc_cpu = batch_output.out_cache_loc
         else:
             spec_info = scheduled_batch.spec_info
             accept_length_cpu = spec_info.accept_length.cpu()
             spec_info.accept_length_cpu = accept_length_cpu
+            accept_length_cpu = accept_length_cpu.clamp(min=0)
             out_cache_loc_cpu = scheduled_batch.forward_batch.out_cache_loc.cpu()
             batch_output.next_token_ids = batch_output.next_token_ids[:(1+accept_length_cpu).sum()]
             spec_info.verified_id = spec_info.verified_id[:(1+accept_length_cpu).sum()]

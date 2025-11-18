@@ -241,6 +241,7 @@ class Scheduler:
                         self.mem_pool.alloc_block(target_verify_len)
                     )
                     # for draft model
+                    # accept_length_cpu is -1 for the first decode step, so we won't alloc a block here
                     total_draft_len = running_sequences[-1].accept_length_cpu[0]+1 # the first run to setup kv cache for last verify tokens
                     # the "+1" is for the last bonus token
                     assert self.draft_memory_pool.can_alloc(total_draft_len)
