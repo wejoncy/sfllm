@@ -18,7 +18,7 @@ from sfllm.spec_decoding.draft_cuda_graph_runner import EagleCudaGraphRunner
 from sfllm.spec_decoding.eagle3_e2e_cuda_graph_runner import EagleE2ECudaGraphRunner
 import transformers
 
-ALIGN_EAGLE_WITH_SGLANG_ = True
+ALIGN_EAGLE_WITH_SGLANG_ = False
 logger = logging.getLogger(__name__)
 
 for_comparation = None
@@ -555,7 +555,6 @@ class EagleWorker:
         if async_overlap:
             spec_info = batch_output.spec_info
             accept_length_cpu = spec_info.accept_length_cpu
-            accept_length_cpu = accept_length_cpu.clamp(min=0)
             out_cache_loc_cpu = batch_output.out_cache_loc
         else:
             spec_info = scheduled_batch.spec_info
