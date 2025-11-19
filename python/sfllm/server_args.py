@@ -160,7 +160,7 @@ class ServerArgs:
         import platform
         if platform.system() == "Windows":
             self.mem_fraction = min(self.mem_fraction, 0.56)
-            print("Warning: On Windows, setting mem_fraction to {self.mem_fraction} for better stability.")
+            print(f"Warning: On Windows, setting mem_fraction to {self.mem_fraction} for better stability.")
         # if self.speculative_algorithm is not None:
         #     self.disable_overlap = True
         set_global_server_args_for_scheduler(self)

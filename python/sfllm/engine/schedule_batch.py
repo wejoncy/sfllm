@@ -174,7 +174,8 @@ class ScheduleBatch:
         self.forward_batch_spec.padded_token = padded_token
         self.forward_batch_spec.out_cache_loc = out_cache_loc_spec
         self.forward_batch_spec.qo_indptr = self.forward_batch.kv_indptr.clone()
-        self.forward_batch_spec.qo_indptr[1:batch_size + 1] = (1 + self.spec_info.accept_length).cumsum(dim=0, dtype=torch.int32)
+        accept_length = torch.maximum(self.spec_info.accept_length, torch.zeros_like(self.spec_info.accept_length))+ 1
+        self.forward_batch_spec.qo_indptr[1:batch_size + 1] = (accept_length).cumsum(dim=0, dtype=torch.int32)
         self.forward_batch_spec.max_extend_len = max([len(seq.new_tokens) for seq in self.sequences])
         self.forward_batch_spec.position_ids_extend = torch.tensor(
             position_ids_list, dtype=torch.long, pin_memory=True).to(self.device, non_blocking=True)

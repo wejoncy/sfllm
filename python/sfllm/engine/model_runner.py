@@ -52,7 +52,8 @@ class ModelRunner:
         self.dtype = self.model.dtype
         self.server_args = server_args
 
-        expand_scale = server_args.speculative_num_steps * server_args.speculative_eagle_topk if is_draft else server_args.speculative_num_draft_tokens
+        expand_scale = (server_args.speculative_num_steps * server_args.speculative_eagle_topk 
+                        if is_draft else server_args.speculative_num_draft_tokens)
         max_batch_size = server_args.cuda_graph_max_bs*expand_scale
         self.input_ids = torch.empty((max_batch_size,), dtype=torch.long, device=self.device_id)
         self.position_ids = torch.empty((max_batch_size,), dtype=torch.long, device=self.device_id)
@@ -272,23 +273,24 @@ class ModelRunner:
             forward_batch=forward_batch,
         )
 
-        for batch_size in tqdm.tqdm(list(reversed(self.capture_batch_size)), desc="Capturing CUDA Graphs"):
-            forward_batch.kv_indptr = self.kv_indptr_buffer[: batch_size + 1]
-            forward_batch.qo_indptr = self.qo_indptr_buffer[: batch_size + 1]
-            forward_batch.out_cache_loc = self.out_cache_loc[:batch_size*draft_tokens_expand]
-            torch.cuda.synchronize()
-            cudagraph = torch.cuda.CUDAGraph()
-            # attention_mask = torch.empty((batch_size), dtype=torch.long, device=self.device_id)
-            with torch.cuda.graph(cudagraph, stream=self.compute_stream, pool=self.graph_pool):
-                output = self.model(
-                    self.input_ids[:batch_size*draft_tokens_expand],
-                    position_ids=self.position_ids[:batch_size*draft_tokens_expand],
-                    forward_batch=forward_batch,
-                )
-            torch.cuda.synchronize()
-            self.output_logits_target_verify[batch_size] = output
-            self.cuda_graphs_target_verify[batch_size] = cudagraph
-            
+        with freeze_gc(False):
+            for batch_size in tqdm.tqdm(list(reversed(self.capture_batch_size)), desc="Capturing CUDA Graphs"):
+                forward_batch.kv_indptr = self.kv_indptr_buffer[: batch_size + 1]
+                forward_batch.qo_indptr = self.qo_indptr_buffer[: batch_size + 1]
+                forward_batch.out_cache_loc = self.out_cache_loc[:batch_size*draft_tokens_expand]
+                torch.cuda.synchronize()
+                cudagraph = torch.cuda.CUDAGraph()
+                # attention_mask = torch.empty((batch_size), dtype=torch.long, device=self.device_id)
+                with torch.cuda.graph(cudagraph, stream=self.compute_stream, pool=self.graph_pool):
+                    output = self.model(
+                        self.input_ids[:batch_size*draft_tokens_expand],
+                        position_ids=self.position_ids[:batch_size*draft_tokens_expand],
+                        forward_batch=forward_batch,
+                    )
+                torch.cuda.synchronize()
+                self.output_logits_target_verify[batch_size] = output
+                self.cuda_graphs_target_verify[batch_size] = cudagraph
+                
         self.cuda_graphs_target_verify[1].replay()
     
     @torch.inference_mode()
@@ -319,26 +321,27 @@ class ModelRunner:
             forward_batch=forward_batch,
         )
         self.compute_stream.synchronize()
-        for batch_size in tqdm.tqdm(list(reversed(range(1, 32))), desc="Capturing CUDA Graphs"):
-            token_nums = batch_size*(1+self.server_args.speculative_num_steps)
-            forward_batch.kv_indptr = self.kv_indptr_buffer[: batch_size + 1]
-            forward_batch.kv_indices = self.kv_indices_buffer
-            forward_batch.out_cache_loc = self.out_cache_loc[:token_nums]
-            forward_batch.qo_indptr = self.qo_indptr_buffer[: batch_size + 1]
-            if self.is_draft:
-                forward_batch.spec_info.hidden_states = self.hidden_states_buffer[:token_nums]
+        with freeze_gc(False):
+            for batch_size in tqdm.tqdm(list(reversed(range(1, 32))), desc="Capturing CUDA Graphs"):
+                token_nums = batch_size*(1+self.server_args.speculative_num_steps)
+                forward_batch.kv_indptr = self.kv_indptr_buffer[: batch_size + 1]
+                forward_batch.kv_indices = self.kv_indices_buffer
+                forward_batch.out_cache_loc = self.out_cache_loc[:token_nums]
+                forward_batch.qo_indptr = self.qo_indptr_buffer[: batch_size + 1]
+                if self.is_draft:
+                    forward_batch.spec_info.hidden_states = self.hidden_states_buffer[:token_nums]
 
-            cudagraph = torch.cuda.CUDAGraph()
+                cudagraph = torch.cuda.CUDAGraph()
 
-            with torch.cuda.graph(cudagraph, stream=self.compute_stream, pool=self.graph_pool):
-                output = self.model(
-                    self.input_ids[:token_nums],
-                    position_ids=self.position_ids[:token_nums],
-                    forward_batch=forward_batch,
-                )
-            torch.cuda.synchronize()
-            self.output_logits_extend[batch_size] = output
-            self.cuda_graphs_extend[batch_size] = cudagraph
+                with torch.cuda.graph(cudagraph, stream=self.compute_stream, pool=self.graph_pool):
+                    output = self.model(
+                        self.input_ids[:token_nums],
+                        position_ids=self.position_ids[:token_nums],
+                        forward_batch=forward_batch,
+                    )
+                torch.cuda.synchronize()
+                self.output_logits_extend[batch_size] = output
+                self.cuda_graphs_extend[batch_size] = cudagraph
             
         self.cuda_graphs_extend[1].replay()
     

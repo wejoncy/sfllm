@@ -97,7 +97,7 @@ class EagleWorker:
 
     def init_capture_cudagraph(self):
         if not self.server_args.disable_cuda_graph:
-            self.eagle_e2e_cuda_graph_runner.init_cuda_graph()
+            # self.eagle_e2e_cuda_graph_runner.init_cuda_graph()
             # self.target_model_runner.init_capture_cudagraph(forward_mode=ForwardMode.TARGET_VERIFY)
             # self.draft_model_runner.init_capture_cudagraph(forward_mode=ForwardMode.DRAFT_EXTEND)
             # self.eagle_cuda_graph_runner.init_cuda_graph()
@@ -542,10 +542,6 @@ class EagleWorker:
         spec_info.accept_length = ret.accept_length
         # spec_info.accept_index = ret.accepted_indices
         logits_output.spec_info = spec_info
-        if self.server_args.enable_debug:
-            acn = ret.accept_length.sum().item()
-            self.total_accepted_tokens += acn
-            logger.info(f"Speculative decoding: accepted {(acn)} tokens, total accepted {self.total_accepted_tokens}.")
         return logits_output
 
     def spec_postprocess(self, scheduled_batch:ScheduleBatch, batch_output:BatchResult, async_overlap:bool=False):
@@ -626,5 +622,8 @@ class EagleWorker:
                     # sequence.logits = spec_info.logits[last_verify_id_start:end] # keep batch dim
                     sequence.hidden_states = spec_info.hidden_states[last_verify_id_start:end]
                     last_verify_id_start = end
-
+        if self.server_args.enable_debug:
+            acn = accept_length_cpu.sum().item()
+            self.total_accepted_tokens += acn
+            logger.info(f"Speculative decoding: accepted {(acn)} tokens, total accepted {self.total_accepted_tokens}.")
         return scheduled_batch
