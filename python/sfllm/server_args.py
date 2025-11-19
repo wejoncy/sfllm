@@ -46,7 +46,7 @@ class ServerArgs:
             "--dtype",
             type=str,
             default=ServerArgs.dtype,
-            choices=["float16", "bfloat16", "float32"],
+            choices=["half", "float16", "bfloat16", "float32"],
             help="The data type for model weights and computations.",
         )
         parser.add_argument(
@@ -116,7 +116,7 @@ class ServerArgs:
         # speculative decoding
         parser.add_argument(
             "--speculative-algorithm",
-            type=str,
+            type=str.lower,
             default=ServerArgs.speculative_algorithm,
             choices=[None, "eagle3"],
             help="The speculative decoding algorithm to use.",

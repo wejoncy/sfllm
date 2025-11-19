@@ -57,8 +57,8 @@ class EagleWorker:
         self.target_model_runner.init_memory_pool()
         self.draft_model_runner.init_memory_pool(num_blocks=self.target_model_runner.block_memory_manager.num_blocks)
         
-        self.eagle_cuda_graph_runner = EagleCudaGraphRunner(self.draft_model_runner, self.draft_parallel_decode_forward)
-        self.eagle_e2e_cuda_graph_runner = EagleE2ECudaGraphRunner(self.draft_model_runner, self.target_model_runner, 
+        self.draft_decode_forward_runner = EagleCudaGraphRunner(self.draft_model_runner, self.draft_decode_forward)
+        self.eagle_e2e_runner = EagleE2ECudaGraphRunner(self.draft_model_runner, self.target_model_runner, 
                                                                    self.forward_decode_e2e)
 
         self.hot_token_id = self.draft_model_runner.model.hot_token_id.to("cuda")
@@ -97,10 +97,10 @@ class EagleWorker:
 
     def init_capture_cudagraph(self):
         if not self.server_args.disable_cuda_graph:
-            # self.eagle_e2e_cuda_graph_runner.init_cuda_graph()
+            # self.eagle_e2e_runner.init_cuda_graph()
             # self.target_model_runner.init_capture_cudagraph(forward_mode=ForwardMode.TARGET_VERIFY)
             # self.draft_model_runner.init_capture_cudagraph(forward_mode=ForwardMode.DRAFT_EXTEND)
-            # self.eagle_cuda_graph_runner.init_cuda_graph()
+            # self.draft_decode_forward_runner.init_cuda_graph()
             pass
         
     @torch.inference_mode()
@@ -124,7 +124,7 @@ class EagleWorker:
             if scheduled_batch.spec_info.hidden_states.shape[-1] > self.target_model_runner.get_config().hidden_size:
                 # forward_decode_e2e
                 global for_comparation
-                for_comparation = self.eagle_e2e_cuda_graph_runner.forward(scheduled_batch)
+                for_comparation = self.eagle_e2e_runner.forward(scheduled_batch)
                 out_args = for_comparation
             elif scheduled_batch.spec_info.hidden_states.shape[-1] == self.target_model_runner.get_config().hidden_size:
                 with torch.cuda.nvtx.range("eagle_spec_decode"):
@@ -176,7 +176,7 @@ class EagleWorker:
         with torch.cuda.nvtx.range("verify_propose"):
             return self.verify_propose(scheduled_batch, verify_input)
 
-    def draft_parallel_decode_forward(self, scheduled_batch: ScheduleBatch):
+    def draft_decode_forward(self, scheduled_batch: ScheduleBatch):
         # prepare inputs for draft parallel decode, those parts seems compatible with cuda graph
         bs = len(scheduled_batch)
         spec_info = scheduled_batch.spec_info
@@ -189,8 +189,8 @@ class EagleWorker:
         out_cache_loc_tensor = self.prealloc_out_cache_loc_tensor[:total_tokens]
         scheduled_batch.position_ids = scheduled_batch.position_ids.repeat_interleave(self.topk, dim=0)
         seq_lens_sum = scheduled_batch.forward_batch.seq_lens_sum
-        kv_out_buffers = (self.eagle_cuda_graph_runner.kv_indptr_buffer_s, 
-                   self.eagle_cuda_graph_runner.kv_indices_buffer_s)
+        kv_out_buffers = (self.draft_decode_forward_runner.kv_indptr_buffer_s, 
+                   self.draft_decode_forward_runner.kv_indices_buffer_s)
         kv_indices_outs = generate_kv_indices_for_mtd(kv_out_buffers,
             scheduled_batch.forward_batch.kv_indptr, past_kv_indices, out_cache_loc_tensor, 
             seq_lens_sum, bs, self.topk, running_steps)
@@ -275,9 +275,9 @@ class EagleWorker:
         # out_cache_loc_tensor = torch.tensor(out_cache_loc, dtype=torch.int32, 
         #                                     pin_memory=True).to(device, non_blocking=True)
         #input:spec_info.logits,spec_info.hidden_states,attn_metadatas
-        # cuda graph runner of self.draft_parallel_decode_forward
-        with torch.cuda.nvtx.range("eagle_cuda_graph_runner_forward"):
-            parent_list, top_scores_index, draft_tokens = self.eagle_cuda_graph_runner.forward(
+        # cuda graph runner of self.draft_decode_forward
+        with torch.cuda.nvtx.range("draft_decode_forward_runner_forward"):
+            parent_list, top_scores_index, draft_tokens = self.draft_decode_forward_runner.forward(
                 scheduled_batch)
 
         seq_lens = orig_forward_batch.seq_lens
@@ -411,8 +411,8 @@ class EagleWorker:
         out_cache_loc_tensor = self.prealloc_out_cache_loc_tensor[:total_tokens]
         scheduled_batch.position_ids = scheduled_batch.position_ids.repeat_interleave(self.topk, dim=0)
         seq_lens_sum = scheduled_batch.forward_batch.seq_lens_sum
-        kv_out_buffers = (self.eagle_cuda_graph_runner.kv_indptr_buffer_s, 
-                   self.eagle_cuda_graph_runner.kv_indices_buffer_s)
+        kv_out_buffers = (self.draft_decode_forward_runner.kv_indptr_buffer_s, 
+                   self.draft_decode_forward_runner.kv_indices_buffer_s)
         kv_indices_outs = generate_kv_indices_for_mtd(kv_out_buffers,
             scheduled_batch.forward_batch.kv_indptr, past_kv_indices, out_cache_loc_tensor, 
             seq_lens_sum, bs, self.topk, running_steps)
@@ -615,8 +615,8 @@ class EagleWorker:
             for idx, sequence in enumerate(scheduled_batch):
                 if sequence.status.is_active():
                     sequence.accept_length = spec_info.accept_length[idx:idx+1]
-                    sequence.accept_length_cpu = spec_info.accept_length_cpu[idx:idx+1]
-                    accept_length = max(spec_info.accept_length_cpu[0], 0)
+                    sequence.accept_length_cpu = spec_info.accept_length.cpu()[idx:idx+1]
+                    accept_length = accept_length_cpu[idx].item()
                     end = last_verify_id_start+accept_length+1
                     sequence.verified_id = spec_info.verified_id[last_verify_id_start:end]
                     # sequence.logits = spec_info.logits[last_verify_id_start:end] # keep batch dim
