@@ -413,6 +413,91 @@ def split_firstdim_pytorch_reference(
     return output_tensor
 
 
+@triton.jit
+def compact_accepted_tokens_kernel(
+    x_ptr,
+    kv_indptr_ptr,
+    accept_len_ptr,
+    batch_size,
+    fill_value: tl.constexpr,
+    BLOCK_SIZE: tl.constexpr
+):
+    pid = tl.program_id(0)
+    
+    # Single block mode - process everything
+    # 1. Determine total size
+    last_indptr = tl.load(kv_indptr_ptr + batch_size)
+    total_size = last_indptr
+    
+    # 2. Load x
+    off = tl.arange(0, BLOCK_SIZE)
+    mask_load = off < total_size
+    val = tl.load(x_ptr + off, mask=mask_load, other=fill_value)
+    
+    # 3. Identify valid tokens (Keep [start, start + accept_len))
+    is_valid = tl.zeros([BLOCK_SIZE], dtype=tl.int1)
+    
+    for i in range(batch_size):
+        start = tl.load(kv_indptr_ptr + i)
+        accept_len = tl.load(accept_len_ptr + i)
+        
+        # Range to keep: [start, start + accept_len)
+        seq_mask = (off >= start) & (off < start + accept_len)
+        is_valid = is_valid | seq_mask
+        
+    # 4. Apply mask
+    # Only keep elements that are within valid ranges AND within total_size
+    val = tl.where(is_valid & mask_load, val, fill_value)
+    
+    # 5. Compact
+    valid_mask = (val != fill_value) & mask_load
+    dest_idx = tl.cumsum(valid_mask.to(tl.int32), axis=0) - 1
+    
+    # Store valid elements
+    tl.store(x_ptr + dest_idx, val, mask=valid_mask)
+    
+    # Fill tail with fill_value
+    total_valid = tl.sum(valid_mask.to(tl.int32), axis=0)
+    tail_mask = (off >= total_valid) & mask_load
+    tl.store(x_ptr + off, fill_value, mask=tail_mask)
+
+
+def compact_accepted_tokens(
+    x: torch.Tensor,
+    kv_indptr: torch.Tensor,
+    accept_length: torch.Tensor,
+    fill_value: int = -1
+) -> None:
+    batch_size = kv_indptr.shape[0] - 1
+    
+    grid = (1,) 
+    BLOCK_SIZE = triton.next_power_of_2(x.numel())
+    
+    compact_accepted_tokens_kernel[grid](
+        x,
+        kv_indptr,
+        accept_length,
+        batch_size,
+        fill_value,
+        BLOCK_SIZE=BLOCK_SIZE
+    )
+
+
+def compact_accepted_tokens_pytorch_reference(x, kv_indptr, accept_length):
+    device = x.device
+    batch_size = len(kv_indptr) - 1
+    x_ref = x.clone()
+    ind = 0
+    for bs in range(batch_size):
+        start = kv_indptr[bs]
+        end = start+accept_length[bs]
+        x_ref[ind:ind+accept_length[bs]] = x[start:end]
+        ind += accept_length[bs]
+    x_ref[ind:] = -1  # Fill the tail with -1
+    assert (x_ref!=-1).sum() == accept_length.sum()
+    return x_ref
+
+
 if __name__ == "__main__":
     # Test the compact non-negative implementation
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -491,14 +576,95 @@ if __name__ == "__main__":
     
     # Triton implementation
     if device == "cuda":
-        triton_result, triton_counts = move_neg1_to_tail(input_data)
+        triton_result = move_neg1_to_tail(input_data)
         print(f"Triton result: {triton_result.tolist()}")
-        print(f"Triton counts: {triton_counts.tolist()}")
+        # print(f"Triton counts: {triton_counts.tolist()}")
         
         # Verify results match
         result_match = torch.equal(pytorch_result, triton_result)
-        count_match = torch.equal(pytorch_counts, triton_counts)
+        # count_match = torch.equal(pytorch_counts, triton_counts)
         print(f"Results match: {result_match}")
-        print(f"Counts match: {count_match}")
+        # print(f"Counts match: {count_match}")
+    else:
+        print("CUDA not available, skipping Triton test")
+    
+    print()
+
+    # Test case 3: Mask last dynamic tokens
+    print("=" * 60)
+    print("Test case 3: Mask last dynamic tokens")
+    print("=" * 60)
+    
+    if device == "cuda":
+        # Setup test data
+        batch_size = 80
+        seq_lens = torch.randint(10, 30, (batch_size,), device=device)
+        kv_indptr = torch.cat([torch.tensor([0], device=device), torch.cumsum(seq_lens, dim=0)])
+        
+        # Calculate total size
+        total_size = kv_indptr[-1]
+        
+        x = torch.arange(total_size, device=device)
+        
+        # Dynamic accept lengths
+        draft_token_steps = 7
+        accept_length = torch.randint(0, draft_token_steps, (batch_size,), device=device)
+        
+        # PyTorch reference
+        x_ref = compact_accepted_tokens_pytorch_reference(x, kv_indptr, accept_length)
+        # Compact reference
+        valid_mask = x_ref != -1
+        valid_elements = x_ref[valid_mask]
+        x_ref_compact = torch.full_like(x_ref, -1)
+        x_ref_compact[:len(valid_elements)] = valid_elements
+        
+        # Triton implementation
+        x_triton = x.clone()
+        compact_accepted_tokens(x_triton, kv_indptr, accept_length)
+        
+        # Verify
+        match = torch.equal(x_ref_compact, x_triton)
+        print(f"Results match: {match}")
+        
+        if not match:
+            print("Mismatch found!")
+            print("Reference:", x_ref_compact[:100])
+            print("Triton:", x_triton[:100])
+            diff = torch.where(x_ref_compact != x_triton)[0]
+            print(f"First mismatch at index {diff[0]}: Ref={x_ref_compact[diff[0]]}, Triton={x_triton[diff[0]]}")
+            
+        # Benchmark
+        import time
+        
+        # Warmup
+        for _ in range(10):
+            # PyTorch benchmark: mask + compact
+            x_temp = compact_accepted_tokens_pytorch_reference(x, kv_indptr, accept_length)
+            valid = x_temp[x_temp != -1]
+            out = torch.full_like(x_temp, -1)
+            out[:len(valid)] = valid
+            
+            compact_accepted_tokens(x_triton, kv_indptr, accept_length)
+            
+        torch.cuda.synchronize()
+        start = time.time()
+        for _ in range(1000):
+            x_temp = compact_accepted_tokens_pytorch_reference(x, kv_indptr, accept_length)
+            valid = x_temp[x_temp != -1]
+            out = torch.full_like(x_temp, -1)
+            out[:len(valid)] = valid
+        torch.cuda.synchronize()
+        torch_time = (time.time() - start) / 1000
+        
+        torch.cuda.synchronize()
+        start = time.time()
+        for _ in range(1000):
+            compact_accepted_tokens(x_triton, kv_indptr, accept_length)
+        torch.cuda.synchronize()
+        triton_time = (time.time() - start) / 1000
+        
+        print(f"PyTorch time: {torch_time*1000:.3f} ms")
+        print(f"Triton time:  {triton_time*1000:.3f} ms")
+        print(f"Speedup: {torch_time/triton_time:.2f}x")
     else:
         print("CUDA not available, skipping Triton test")

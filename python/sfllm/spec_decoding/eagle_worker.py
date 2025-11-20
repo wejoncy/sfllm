@@ -591,8 +591,9 @@ class EagleWorker:
                     accept_len = accept_length_cpu[idx].item()
                     start = draft_token_num + num_steps
                     # -1 means the root token, we have kept it in the last step
-                    sequence.out_cache_loc[-start: -start + accept_len] = accept_cache_loc_list[: accept_len]
+                    sequence.out_cache_loc[-start: -start + accept_len] = accept_cache_loc_list[1: 1+accept_len]
                     sequence.out_cache_loc[-start + accept_len:-start + num_steps] = []
+                    accept_cache_loc_list = accept_cache_loc_list[1+accept_len:]
 
                 ######################################################
         # but we will alloc draft_steps+1 tokens cache loc per sequence, so also need to free the unused ones
@@ -623,7 +624,7 @@ class EagleWorker:
                     sequence.hidden_states = spec_info.hidden_states[last_verify_id_start:end]
                     last_verify_id_start = end
         if self.server_args.enable_debug:
-            acn = accept_length_cpu.sum().item()
+            acn = accept_length_cpu.clamp(min=0).sum().item()
             self.total_accepted_tokens += acn
             logger.info(f"Speculative decoding: accepted {(acn)} tokens, total accepted {self.total_accepted_tokens}.")
         return scheduled_batch
