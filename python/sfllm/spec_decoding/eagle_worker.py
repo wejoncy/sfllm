@@ -602,15 +602,18 @@ class EagleWorker:
             num_draft_tokens = self.server_args.speculative_num_draft_tokens
             for idx, seq in enumerate(scheduled_batch):
                 ac_len = batch_output.spec_info.accept_length_cpu[idx].item()
+                offset = len(seq.out_cache_loc_spec) - (num_steps-ac_len)
                 seq.out_cache_loc_spec, extral_loc = seq.out_cache_loc_spec[
-                    :-(num_steps-ac_len)], seq.out_cache_loc_spec[-(num_steps-ac_len):]
+                    :offset], seq.out_cache_loc_spec[offset:]
                 self.draft_mem_pool.free_block(extral_loc, force_sort=True)
                 # we can't release the verify loc here, but we can set it as neg to indicate unknown yet
                 # the root token is alway accepted, so we can keep one less
+                offset = len(seq.out_cache_loc) - (num_draft_tokens-1)
                 seq.out_cache_loc, seq.out_cache_loc_lazy_cpu = seq.out_cache_loc[
-                    :-(num_draft_tokens-1)], seq.out_cache_loc[-(num_draft_tokens-1):]
+                    :offset], seq.out_cache_loc[offset:]
                 # placeholder for the final accepted token loc
                 seq.out_cache_loc.extend([-1] * (num_steps))#TODO +1 or not?
+                seq.marked = True
 
         if not async_overlap:
             for idx, sequence in enumerate(scheduled_batch):
