@@ -161,8 +161,8 @@ def move_neg1_to_tail_kernel(
     # Output tensors
     output_ptr,             # Output tensor [batch_size, seq_len] 
     # Dimensions
-    batch_size: tl.constexpr,
-    seq_len: tl.constexpr,
+    batch_size,
+    seq_len,
     BLOCK_SIZE: tl.constexpr,
 ):
     # Get sequence index
@@ -206,7 +206,13 @@ def move_neg1_to_tail(
     
     batch_size, seq_len = input_tensor.shape
     output_tensor = torch.zeros_like(input_tensor)
-    BLOCK_SIZE = triton.next_power_of_2(seq_len)
+    
+    # Use a fixed block size to avoid frequent recompilation
+    # 32768 is a reasonable upper bound that fits in shared memory on modern GPUs
+    BLOCK_SIZE = 4096
+    if seq_len > BLOCK_SIZE:
+        BLOCK_SIZE = triton.next_power_of_2(seq_len)
+        
     grid = (batch_size,)
     move_neg1_to_tail_kernel[grid](
         input_tensor,
@@ -441,12 +447,13 @@ def compact_accepted_tokens_kernel(
 @triton.jit
 def fill_tail_kernel(
     x_ptr,
-    start_idx,
+    start_idx_ptr,
     total_size,
     fill_value,
     BLOCK_SIZE: tl.constexpr
 ):
     pid = tl.program_id(0)
+    start_idx = tl.load(start_idx_ptr)
     block_start = pid * BLOCK_SIZE + start_idx
     
     offsets = block_start + tl.arange(0, BLOCK_SIZE)
@@ -482,19 +489,18 @@ def compact_accepted_tokens(
     )
     
     # 3. Fill tail with -1
-    total_valid = out_loc[-1].item()
     total_size = x.numel()
-    if total_valid < total_size:
-        fill_len = total_size - total_valid
-        BLOCK_SIZE_FILL = 1024
-        grid_fill = (triton.cdiv(fill_len, BLOCK_SIZE_FILL),)
-        fill_tail_kernel[grid_fill](
-            x,
-            total_valid,
-            total_size,
-            fill_value,
-            BLOCK_SIZE=BLOCK_SIZE_FILL
-        )
+    BLOCK_SIZE_FILL = 1024
+    # Launch enough blocks to cover the worst case (start_idx=0)
+    grid_fill = (triton.cdiv(total_size, BLOCK_SIZE_FILL),)
+    
+    fill_tail_kernel[grid_fill](
+        x,
+        out_loc[-1],
+        total_size,
+        fill_value,
+        BLOCK_SIZE=BLOCK_SIZE_FILL
+    )
 
 
 def compact_accepted_tokens_pytorch_reference(x, kv_indptr, accept_length):

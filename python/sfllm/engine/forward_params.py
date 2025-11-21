@@ -42,7 +42,7 @@ class ForwardBatch:
         self.spec_info:SpecInput = None
 
         self.past_key_values = mem_pool.kv_buffers if mem_pool is not None else None
-        self.forward_mode = ForwardMode.EXTEND
+        self.forward_mode:ForwardMode = ForwardMode.EXTEND
 
     def is_decode(self):
         return self.forward_mode == ForwardMode.DECODE

@@ -51,6 +51,10 @@ class InferenceEngine:
         """Post-process the model outputs and update the sequences."""
         if not isinstance(batch_result, BatchResult):
             assert False, "Only BatchResult is supported now."
+
+        self.scheduler.metrics.update_spec_metrics(batch_result.spec_info)
+        self.scheduler.metrics.log_prefill_metrics(schedule_batch)
+        self.scheduler.metrics.log_decode_metrics(schedule_batch)
         token_ids = batch_result.next_token_ids.tolist()
         if self.is_spec_algo:
             # TODO parallel decoding with speculative decoding, multitoken would be decoded in a single step
