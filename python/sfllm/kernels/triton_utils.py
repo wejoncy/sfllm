@@ -513,383 +513,170 @@ def compact_accepted_tokens_pytorch_reference(x, kv_indptr, accept_length):
 
 
 @triton.jit
-def prune_kv_indices_kernel(
-    x_ptr,
-    output_ptr,
+def update_kv_indices_kernel(
+    future_kvindice_ptr,
+    kv_indices_ptr,
     kv_indptr_ptr,
-    dest_offsets_ptr,
-    accept_len_ptr,
-    draft_token_steps,
+    accept_length_ptr,
+    cum_accept_length_ptr,
+    batch_size: tl.constexpr,
     BLOCK_SIZE: tl.constexpr
 ):
     pid = tl.program_id(0)
+    if pid >= batch_size:
+        return
+
+    # Load accept length
+    accept_len = tl.load(accept_length_ptr + pid)
+    L = accept_len - 1
     
-    # Get segment info
-    src_start = tl.load(kv_indptr_ptr + pid)
-    src_end = tl.load(kv_indptr_ptr + pid + 1)
-    accept_len = tl.load(accept_len_ptr + pid)
+    # If L <= 0, nothing to copy
+    if L <= 0:
+        return
+
+    # Destination range
+    # kv_indptr has size batch_size + 1. We want kv_indptr[pid+1] as end.
+    dst_end = tl.load(kv_indptr_ptr + pid + 1)
+    dst_start = dst_end - L
     
-    # Calculate keep length
-    # kept region is [src_start, src_end - (draft_token_steps - accept_len))
-    seg_len = src_end - src_start
-    remove_len = draft_token_steps - accept_len
-    keep_len = seg_len - remove_len
-    
-    dst_start = tl.load(dest_offsets_ptr + pid)
+    # Source range
+    # cum_accept_length has size batch_size + 1.
+    src_base = tl.load(cum_accept_length_ptr + pid)
+    src_start = src_base + 1
     
     # Copy loop
-    for off in range(0, keep_len, BLOCK_SIZE):
+    for off in range(0, L, BLOCK_SIZE):
         cols = off + tl.arange(0, BLOCK_SIZE)
-        mask = cols < keep_len
+        mask = cols < L
         
-        # Read from src
-        val = tl.load(x_ptr + src_start + cols, mask=mask, other=-1)
+        # Read from future_kvindice
+        val = tl.load(future_kvindice_ptr + src_start + cols, mask=mask)
         
-        # Write to dst
-        tl.store(output_ptr + dst_start + cols, val, mask=mask)
+        # Write to kv_indices
+        tl.store(kv_indices_ptr + dst_start + cols, val, mask=mask)
 
 
 def prune_kv_indices(
-    x: torch.Tensor,
+    future_kvindice: torch.Tensor,
+    kv_indices: torch.Tensor,
     kv_indptr: torch.Tensor,
     accept_length: torch.Tensor,
-    draft_token_steps: int
 ) -> torch.Tensor:
     """
-    Prunes the last (draft_token_steps - accept_length) tokens from each segment in x,
-    and compacts the result.
+    Update kv_indices with accepted tokens from future_kvindice and compact.
     
     Args:
-        x: Input tensor of indices [total_tokens]
-        kv_indptr: Segment pointers [batch_size + 1]
-        accept_length: Accepted length for each segment [batch_size]
-        draft_token_steps: Number of draft tokens
-        
-    Returns:
-        Compacted tensor with -1 padding at the end.
+        future_kvindice: Tensor containing accepted tokens [total_accepted]
+        kv_indices: Destination indices tensor to update [total_size]
+        kv_indptr: Pointers to segments in kv_indices [batch_size + 1]
+        accept_length: Number of tokens to accept for each batch [batch_size]
     """
     batch_size = len(accept_length)
+    device = future_kvindice.device
     
-    # Calculate keep lengths for each segment
-    seg_lens = kv_indptr[1:] - kv_indptr[:-1]
-    keep_lens = seg_lens - (draft_token_steps - accept_length)
-    
-    # Calculate destination offsets
-    dest_offsets = torch.zeros_like(kv_indptr)
-    dest_offsets[1:] = torch.cumsum(keep_lens, dim=0)
-    
-    output = torch.full_like(x, -1)
+    cum_accept_length = torch.cat([torch.zeros(1, device=device, dtype=torch.int64), accept_length.cumsum(dim=0)])
     
     grid = (batch_size,)
-    BLOCK_SIZE = 1024
+    BLOCK_SIZE = 128 
     
-    prune_kv_indices_kernel[grid](
-        x,
-        output,
+    update_kv_indices_kernel[grid](
+        future_kvindice,
+        kv_indices,
         kv_indptr,
-        dest_offsets,
         accept_length,
-        draft_token_steps,
-        BLOCK_SIZE=BLOCK_SIZE
+        cum_accept_length,
+        batch_size,
+        BLOCK_SIZE
     )
+
+    kv_indices[:] = move_neg1_to_tail(kv_indices)
     
-    return output
+    return kv_indices
 
 
 def prune_kv_indices_pytorch_reference(
-    x: torch.Tensor,
+    future_kvindice: torch.Tensor,
+    kv_indices: torch.Tensor,
     kv_indptr: torch.Tensor,
     accept_length: torch.Tensor,
-    draft_token_steps: int
 ) -> torch.Tensor:
     """
     Reference PyTorch implementation for prune_kv_indices.
     """
-    batch_size = len(accept_length)
-    output = torch.full_like(x, -1)
-    
-    current_dest = 0
+    kv_indptr = kv_indptr[1:]
+    batch_size = len(kv_indptr)
+    device_id = future_kvindice.device
+    cum_accept_length = torch.cat([torch.tensor([0], device=device_id), accept_length.cumsum(dim=0)], dim=0)
     for i in range(batch_size):
-        src_start = kv_indptr[i]
-        src_end = kv_indptr[i+1]
-        
-        # Calculate keep length
-        seg_len = src_end - src_start
-        remove_len = draft_token_steps - accept_length[i]
-        keep_len = seg_len - remove_len
-        
-        if keep_len > 0:
-            output[current_dest:current_dest+keep_len] = x[src_start:src_start+keep_len]
-            current_dest += keep_len
-            
-    return output
-
+        L = accept_length[i] - 1
+        dst_end = kv_indptr[i]
+        dst_start = dst_end - L
+        kv_indices[dst_start:dst_end] = future_kvindice[cum_accept_length[i]+1:cum_accept_length[i+1]]
+    kv_indices[:] = move_neg1_to_tail(kv_indices)
+    return kv_indices
 
 if __name__ == "__main__":
-    # Test the compact non-negative implementation
+    import time
     device = "cuda" if torch.cuda.is_available() else "cpu"
     
-    # Test case 1: Batch dimension split
-    print("=" * 60)
-    print("Test case 1: Batch dimension split")
-    print("=" * 60)
-    
-    # Create test data: [total_batch=10, hidden_size=4096]
-    total_batch = 10
-    hidden_size = 4096
-    input_tensor = torch.randn(total_batch, hidden_size, device=device, dtype=torch.float16)
-    
-    # Split into 3 groups with sizes [3, 4, 3]
-    accept_length = torch.tensor([3, 4, 3], device=device, dtype=torch.int64)
-    
-    print(f"Input shape: {input_tensor.shape}")
-    print(f"Accept lengths: {accept_length.tolist()}")
-    print(f"Total batches: {accept_length.sum().item()}")
-    
-    # PyTorch reference
-    pytorch_result = split_firstdim_pytorch_reference(input_tensor, accept_length)
-    print(f"PyTorch output shape: {pytorch_result.shape}")
-    
-    # Triton implementation
-    if device == "cuda":
-        triton_result = split_firstdim_async(input_tensor, accept_length)
-        print(f"Triton output shape: {triton_result.shape}")
+    def run_test(name, ref_fn, tri_fn, args, inplace_idx=None, check_ref=None):
+        print(f"\n{'='*40}\n{name}\n{'='*40}")
+        if device == "cpu": return print("Skipping (No CUDA)")
         
-        # Verify results match
-        result_match = torch.allclose(pytorch_result, triton_result, atol=1e-3, rtol=1e-3)
-        max_diff = (pytorch_result - triton_result).abs().max().item()
-        print(f"Results match: {result_match}")
-        print(f"Max difference: {max_diff:.6e}")
+        # Clone for correctness check
+        args_r = [x.clone() if isinstance(x, torch.Tensor) else x for x in args]
+        args_t = [x.clone() if isinstance(x, torch.Tensor) else x for x in args]
         
-        # Verify each group
-        cumsum = torch.cat([torch.zeros(1, device=device, dtype=torch.int64), 
-                           torch.cumsum(accept_length, dim=0)])
-        for i in range(accept_length.shape[0]):
-            start = cumsum[i]
-            end = cumsum[i + 1]
-            batch_size = accept_length[i]
-            
-            # Check if split matches original
-            original_group = input_tensor[start:end]
-            pytorch_group = pytorch_result[i, :batch_size]
-            triton_group = triton_result[i, :batch_size]
-            
-            orig_vs_pytorch = torch.allclose(original_group, pytorch_group, atol=1e-5)
-            orig_vs_triton = torch.allclose(original_group, triton_group, atol=1e-5)
-            
-            print(f"  Group {i} (size={batch_size}): PyTorch={orig_vs_pytorch}, Triton={orig_vs_triton}")
-    else:
-        print("CUDA not available, skipping Triton test")
-    
-    print()
-    
-    # Test case 2: Compact non-negative numbers
-    print("=" * 60)
-    print("Test case 2: Compact non-negative numbers")
-    print("=" * 60)
-    input_data = torch.tensor([
-        [1, -1, 3, -1, 5, -1],
-        [-1, 2, -1, 4, -1, 6],
-        [7, 8, 9, -1, -1, -1],
-        [-1, -1, -1, 10, 11, 12]
-    ], device=device)
-    
-    print(f"Input: {input_data.tolist()}")
-    
-    # PyTorch reference
-    pytorch_result, pytorch_counts = move_neg1_to_tail_pytorch_reference(input_data)
-    print(f"PyTorch result: {pytorch_result.tolist()}")
-    print(f"PyTorch counts: {pytorch_counts.tolist()}")
-    
-    # Triton implementation
-    if device == "cuda":
-        triton_result = move_neg1_to_tail(input_data)
-        print(f"Triton result: {triton_result.tolist()}")
-        # print(f"Triton counts: {triton_counts.tolist()}")
+        out_r = ref_fn(*args_r)
+        out_t = tri_fn(*args_t)
         
-        # Verify results match
-        result_match = torch.equal(pytorch_result, triton_result)
-        # count_match = torch.equal(pytorch_counts, triton_counts)
-        print(f"Results match: {result_match}")
-        # print(f"Counts match: {count_match}")
-    else:
-        print("CUDA not available, skipping Triton test")
-    
-    print()
+        if inplace_idx is not None: out_t = args_t[inplace_idx]
+        if check_ref: out_r = check_ref(out_r)
+        if isinstance(out_r, tuple): out_r = out_r[0]
+            
+        match = torch.allclose(out_r, out_t) if out_r.is_floating_point() else torch.equal(out_r, out_t)
+        print(f"Match: {match}")
+        if not match: return
 
-    # Test case 3: Mask last dynamic tokens
-    print("=" * 60)
-    print("Test case 3: Mask last dynamic tokens")
-    print("=" * 60)
-    
-    if device == "cuda":
-        # Setup test data
-        batch_size = 80
-        seq_lens = torch.randint(10, 30, (batch_size,), device=device)
-        kv_indptr = torch.cat([torch.tensor([0], device=device), torch.cumsum(seq_lens, dim=0)])
-        
-        # Calculate total size
-        total_size = kv_indptr[-1]
-        
-        x = torch.arange(total_size, device=device)
-        
-        # Dynamic accept lengths
-        draft_token_steps = 7
-        accept_length = torch.randint(0, draft_token_steps, (batch_size,), device=device)
-        
-        # PyTorch reference
-        x_ref = compact_accepted_tokens_pytorch_reference(x, kv_indptr, accept_length)
-        # Compact reference
-        valid_mask = x_ref != -1
-        valid_elements = x_ref[valid_mask]
-        x_ref_compact = torch.full_like(x_ref, -1)
-        x_ref_compact[:len(valid_elements)] = valid_elements
-        
-        # Triton implementation
-        x_triton = x.clone()
-        compact_accepted_tokens(x_triton, kv_indptr, accept_length)
-        
-        # Verify
-        match = torch.equal(x_ref_compact, x_triton)
-        print(f"Results match: {match}")
-        
-        if not match:
-            print("Mismatch found!")
-            print("Reference:", x_ref_compact[:100])
-            print("Triton:", x_triton[:100])
-            diff = torch.where(x_ref_compact != x_triton)[0]
-            print(f"First mismatch at index {diff[0]}: Ref={x_ref_compact[diff[0]]}, Triton={x_triton[diff[0]]}")
-            
         # Benchmark
-        import time
+        torch.cuda.synchronize()
+        t0 = time.time()
+        for _ in range(1000): ref_fn(*args)
+        torch.cuda.synchronize()
+        t_ref = time.time() - t0
         
-        # Warmup
-        for _ in range(10):
-            # PyTorch benchmark: mask + compact
-            x_temp = compact_accepted_tokens_pytorch_reference(x, kv_indptr, accept_length)
-            valid = x_temp[x_temp != -1]
-            out = torch.full_like(x_temp, -1)
-            out[:len(valid)] = valid
-            
-            compact_accepted_tokens(x_triton, kv_indptr, accept_length)
-            
+        t0 = time.time()
+        for _ in range(1000): tri_fn(*args)
         torch.cuda.synchronize()
-        start = time.time()
-        for _ in range(1000):
-            x_temp = compact_accepted_tokens_pytorch_reference(x, kv_indptr, accept_length)
-            valid = x_temp[x_temp != -1]
-            out = torch.full_like(x_temp, -1)
-            out[:len(valid)] = valid
-        torch.cuda.synchronize()
-        torch_time = (time.time() - start) / 1000
-        
-        torch.cuda.synchronize()
-        start = time.time()
-        for _ in range(1000):
-            compact_accepted_tokens(x_triton, kv_indptr, accept_length)
-        torch.cuda.synchronize()
-        triton_time = (time.time() - start) / 1000
-        
-        print(f"PyTorch time: {torch_time*1000:.3f} ms")
-        print(f"Triton time:  {triton_time*1000:.3f} ms")
-        print(f"Speedup: {torch_time/triton_time:.2f}x")
-    else:
-        print("CUDA not available, skipping Triton test")
+        t_tri = time.time() - t0
+        print(f"Ref: {t_ref*1000:.2f}ms | Tri: {t_tri*1000:.2f}ms | Speedup: {t_ref/t_tri:.2f}x")
+
+    # 1. Batch Split
+    B, H = 10, 4096
+    inp = torch.randn(B, H, device=device, dtype=torch.float16)
+    lens = torch.tensor([3, 4, 3], device=device)
+    run_test("Batch Split", split_firstdim_pytorch_reference, split_firstdim_async, [inp, lens])
+
+    # 2. Move Neg1
+    inp = torch.tensor([[1, -1, 3, -1], [-1, 2, -1, 4]], device=device)
+    run_test("Move Neg1", move_neg1_to_tail_pytorch_reference, move_neg1_to_tail, [inp])
+
+    # 3. Compact Tokens
+    B = 80
+    seq_lens = torch.randint(10, 30, (B,), device=device)
+    kv_indptr = torch.cat([torch.tensor([0], device=device), torch.cumsum(seq_lens, 0)])
+    x = torch.arange(kv_indptr[-1], device=device)
+    acc_len = torch.randint(0, 7, (B,), device=device)        
+    run_test("Compact Tokens", compact_accepted_tokens_pytorch_reference, compact_accepted_tokens, 
+             [x, kv_indptr, acc_len], inplace_idx=0, check_ref=None)
+
+    # 4. Prune KV
+    draft_steps = 7
+    seq_lens = torch.randint(draft_steps + 5, draft_steps + 20, (B,), device=device)
+    kv_indptr = torch.cat([torch.tensor([0], device=device), torch.cumsum(seq_lens, 0)])
+    kv_indices = torch.arange(kv_indptr[-1], device=device)
+    acc_len = torch.randint(1, draft_steps, (B,), device=device)
+    future = torch.randint(10000, 20000, (acc_len.sum() + 100,), device=device)
     
-    print()
-    
-    # Test case 4: Prune KV indices
-    print("=" * 60)
-    print("Test case 4: Prune KV indices")
-    print("=" * 60)
-    
-    if device == "cuda":
-        # Setup test data
-        batch_size = 80
-        draft_token_steps = 7
-        
-        # Create segments with length > draft_token_steps
-        seq_lens = torch.randint(draft_token_steps + 5, draft_token_steps + 20, (batch_size,), device=device)
-        kv_indptr = torch.cat([torch.tensor([0], device=device), torch.cumsum(seq_lens, dim=0)])
-        
-        total_size = kv_indptr[-1]
-        x = torch.arange(total_size, device=device)
-        
-        accept_length = torch.randint(0, draft_token_steps, (batch_size,), device=device)
-        
-        # PyTorch reference
-        x_ref = prune_kv_indices_pytorch_reference(x, kv_indptr, accept_length, draft_token_steps)
-        
-        # Triton implementation
-        x_triton = prune_kv_indices(x, kv_indptr, accept_length, draft_token_steps)
-        
-        # Verify
-        match = torch.equal(x_ref, x_triton)
-        print(f"Results match: {match}")
-        
-        if not match:
-            print("Mismatch found!")
-            diff = torch.where(x_ref != x_triton)[0]
-            if len(diff) > 0:
-                idx = diff[0]
-                print(f"First mismatch at index {idx}: Ref={x_ref[idx]}, Triton={x_triton[idx]}")
-        
-        # Benchmark
-        import time
-        
-        # Warmup
-        for _ in range(10):
-            prune_kv_indices_pytorch_reference(x, kv_indptr, accept_length, draft_token_steps)
-            prune_kv_indices(x, kv_indptr, accept_length, draft_token_steps)
-            
-        torch.cuda.synchronize()
-        start = time.time()
-        for _ in range(1000):
-            prune_kv_indices_pytorch_reference(x, kv_indptr, accept_length, draft_token_steps)
-        torch.cuda.synchronize()
-        torch_time = (time.time() - start) / 1000
-        
-        torch.cuda.synchronize()
-        start = time.time()
-        for _ in range(1000):
-            prune_kv_indices(x, kv_indptr, accept_length, draft_token_steps)
-        torch.cuda.synchronize()
-        triton_time = (time.time() - start) / 1000
-        
-        print(f"PyTorch time: {torch_time*1000:.3f} ms")
-        print(f"Triton time:  {triton_time*1000:.3f} ms")
-        print(f"Speedup: {torch_time/triton_time:.2f}x")
-    else:
-        print("CUDA not available, skipping Triton test")
-    
-    print()
-    
-    # Test case 5: Stress test compact_accepted_tokens
-    print("=" * 60)
-    print("Test case 5: Stress test compact_accepted_tokens")
-    print("=" * 60)
-    
-    if device == "cuda":
-        # Try a larger size that might break the single-block assumption
-        # 100 batches, 100 tokens each -> 10000 tokens total
-        # BLOCK_SIZE will be 16384
-        batch_size = 100
-        seq_len_per_batch = 100
-        total_tokens = batch_size * seq_len_per_batch
-        
-        print(f"Testing with total_tokens={total_tokens} (BLOCK_SIZE={triton.next_power_of_2(total_tokens)})")
-        
-        kv_indptr = torch.arange(0, total_tokens + 1, seq_len_per_batch, device=device, dtype=torch.int64)
-        x = torch.arange(total_tokens, device=device)
-        accept_length = torch.full((batch_size,), seq_len_per_batch // 2, device=device, dtype=torch.int64)
-        
-        try:
-            start = time.time()
-            compact_accepted_tokens(x.clone(), kv_indptr, accept_length)
-            torch.cuda.synchronize()
-            print(f"Execution time: {(time.time() - start)*1000:.3f} ms")
-            print("Success!")
-        except Exception as e:
-            print(f"Failed: {e}")
-    else:
-        print("CUDA not available")
+    run_test("Prune KV", prune_kv_indices_pytorch_reference, prune_kv_indices, 
+             [future, kv_indices, kv_indptr, acc_len], inplace_idx=1)

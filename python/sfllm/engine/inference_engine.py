@@ -19,7 +19,7 @@ from sfllm.engine.schedule_batch import ScheduleBatch, BatchResult
 from sfllm.server_args import ServerArgs
 from sfllm.utils.nutils import configure_logger,resolve_future_token_ids
 from sfllm.kernels.triton_utils import split_lastdim_async
-from sfllm.kernels.triton_utils import move_neg1_to_tail, compact_accepted_tokens
+from sfllm.kernels.triton_utils import move_neg1_to_tail, compact_accepted_tokens,prune_kv_indices
 
 logger = logging.getLogger(__name__)
 class InferenceEngine:
@@ -253,15 +253,19 @@ class InferenceEngine:
                             # resolve_out_cache_loc[0] = -1
                             # resolve_out_cache_loc[accept_length.cumsum(dim=0)[:-1]] = -1
                             # resolve_out_cache_loc = move_neg1_to_tail(resolve_out_cache_loc)[:draft_token_steps-len(cur_batch)]
-                            kv_indptr = cur_batch.forward_batch.kv_indptr[1:]
-                            kv_indices = cur_batch.forward_batch.kv_indices
-                            cum_accept_length = torch.cat([torch.tensor([0], device=device_id), accept_length.cumsum(dim=0)], dim=0)
-                            for i in range(len(cur_batch)):
-                                L = accept_length[i] - 1
-                                dst_end = kv_indptr[i]
-                                dst_start = dst_end - L
-                                kv_indices[dst_start:dst_end] = resolve_out_cache_loc[cum_accept_length[i]+1:cum_accept_length[i+1]]
-                            kv_indices[:] = move_neg1_to_tail(kv_indices)
+                            x = cur_batch.forward_batch.kv_indices
+                            prune_kv_indices(resolve_out_cache_loc,x,
+                                cur_batch.forward_batch.kv_indptr, accept_length)
+                            # kv_indptr = cur_batch.forward_batch.kv_indptr[1:]
+                            # kv_indices = cur_batch.forward_batch.kv_indices
+                            # cum_accept_length = torch.cat([torch.tensor([0], device=device_id), accept_length.cumsum(dim=0)], dim=0)
+                            # for i in range(len(cur_batch)):
+                            #     L = accept_length[i] - 1
+                            #     dst_end = kv_indptr[i]
+                            #     dst_start = dst_end - L
+                            #     kv_indices[dst_start:dst_end] = resolve_out_cache_loc[cum_accept_length[i]+1:cum_accept_length[i+1]]
+                            # kv_indices[:] = move_neg1_to_tail(kv_indices)
+                            # assert torch.allclose(x, kv_indices)
 
                             # cur_batch.forward_batch.kv_indices[:draft_token_steps-len(cur_batch)] = resolve_out_cache_loc
                             # cur_batch.forward_batch.kv_indices[:] = move_neg1_to_tail(cur_batch.forward_batch.kv_indices)
