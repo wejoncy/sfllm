@@ -160,7 +160,6 @@ def move_neg1_to_tail_kernel(
     input_ptr,              # Input tensor [batch_size, seq_len]
     # Output tensors
     output_ptr,             # Output tensor [batch_size, seq_len] 
-    # valid_count_ptr,        # Valid count per sequence [batch_size]
     # Dimensions
     batch_size: tl.constexpr,
     seq_len: tl.constexpr,
@@ -173,45 +172,39 @@ def move_neg1_to_tail_kernel(
     input_row_start = seq_id * seq_len
     output_row_start = seq_id * seq_len
     
-    # Step 1: Vectorized read entire sequence into internal array
+    # Step 1: Vectorized read entire sequence
     indices = tl.arange(0, BLOCK_SIZE)
     load_mask = indices < seq_len
     
     input_positions = input_row_start + indices
     elements = tl.load(input_ptr + input_positions, mask=load_mask, other=-1)
     
-    # Step 2: Vectorized compute validity mask and count
+    # Step 2: Identify valid elements
     valid_mask = (elements != -1) & load_mask
-    valid_count = tl.sum(valid_mask.to(tl.int32))
     
-    # Step 3: Direct parallel compaction using your insight!
-    compacted = tl.full([BLOCK_SIZE], -1, dtype=elements.dtype)
-    cumulative_count = tl.zeros([BLOCK_SIZE], dtype=tl.int32)
-    temp_valid = valid_mask.to(tl.int32)
-    cumulative_count = tl.cumsum(temp_valid, axis=0) - temp_valid  # 0-based positions
-    for out_pos in tl.static_range(BLOCK_SIZE):
-        if out_pos < valid_count:
-            # Find which input element should go to position out_pos
-            # It's the element whose cumulative_count equals out_pos
-            source_mask = (cumulative_count == out_pos) & valid_mask & load_mask
-            
-            # Extract the element (should be exactly one)
-            source_element = tl.sum(tl.where(source_mask, elements, 0))
-            
-            # Place it in the output
-            compacted = tl.where(
-                indices == out_pos,
-                source_element,
-                compacted
-            )
-    output_positions = output_row_start + indices
-    tl.store(output_ptr + output_positions, compacted, mask=load_mask)
+    # Step 3: Compute destination indices using cumsum
+    # cumsum gives 1-based index, subtract 1 to get 0-based index
+    dest_indices = tl.cumsum(valid_mask.to(tl.int32), axis=0) - 1
+    
+    # Step 4: Store valid elements to their compacted positions
+    # We write to output_ptr + row_start + dest_indices
+    # Only write where valid_mask is True
+    tl.store(output_ptr + output_row_start + dest_indices, elements, mask=valid_mask)
+    
+    # Step 5: Fill the tail with -1
+    total_valid = tl.sum(valid_mask.to(tl.int32))
+    tail_mask = (indices >= total_valid) & load_mask
+    tl.store(output_ptr + output_row_start + indices, -1, mask=tail_mask)
 
 
 def move_neg1_to_tail(
     input_tensor: torch.Tensor
-) -> tuple[torch.Tensor, torch.Tensor]:
-    batch_size, seq_len = 1, input_tensor.shape[0]
+) -> torch.Tensor:
+    orig_shape = input_tensor.shape
+    if input_tensor.dim() == 1:
+        input_tensor = input_tensor.unsqueeze(0)
+    
+    batch_size, seq_len = input_tensor.shape
     output_tensor = torch.zeros_like(input_tensor)
     BLOCK_SIZE = triton.next_power_of_2(seq_len)
     grid = (batch_size,)
@@ -223,7 +216,7 @@ def move_neg1_to_tail(
         BLOCK_SIZE
     )
     
-    return output_tensor
+    return output_tensor.view(orig_shape)
 
 
 def move_neg1_to_tail_pytorch_reference(
@@ -417,49 +410,49 @@ def split_firstdim_pytorch_reference(
 def compact_accepted_tokens_kernel(
     x_ptr,
     kv_indptr_ptr,
+    out_loc_ptr,
     accept_len_ptr,
-    batch_size,
-    fill_value: tl.constexpr,
     BLOCK_SIZE: tl.constexpr
 ):
     pid = tl.program_id(0)
     
-    # Single block mode - process everything
-    # 1. Determine total size
-    last_indptr = tl.load(kv_indptr_ptr + batch_size)
-    total_size = last_indptr
+    # Current batch index
+    batch_idx = pid
     
-    # 2. Load x
-    off = tl.arange(0, BLOCK_SIZE)
-    mask_load = off < total_size
-    val = tl.load(x_ptr + off, mask=mask_load, other=fill_value)
+    # Read source start and length
+    src_start = tl.load(kv_indptr_ptr + batch_idx)
+    length = tl.load(accept_len_ptr + batch_idx)
     
-    # 3. Identify valid tokens (Keep [start, start + accept_len))
-    is_valid = tl.zeros([BLOCK_SIZE], dtype=tl.int1)
+    # Read destination start
+    dst_start = tl.load(out_loc_ptr + batch_idx)
     
-    for i in range(batch_size):
-        start = tl.load(kv_indptr_ptr + i)
-        accept_len = tl.load(accept_len_ptr + i)
+    # Loop to copy (handle length > BLOCK_SIZE)
+    for off in range(0, length, BLOCK_SIZE):
+        cols = off + tl.arange(0, BLOCK_SIZE)
+        mask = cols < length
         
-        # Range to keep: [start, start + accept_len)
-        seq_mask = (off >= start) & (off < start + accept_len)
-        is_valid = is_valid | seq_mask
+        # Read
+        val = tl.load(x_ptr + src_start + cols, mask=mask)
         
-    # 4. Apply mask
-    # Only keep elements that are within valid ranges AND within total_size
-    val = tl.where(is_valid & mask_load, val, fill_value)
+        # Write
+        tl.store(x_ptr + dst_start + cols, val, mask=mask)
+
+
+@triton.jit
+def fill_tail_kernel(
+    x_ptr,
+    start_idx,
+    total_size,
+    fill_value,
+    BLOCK_SIZE: tl.constexpr
+):
+    pid = tl.program_id(0)
+    block_start = pid * BLOCK_SIZE + start_idx
     
-    # 5. Compact
-    valid_mask = (val != fill_value) & mask_load
-    dest_idx = tl.cumsum(valid_mask.to(tl.int32), axis=0) - 1
+    offsets = block_start + tl.arange(0, BLOCK_SIZE)
+    mask = offsets < total_size
     
-    # Store valid elements
-    tl.store(x_ptr + dest_idx, val, mask=valid_mask)
-    
-    # Fill tail with fill_value
-    total_valid = tl.sum(valid_mask.to(tl.int32), axis=0)
-    tail_mask = (off >= total_valid) & mask_load
-    tl.store(x_ptr + off, fill_value, mask=tail_mask)
+    tl.store(x_ptr + offsets, fill_value, mask=mask)
 
 
 def compact_accepted_tokens(
@@ -470,17 +463,38 @@ def compact_accepted_tokens(
 ) -> None:
     batch_size = kv_indptr.shape[0] - 1
     
-    grid = (1,) 
-    BLOCK_SIZE = triton.next_power_of_2(x.numel())
+    # 1. Calculate destination offsets
+    out_loc = torch.zeros_like(kv_indptr)
+    out_loc[1:] = torch.cumsum(accept_length, dim=0)
+    
+    # 2. Launch parallel copy kernel
+    # One block per batch is usually enough for draft tokens
+    grid = (batch_size,)
+    # Use a reasonable block size, e.g., 256, enough to cover most draft lengths
+    BLOCK_SIZE = 256 
     
     compact_accepted_tokens_kernel[grid](
         x,
         kv_indptr,
+        out_loc,
         accept_length,
-        batch_size,
-        fill_value,
         BLOCK_SIZE=BLOCK_SIZE
     )
+    
+    # 3. Fill tail with -1
+    total_valid = out_loc[-1].item()
+    total_size = x.numel()
+    if total_valid < total_size:
+        fill_len = total_size - total_valid
+        BLOCK_SIZE_FILL = 1024
+        grid_fill = (triton.cdiv(fill_len, BLOCK_SIZE_FILL),)
+        fill_tail_kernel[grid_fill](
+            x,
+            total_valid,
+            total_size,
+            fill_value,
+            BLOCK_SIZE=BLOCK_SIZE_FILL
+        )
 
 
 def compact_accepted_tokens_pytorch_reference(x, kv_indptr, accept_length):
@@ -496,6 +510,119 @@ def compact_accepted_tokens_pytorch_reference(x, kv_indptr, accept_length):
     x_ref[ind:] = -1  # Fill the tail with -1
     assert (x_ref!=-1).sum() == accept_length.sum()
     return x_ref
+
+
+@triton.jit
+def prune_kv_indices_kernel(
+    x_ptr,
+    output_ptr,
+    kv_indptr_ptr,
+    dest_offsets_ptr,
+    accept_len_ptr,
+    draft_token_steps,
+    BLOCK_SIZE: tl.constexpr
+):
+    pid = tl.program_id(0)
+    
+    # Get segment info
+    src_start = tl.load(kv_indptr_ptr + pid)
+    src_end = tl.load(kv_indptr_ptr + pid + 1)
+    accept_len = tl.load(accept_len_ptr + pid)
+    
+    # Calculate keep length
+    # kept region is [src_start, src_end - (draft_token_steps - accept_len))
+    seg_len = src_end - src_start
+    remove_len = draft_token_steps - accept_len
+    keep_len = seg_len - remove_len
+    
+    dst_start = tl.load(dest_offsets_ptr + pid)
+    
+    # Copy loop
+    for off in range(0, keep_len, BLOCK_SIZE):
+        cols = off + tl.arange(0, BLOCK_SIZE)
+        mask = cols < keep_len
+        
+        # Read from src
+        val = tl.load(x_ptr + src_start + cols, mask=mask, other=-1)
+        
+        # Write to dst
+        tl.store(output_ptr + dst_start + cols, val, mask=mask)
+
+
+def prune_kv_indices(
+    x: torch.Tensor,
+    kv_indptr: torch.Tensor,
+    accept_length: torch.Tensor,
+    draft_token_steps: int
+) -> torch.Tensor:
+    """
+    Prunes the last (draft_token_steps - accept_length) tokens from each segment in x,
+    and compacts the result.
+    
+    Args:
+        x: Input tensor of indices [total_tokens]
+        kv_indptr: Segment pointers [batch_size + 1]
+        accept_length: Accepted length for each segment [batch_size]
+        draft_token_steps: Number of draft tokens
+        
+    Returns:
+        Compacted tensor with -1 padding at the end.
+    """
+    batch_size = len(accept_length)
+    
+    # Calculate keep lengths for each segment
+    seg_lens = kv_indptr[1:] - kv_indptr[:-1]
+    keep_lens = seg_lens - (draft_token_steps - accept_length)
+    
+    # Calculate destination offsets
+    dest_offsets = torch.zeros_like(kv_indptr)
+    dest_offsets[1:] = torch.cumsum(keep_lens, dim=0)
+    
+    output = torch.full_like(x, -1)
+    
+    grid = (batch_size,)
+    BLOCK_SIZE = 1024
+    
+    prune_kv_indices_kernel[grid](
+        x,
+        output,
+        kv_indptr,
+        dest_offsets,
+        accept_length,
+        draft_token_steps,
+        BLOCK_SIZE=BLOCK_SIZE
+    )
+    
+    return output
+
+
+def prune_kv_indices_pytorch_reference(
+    x: torch.Tensor,
+    kv_indptr: torch.Tensor,
+    accept_length: torch.Tensor,
+    draft_token_steps: int
+) -> torch.Tensor:
+    """
+    Reference PyTorch implementation for prune_kv_indices.
+    """
+    batch_size = len(accept_length)
+    output = torch.full_like(x, -1)
+    
+    current_dest = 0
+    for i in range(batch_size):
+        src_start = kv_indptr[i]
+        src_end = kv_indptr[i+1]
+        
+        # Calculate keep length
+        seg_len = src_end - src_start
+        remove_len = draft_token_steps - accept_length[i]
+        keep_len = seg_len - remove_len
+        
+        if keep_len > 0:
+            output[current_dest:current_dest+keep_len] = x[src_start:src_start+keep_len]
+            current_dest += keep_len
+            
+    return output
 
 
 if __name__ == "__main__":
@@ -668,3 +795,101 @@ if __name__ == "__main__":
         print(f"Speedup: {torch_time/triton_time:.2f}x")
     else:
         print("CUDA not available, skipping Triton test")
+    
+    print()
+    
+    # Test case 4: Prune KV indices
+    print("=" * 60)
+    print("Test case 4: Prune KV indices")
+    print("=" * 60)
+    
+    if device == "cuda":
+        # Setup test data
+        batch_size = 80
+        draft_token_steps = 7
+        
+        # Create segments with length > draft_token_steps
+        seq_lens = torch.randint(draft_token_steps + 5, draft_token_steps + 20, (batch_size,), device=device)
+        kv_indptr = torch.cat([torch.tensor([0], device=device), torch.cumsum(seq_lens, dim=0)])
+        
+        total_size = kv_indptr[-1]
+        x = torch.arange(total_size, device=device)
+        
+        accept_length = torch.randint(0, draft_token_steps, (batch_size,), device=device)
+        
+        # PyTorch reference
+        x_ref = prune_kv_indices_pytorch_reference(x, kv_indptr, accept_length, draft_token_steps)
+        
+        # Triton implementation
+        x_triton = prune_kv_indices(x, kv_indptr, accept_length, draft_token_steps)
+        
+        # Verify
+        match = torch.equal(x_ref, x_triton)
+        print(f"Results match: {match}")
+        
+        if not match:
+            print("Mismatch found!")
+            diff = torch.where(x_ref != x_triton)[0]
+            if len(diff) > 0:
+                idx = diff[0]
+                print(f"First mismatch at index {idx}: Ref={x_ref[idx]}, Triton={x_triton[idx]}")
+        
+        # Benchmark
+        import time
+        
+        # Warmup
+        for _ in range(10):
+            prune_kv_indices_pytorch_reference(x, kv_indptr, accept_length, draft_token_steps)
+            prune_kv_indices(x, kv_indptr, accept_length, draft_token_steps)
+            
+        torch.cuda.synchronize()
+        start = time.time()
+        for _ in range(1000):
+            prune_kv_indices_pytorch_reference(x, kv_indptr, accept_length, draft_token_steps)
+        torch.cuda.synchronize()
+        torch_time = (time.time() - start) / 1000
+        
+        torch.cuda.synchronize()
+        start = time.time()
+        for _ in range(1000):
+            prune_kv_indices(x, kv_indptr, accept_length, draft_token_steps)
+        torch.cuda.synchronize()
+        triton_time = (time.time() - start) / 1000
+        
+        print(f"PyTorch time: {torch_time*1000:.3f} ms")
+        print(f"Triton time:  {triton_time*1000:.3f} ms")
+        print(f"Speedup: {torch_time/triton_time:.2f}x")
+    else:
+        print("CUDA not available, skipping Triton test")
+    
+    print()
+    
+    # Test case 5: Stress test compact_accepted_tokens
+    print("=" * 60)
+    print("Test case 5: Stress test compact_accepted_tokens")
+    print("=" * 60)
+    
+    if device == "cuda":
+        # Try a larger size that might break the single-block assumption
+        # 100 batches, 100 tokens each -> 10000 tokens total
+        # BLOCK_SIZE will be 16384
+        batch_size = 100
+        seq_len_per_batch = 100
+        total_tokens = batch_size * seq_len_per_batch
+        
+        print(f"Testing with total_tokens={total_tokens} (BLOCK_SIZE={triton.next_power_of_2(total_tokens)})")
+        
+        kv_indptr = torch.arange(0, total_tokens + 1, seq_len_per_batch, device=device, dtype=torch.int64)
+        x = torch.arange(total_tokens, device=device)
+        accept_length = torch.full((batch_size,), seq_len_per_batch // 2, device=device, dtype=torch.int64)
+        
+        try:
+            start = time.time()
+            compact_accepted_tokens(x.clone(), kv_indptr, accept_length)
+            torch.cuda.synchronize()
+            print(f"Execution time: {(time.time() - start)*1000:.3f} ms")
+            print("Success!")
+        except Exception as e:
+            print(f"Failed: {e}")
+    else:
+        print("CUDA not available")

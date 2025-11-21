@@ -96,6 +96,10 @@ class InferenceEngine:
                 # a sequence may be calculted one more step after completed
                 pass
             else:
+                neg_idx = len(sequence.out_cache_loc)
+                while neg_idx > 0 and sequence.out_cache_loc[neg_idx-1] < 0:
+                    neg_idx -= 1
+                sequence.out_cache_loc = sequence.out_cache_loc[:neg_idx]
                 self.scheduler.free_sequence_resources(sequence)
                 sequence.status = SequenceStatus.COMPLETED
                 # abort request may have req_id added after completed, so we need to check again
@@ -214,7 +218,6 @@ class InferenceEngine:
                         accept_length_raw = cur_batch.spec_info.accept_length+1
                         extra_length = draft_token_steps - accept_length
                         cum_extra_length = extra_length.cumsum(dim=0)
-                        cur_batch.forward_batch.kv_indptr[1:] -= cum_extra_length
                         cur_batch.position_ids -= extra_length
                         cur_batch.forward_batch.seq_lens -= extra_length
                         seq_mask_len = num_draft_tokens * (cur_batch.forward_batch.seq_lens + num_draft_tokens)
@@ -247,12 +250,23 @@ class InferenceEngine:
                             # first token is the root token
                             # TODO check it, we uncheck the root token here as this is known to be accepted
                             resolve_out_cache_loc = cur_batch.spec_info.out_cache_loc
-                            resolve_out_cache_loc[0] = -1
-                            resolve_out_cache_loc[accept_length.cumsum(dim=0)[:-1]] = -1
-                            resolve_out_cache_loc = move_neg1_to_tail(resolve_out_cache_loc)[:draft_token_steps-len(cur_batch)]
-                            cur_batch.forward_batch.out_cache_loc[:draft_token_steps-len(cur_batch)] = resolve_out_cache_loc
-                            cur_batch.forward_batch.out_cache_loc[:] = move_neg1_to_tail(cur_batch.forward_batch.out_cache_loc)
-                            cur_batch.forward_batch.out_cache_loc = cur_batch.forward_batch.out_cache_loc[:len(cur_batch)*num_draft_tokens]
+                            # resolve_out_cache_loc[0] = -1
+                            # resolve_out_cache_loc[accept_length.cumsum(dim=0)[:-1]] = -1
+                            # resolve_out_cache_loc = move_neg1_to_tail(resolve_out_cache_loc)[:draft_token_steps-len(cur_batch)]
+                            kv_indptr = cur_batch.forward_batch.kv_indptr[1:]
+                            kv_indices = cur_batch.forward_batch.kv_indices
+                            cum_accept_length = torch.cat([torch.tensor([0], device=device_id), accept_length.cumsum(dim=0)], dim=0)
+                            for i in range(len(cur_batch)):
+                                L = accept_length[i] - 1
+                                dst_end = kv_indptr[i]
+                                dst_start = dst_end - L
+                                kv_indices[dst_start:dst_end] = resolve_out_cache_loc[cum_accept_length[i]+1:cum_accept_length[i+1]]
+                            kv_indices[:] = move_neg1_to_tail(kv_indices)
+
+                            # cur_batch.forward_batch.kv_indices[:draft_token_steps-len(cur_batch)] = resolve_out_cache_loc
+                            # cur_batch.forward_batch.kv_indices[:] = move_neg1_to_tail(cur_batch.forward_batch.kv_indices)
+                            # cur_batch.forward_batch.kv_indices = cur_batch.forward_batch.kv_indices[:len(cur_batch)*num_draft_tokens]
+                        cur_batch.forward_batch.kv_indptr[1:] -= cum_extra_length
 
                         x = cur_batch.forward_batch_spec.position_ids_extend
                         b = torch.arange(0, (len(cur_batch)+1)*draft_token_steps, draft_token_steps, device=device_id)
@@ -260,8 +274,9 @@ class InferenceEngine:
                         x = cur_batch.forward_batch_spec.out_cache_loc
                         compact_accepted_tokens(x, b, accept_length, fill_value=0)
                         if cur_batch.spec_info.verified_id.shape[0] != cur_batch.forward_batch_spec.position_ids_extend.shape[0]:
-                            cur_batch.forward_batch_spec.position_ids_extend = cur_batch.forward_batch_spec.position_ids_extend[:len(cur_batch)]
-                            cur_batch.forward_batch_spec.out_cache_loc = cur_batch.forward_batch_spec.out_cache_loc[:len(cur_batch)]
+                            token_len = cur_batch.spec_info.verified_id.shape[0]
+                            cur_batch.forward_batch_spec.position_ids_extend = cur_batch.forward_batch_spec.position_ids_extend[:token_len]
+                            cur_batch.forward_batch_spec.out_cache_loc = cur_batch.forward_batch_spec.out_cache_loc[:token_len]
 
 
                         # cur_batch.spec_info.verified_id = torch.cat([sequence.verified_id for sequence in cur_batch], dim=0)
@@ -282,9 +297,9 @@ class InferenceEngine:
                         next_token_ids = model_output.next_token_ids
                         # assert fake_tokenid_indices[:-1]-fake_tokenid_indices[1:] == -1
                         # must !!!!!!!!!!
-                        future_token_out_buffer = future_tokenid_bufs[
-                            fake_tokenid_indices[0]:fake_tokenid_indices[-1]+1].view(len(cur_batch), -1)
-                        split_lastdim_async(next_token_ids, update_accept_length, future_token_out_buffer)
+                        # future_token_out_buffer = future_tokenid_bufs[
+                        #     fake_tokenid_indices[0]:fake_tokenid_indices[-1]+1].view(len(cur_batch), -1)
+                        # split_lastdim_async(next_token_ids, update_accept_length, future_token_out_buffer)
 
                         # if cur_batch.forward_batch.is_decode():
                         #     # cur_batch.forward_batch.out_cache_loc
@@ -298,7 +313,8 @@ class InferenceEngine:
                         for idx, seq in enumerate(cur_batch):
                             seq.accept_length = raw_accept_length[idx:idx+1]
                             if cur_batch.forward_batch.is_decode():
-                                seq.verified_id = future_token_out_buffer[idx:idx+1]
+                                # seq.verified_id = future_token_out_buffer[idx:idx+1]
+                                seq.verified_id = next_token_ids[cum_update_accept_length[idx]: cum_update_accept_length[idx + 1]]
                                 seq.hidden_states = model_output.spec_info.hidden_states[cum_update_accept_length[idx]: cum_update_accept_length[idx + 1]]
                                 seq.out_cache_loc_lazy = cur_batch.forward_batch.out_cache_loc.view(len(cur_batch), num_draft_tokens)[idx]
                             else:

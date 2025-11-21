@@ -124,7 +124,7 @@ class ScheduleBatch:
             self.spec_info.hash = g_hash
             self.spec_info.verified_id = torch.cat([seq.verified_id for seq in self.sequences], dim=-1)
             self.spec_info.accept_length = torch.cat([seq.accept_length for seq in self.sequences], dim=-1)
-            self.spec_info.hidden_states = torch.cat([seq.hidden_states for seq in self.sequences])
+            self.spec_info.hidden_states = torch.cat([seq.hidden_states for seq in self.sequences], dim=0)
             if self.sequences[0].out_cache_loc_lazy is not None:
                 self.spec_info.out_cache_loc = torch.cat([seq.out_cache_loc_lazy for seq in self.sequences])
             # self.spec_info.logits = torch.cat([seq.logits for seq in self.sequences])
@@ -232,7 +232,7 @@ class ScheduleBatch:
             position_ids_list.extend(list(range(start_pos, start_pos+cur_seq_lens_list[-1])))
             prefix_lens_list.append(start_pos)
             if self.forward_batch_spec is not None and self.forward_batch.forward_mode == ForwardMode.DECODE:
-                if is_overlap:
+                if is_overlap and sequence.marked is False:
                     true_lens = len(sequence.tokens) - len(sequence.new_tokens)
                 else:
                     true_lens = len(sequence.tokens) - 1
