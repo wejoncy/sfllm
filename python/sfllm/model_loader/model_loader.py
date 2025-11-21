@@ -1,6 +1,7 @@
 from contextlib import ContextDecorator
 import glob
 import json
+import os
 from pathlib import Path
 import safetensors
 import torch
@@ -74,8 +75,9 @@ def _load_check_point(model_name_or_path, disable_mmap: bool = False):
         for i in tqdm(range(len(checkpoint_files)), desc="loading weights"):
             if not checkpoint_files[i].endswith("safetensors"):
                 weights = torch.load(checkpoint_files[i], map_location="cuda", weights_only=True)
+                yield weights
             else:
-                if disable_mmap:
+                if disable_mmap:# or os.name == "nt":
                     # weights = safetensors.torch.load_file(checkpoint_files[i], device="cpu")
                     # yield weights
                     with open(checkpoint_files[i], "rb") as f:

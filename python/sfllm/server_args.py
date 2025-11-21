@@ -29,6 +29,9 @@ class ServerArgs:
     log_level: str = "info"
     enable_debug: bool = False
 
+    # debug options
+    enable_debug: bool = False
+
     @staticmethod
     def add_cli_args(parser: argparse.ArgumentParser):
         # Model and tokenizer
@@ -43,7 +46,7 @@ class ServerArgs:
             "--dtype",
             type=str,
             default=ServerArgs.dtype,
-            choices=["float16", "bfloat16", "float32"],
+            choices=["half", "float16", "bfloat16", "float32"],
             help="The data type for model weights and computations.",
         )
         parser.add_argument(
@@ -113,7 +116,7 @@ class ServerArgs:
         # speculative decoding
         parser.add_argument(
             "--speculative-algorithm",
-            type=str,
+            type=str.lower,
             default=ServerArgs.speculative_algorithm,
             choices=[None, "eagle3"],
             help="The speculative decoding algorithm to use.",
@@ -157,10 +160,9 @@ class ServerArgs:
         import platform
         if platform.system() == "Windows":
             self.mem_fraction = min(self.mem_fraction, 0.56)
-            print("Warning: On Windows, setting mem_fraction to {self.mem_fraction} for better stability.")
-        self.rl_on_policy_target = None
-        if self.speculative_algorithm is not None:
-            self.disable_overlap = True
+            print(f"Warning: On Windows, setting mem_fraction to {self.mem_fraction} for better stability.")
+        # if self.speculative_algorithm is not None:
+        #     self.disable_overlap = True
         set_global_server_args_for_scheduler(self)
 
 # NOTE: This is a global variable to hold the server args for scheduler.

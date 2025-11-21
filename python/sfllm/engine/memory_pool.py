@@ -43,10 +43,9 @@ class BlockMemoryManager:
         self.num_blocks = num_blocks
         self.num_blocks, self.block_shape = self.get_num_blocks(server_args)
         self.blocks = [BlockMemory(i) for i in range(self.num_blocks)]
-        self.free_block_ids = deque(range(self.num_blocks))
-        self.free_block_ids.popleft()  # reserve block 0
+        self.free_block_ids = list(range(1, self.num_blocks))
         self.release_block_ids = []
-        self.used_block_ids = set([0])
+        self.used_block_ids = set([])
         self.kv_buffers = []
         self.create_physical_memory_pool(server_args)
 
@@ -98,8 +97,8 @@ class BlockMemoryManager:
     
     def _free_block_by_id(self, block_id: int):
         """Free a block of memory by block ID."""
-        block = self.blocks[block_id]
-        block.free()
+        # block = self.blocks[block_id]
+        # block.free()
         self.used_block_ids.remove(block_id)
         self.release_block_ids.append(block_id)
 
@@ -118,22 +117,15 @@ class BlockMemoryManager:
         return len(self.free_block_ids) >= token_len
 
     def persist_alloc_block_from_rear(self, num_tokens: int) -> List[int]:
-        popped = [self.free_block_ids.pop() for _ in range(min(num_tokens, len(self.free_block_ids)))]
-        popped.reverse()
+        popped = self.free_block_ids[-num_tokens:]
+        self.free_block_ids = self.free_block_ids[:-num_tokens]
         return popped
 
-    def alloc_block(self, token_ids: List[int], hashv: int) -> List[int]:
+    def alloc_block(self, token_nums: int) -> List[int]:
         """Allocate a block of memory."""
-        block_ids = []
-        for token_id in token_ids:
-            block_ids.append(self.free_block_ids.popleft())
-            self._alloc_block_by_id(block_ids[-1], token_id, hashv)
-
-        return block_ids
-
-    def borrow_disposable_block(self, token_nums: int) -> List[int]:
-        """Borrow disposable blocks of memory without tracking."""
-        block_ids = list(itertools.islice(self.free_block_ids, token_nums))
+        block_ids = self.free_block_ids[:token_nums]
+        self.free_block_ids = self.free_block_ids[token_nums:]
+        self.used_block_ids.update(block_ids)
         return block_ids
 
     def free_block(self, block_ids: List[int], force_sort: bool = False):
@@ -151,46 +143,3 @@ class BlockMemoryManager:
         """Get the memory usage percentage."""
         used_blocks = len(self.used_block_ids)
         return (used_blocks / self.num_blocks) * 100.0
-
-# for draft model like eagle2/eagle3, those draft model has only one or two layers
-# but we expect they have the same kv shape as the main model
-class SpecMemoryManager:
-    """A simple shadow memory manager."""
-    def __init__(self, mem_manager: BlockMemoryManager, draft_config):
-        self.mem_manager = mem_manager
-        self.dtype = mem_manager.dtype
-        self.num_blocks = 1024
-        self.blocks = [BlockMemory(i) for i in range(self.num_blocks)]
-        self.free_block_ids = deque(range(self.num_blocks))
-        self.free_block_ids.popleft()  # reserve block 0
-        self.release_block_ids = []
-        self.used_block_ids = set([0])
-        self.kv_buffers = []
-        self.create_physical_memory_pool(draft_config)
-
-    def create_physical_memory_pool(self, draft_config):
-        for _ in range(draft_config.num_hidden_layers):
-            self.kv_buffers.append(
-                (
-                    torch.zeros(
-                        self.num_blocks, *self.block_shape, dtype=self.dtype
-                    ).cuda(),
-                    torch.zeros(self.num_blocks, *self.block_shape, dtype=self.dtype).cuda(),
-                )
-            )
-
-    def alloc_block(self, token_ids: List[int], block_ids: List[int]):
-        """Allocate a shadow block of memory."""
-        for token_id, block_id in zip(token_ids, block_ids):
-            if token_id not in self.tokenid2blockids:
-                self.tokenid2blockids[token_id] = []
-            self.tokenid2blockids[token_id].append(block_id)
-
-    def free_block(self, token_ids: List[int]) -> List[int]:
-        """Free a shadow block of memory."""
-        freed_block_ids = []
-        for token_id in token_ids:
-            if token_id in self.tokenid2blockids:
-                freed_block_ids.extend(self.tokenid2blockids[token_id])
-                del self.tokenid2blockids[token_id]
-        return freed_block_ids

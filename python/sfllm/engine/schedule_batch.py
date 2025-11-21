@@ -6,6 +6,7 @@ from typing import List, Optional, Union
 from contextlib import contextmanager
 
 from sfllm.engine.forward_params import ForwardBatch,ForwardMode
+from sfllm.engine.sequence import RequestSequence
 from sfllm.utils.nutils import DEFAULT_CUDA_GRAPH_BATCH_SIZES
 from sfllm.layers.sampler import SamplingBatchInfo
 from sfllm.server_args import get_global_server_args
@@ -13,15 +14,15 @@ from sfllm.spec_decoding.spec_common import SpecInput
 
 class ScheduleBatch:
     def __init__(self, sequences, mem_pool, draft_mem_pool=None):
-        self.sequences = sequences
+        self.sequences:RequestSequence = sequences
         self.device = torch.device("cuda:0")
         self.forward_batch = ForwardBatch(mem_pool)
         self.forward_batch_spec = ForwardBatch(draft_mem_pool) if draft_mem_pool is not None else None
-        self.fake_ids = None
-        self.input_ids = None
-        self.position_ids = None
-        self.copy_done = None
-        self.next_token_ids = None
+        self.fake_ids:torch.Tensor = None
+        self.input_ids:torch.Tensor = None
+        self.position_ids:torch.Tensor = None
+        self.copy_done:torch.Event = None
+        self.next_token_ids:torch.Tensor = None
         self.spec_info: SpecInput = None
 
 
@@ -44,6 +45,7 @@ class ScheduleBatch:
         self.sequences = []
     
     def merge(self, other:'ScheduleBatch'):
+        self.spec_info = other.spec_info
         self.sequences = list(
             {s.sequence_id: s for s in self.sequences + other.sequences}.values()
         )
@@ -56,16 +58,22 @@ class ScheduleBatch:
         # output_ids = self.next_token_ids[indices_]
         # self.input_ids = output_ids
 
-    def add_placeholder_token(self, future_limit: int):
+    def add_placeholder_token(self, future_limit: int, future_token_stride: int = 1):
         for seq in self.sequences:
-            place_id = -(seq.sequence_id % future_limit)
-            seq.new_tokens = [place_id]  # use negative id as placeholder for future token position
-            seq.tokens.append(place_id)
+            place_id = -((seq.sequence_id*future_token_stride) % future_limit)
+            seq.new_tokens = list(reversed(range(place_id, place_id+future_token_stride))) # use negative id as placeholder for future token position
+            seq.tokens.extend(seq.new_tokens)
 
-    def fake_tokenid_indices(self, future_limit: int):
-        fake_ids = [(i.sequence_id % future_limit) for i in self.sequences]
-        fake_ids = torch.tensor(fake_ids, dtype=torch.int64, pin_memory=True).to(self.device, non_blocking=True)
-        self.fake_ids = fake_ids
+    def fake_tokenid_indices(self, future_limit: int, future_token_stride: int = 1):
+        starts = torch.tensor(
+            [(seq.sequence_id * future_token_stride) % future_limit for seq in self.sequences],
+            dtype=torch.int64, pin_memory=True)#.to("cpu", non_blocking=True)
+        offsets = torch.arange(-(future_token_stride - 1), 1, dtype=torch.int64, device="cpu")
+        result = (starts[:, None] + offsets).view(-1)
+
+        # fake_ids = [range((seq.sequence_id*future_token_stride) % future_limit) for seq in self.sequences]
+        # fake_ids = torch.tensor(fake_ids, dtype=torch.int64, pin_memory=True).to(self.device, non_blocking=True)
+        self.fake_ids = result
         return self.fake_ids
 
     @contextmanager
@@ -116,18 +124,18 @@ class ScheduleBatch:
             self.spec_info.hash = g_hash
             self.spec_info.verified_id = torch.cat([seq.verified_id for seq in self.sequences], dim=-1)
             self.spec_info.accept_length = torch.cat([seq.accept_length for seq in self.sequences], dim=-1)
-            self.spec_info.accept_length_cpu = self.spec_info.accept_length.cpu()
-            self.spec_info.hidden_states = torch.cat([seq.hidden_states for seq in self.sequences])
-            self.spec_info.logits = torch.cat([seq.logits for seq in self.sequences])
+            self.spec_info.hidden_states = torch.cat([seq.hidden_states for seq in self.sequences], dim=0)
+            if self.sequences[0].out_cache_loc_lazy is not None:
+                self.spec_info.out_cache_loc = torch.cat([seq.out_cache_loc_lazy for seq in self.sequences])
+            # self.spec_info.logits = torch.cat([seq.logits for seq in self.sequences])
 
         # prepare position_ids for draft model extend for last verified tokens
         positions_outs = []
         batch_size = len(self.sequences)
         server_args = get_global_server_args()
-        update_accept_length_cpu = self.spec_info.accept_length_cpu + 1
         for i in range(len(position_ids_list)):
             positions_outs.append(range(
-                position_ids_list[i] - update_accept_length_cpu[i],
+                position_ids_list[i] - len(self.sequences[i].new_tokens),
                 position_ids_list[i]
             ))
         position_ids_list = list(itertools.chain.from_iterable(positions_outs))
@@ -137,12 +145,14 @@ class ScheduleBatch:
         spec_kv_indices_mtd_list = []
         device = self.device
         for sequence in self.sequences:
-            total_draft_len = sequence.accept_length_cpu[0] + 1
+            total_draft_len = len(sequence.new_tokens)
             spec_out_cache_loc_list.extend(sequence.out_cache_loc_spec[-total_draft_len:])
-            total_draft_len_past = 0
-            if total_draft_len_past == 0:
-                total_draft_len_past = -len(sequence.out_cache_loc_spec)
+            total_draft_len_past = -len(sequence.out_cache_loc_spec)
+            # the first decode step, accept_length_cpu is -1
+            # spec_kv_indices_list.extend(sequence.out_cache_loc_spec[:-total_draft_len]) # this is correct, right?
             spec_kv_indices_list.extend(sequence.out_cache_loc_spec[:-total_draft_len_past]) # actually, it's for extend. it's weird here.
+            # extend attention use the current qk and past kv cache, so need to include the last verified token indeed
+            # no!!!, self attention use the current qk and and all kv cache(including current qk)
             spec_kv_indices_mtd_list.extend(sequence.out_cache_loc_spec)
 
         padded_token = self.forward_batch.padded_token
@@ -164,8 +174,9 @@ class ScheduleBatch:
         self.forward_batch_spec.padded_token = padded_token
         self.forward_batch_spec.out_cache_loc = out_cache_loc_spec
         self.forward_batch_spec.qo_indptr = self.forward_batch.kv_indptr.clone()
-        self.forward_batch_spec.qo_indptr[1:batch_size + 1] = (1 + self.spec_info.accept_length).cumsum(dim=0, dtype=torch.int32)
-        self.forward_batch_spec.max_extend_len = max(self.spec_info.accept_length_cpu.tolist())+1
+        accept_length = torch.maximum(self.spec_info.accept_length, torch.zeros_like(self.spec_info.accept_length))+ 1
+        self.forward_batch_spec.qo_indptr[1:batch_size + 1] = (accept_length).cumsum(dim=0, dtype=torch.int32)
+        self.forward_batch_spec.max_extend_len = max([len(seq.new_tokens) for seq in self.sequences])
         self.forward_batch_spec.position_ids_extend = torch.tensor(
             position_ids_list, dtype=torch.long, pin_memory=True).to(self.device, non_blocking=True)
 
@@ -185,7 +196,7 @@ class ScheduleBatch:
         minux_const = torch.arange(1, len(self.sequences)+1, dtype=torch.int32, device=device)
         forward_batch_target.kv_indptr[1:].sub_(minux_const)
 
-    def prepare_inputs(self):
+    def prepare_inputs(self, is_overlap:bool=False):
         cur_seq_lens_list = [0]
         input_ids_list = []
         position_ids_list = []
@@ -221,9 +232,13 @@ class ScheduleBatch:
             position_ids_list.extend(list(range(start_pos, start_pos+cur_seq_lens_list[-1])))
             prefix_lens_list.append(start_pos)
             if self.forward_batch_spec is not None and self.forward_batch.forward_mode == ForwardMode.DECODE:
-                # target model used for verify, speculative_num_draft_tokens cache loc
-                out_cache_loc_list.extend(sequence.out_cache_loc[len(sequence.tokens)-1:])
-                kv_indices_list.extend(sequence.out_cache_loc[:len(sequence.tokens)-1])
+                if is_overlap and sequence.marked is False:
+                    true_lens = len(sequence.tokens) - len(sequence.new_tokens)
+                else:
+                    true_lens = len(sequence.tokens) - 1
+                # target model used for verify, speculative_num_draft_tokens cache loc, different from normal decode
+                out_cache_loc_list.extend(sequence.out_cache_loc[true_lens:])
+                kv_indices_list.extend(sequence.out_cache_loc[:true_lens])
             else:
                 out_cache_loc_list.extend(sequence.out_cache_loc[-len(sequence.new_tokens):])
                 kv_indices_list.extend(sequence.out_cache_loc)

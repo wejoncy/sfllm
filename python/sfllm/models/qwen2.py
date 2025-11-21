@@ -236,18 +236,8 @@ class Qwen2Model(nn.Module):
             ),
         )
 
-        norm_kwargs = (
-            dict(
-                weight_dtype=torch.float32,
-                cast_x_before_out_mul=True,
-                override_orig_dtype=torch.float32,
-                fp32_residual=True,
-            )
-            if get_global_server_args().rl_on_policy_target is not None
-            else {}
-        )
         self.norm = RMSNorm(
-            config.hidden_size, eps=config.rms_norm_eps, **norm_kwargs
+            config.hidden_size, eps=config.rms_norm_eps, 
         )
 
         # For EAGLE3 support
