@@ -621,6 +621,221 @@ def prune_kv_indices_pytorch_reference(
     kv_indices[:] = move_neg1_to_tail(kv_indices)
     return kv_indices
 
+
+@triton.jit
+def update_eagle_inputs_kernel(
+    # Dest pointers
+    verified_id_ptr, spec_pos_ptr, spec_loc_ptr, 
+    spec_kv_indptr_ptr, spec_kv_indices_ptr, spec_qo_indptr_ptr, 
+    hidden_states_ptr,
+    pos_ids_ptr, spec_kv_indices_mtd_ptr, accept_len_ptr, input_ids_ptr,
+    qo_indptr_ptr, kv_indptr_ptr, kv_indices_ptr, out_cache_loc_ptr, mask_indptr_ptr, seq_lens_ptr,
+    
+    # Src pointers
+    src_verified_id_ptr, src_spec_pos_ptr, src_spec_loc_ptr, 
+    src_spec_kv_indptr_ptr, src_spec_kv_indices_ptr, src_spec_qo_indptr_ptr, 
+    src_hidden_states_ptr,
+    src_pos_ids_ptr, src_spec_kv_indices_mtd_ptr, src_accept_len_ptr, src_input_ids_ptr,
+    src_qo_indptr_ptr, src_kv_indptr_ptr, src_kv_indices_ptr, src_out_cache_loc_ptr, src_mask_indptr_ptr, src_seq_lens_ptr,
+    
+    # Sizes
+    token_nums, pad_token_nums, batch_size, 
+    ind_size, ind_size_mtd, ind_size_verify,
+    draft_tokens_expand, hidden_size,
+    
+    BLOCK_SIZE: tl.constexpr
+):
+    pid = tl.program_id(0)
+    grid_size = tl.num_programs(0)
+    
+    # Block 0 handles small metadata copies
+    if pid == 0:
+        # 1. verified_id: Copy [0, token_nums), Fill 0 [token_nums, pad_token_nums)
+        for i in range(0, pad_token_nums, BLOCK_SIZE):
+            offsets = i + tl.arange(0, BLOCK_SIZE)
+            mask = offsets < pad_token_nums
+            is_copy = offsets < token_nums
+            val = tl.load(src_verified_id_ptr + offsets, mask=mask & is_copy, other=0)
+            tl.store(verified_id_ptr + offsets, val, mask=mask)
+            
+        # 2. spec_position_ids_extend
+        for i in range(0, pad_token_nums, BLOCK_SIZE):
+            offsets = i + tl.arange(0, BLOCK_SIZE)
+            mask = offsets < pad_token_nums
+            is_copy = offsets < token_nums
+            val = tl.load(src_spec_pos_ptr + offsets, mask=mask & is_copy, other=0)
+            tl.store(spec_pos_ptr + offsets, val, mask=mask)
+            
+        # 3. spec_out_cache_loc
+        for i in range(0, pad_token_nums, BLOCK_SIZE):
+            offsets = i + tl.arange(0, BLOCK_SIZE)
+            mask = offsets < pad_token_nums
+            is_copy = offsets < token_nums
+            val = tl.load(src_spec_loc_ptr + offsets, mask=mask & is_copy, other=0)
+            tl.store(spec_loc_ptr + offsets, val, mask=mask)
+            
+        # 4. spec_kv_indptr (batch_size + 1)
+        bs_1 = batch_size + 1
+        for i in range(0, bs_1, BLOCK_SIZE):
+            offsets = i + tl.arange(0, BLOCK_SIZE)
+            mask = offsets < bs_1
+            val = tl.load(src_spec_kv_indptr_ptr + offsets, mask=mask)
+            tl.store(spec_kv_indptr_ptr + offsets, val, mask=mask)
+            
+        # 5. spec_qo_indptr
+        for i in range(0, bs_1, BLOCK_SIZE):
+            offsets = i + tl.arange(0, BLOCK_SIZE)
+            mask = offsets < bs_1
+            val = tl.load(src_spec_qo_indptr_ptr + offsets, mask=mask)
+            tl.store(spec_qo_indptr_ptr + offsets, val, mask=mask)
+            
+        # 6. position_ids (batch_size)
+        for i in range(0, batch_size, BLOCK_SIZE):
+            offsets = i + tl.arange(0, BLOCK_SIZE)
+            mask = offsets < batch_size
+            val = tl.load(src_pos_ids_ptr + offsets, mask=mask)
+            tl.store(pos_ids_ptr + offsets, val, mask=mask)
+            
+        # 7. accept_length (batch_size)
+        for i in range(0, batch_size, BLOCK_SIZE):
+            offsets = i + tl.arange(0, BLOCK_SIZE)
+            mask = offsets < batch_size
+            val = tl.load(src_accept_len_ptr + offsets, mask=mask)
+            tl.store(accept_len_ptr + offsets, val, mask=mask)
+            
+        # 8. input_ids (batch_size)
+        for i in range(0, batch_size, BLOCK_SIZE):
+            offsets = i + tl.arange(0, BLOCK_SIZE)
+            mask = offsets < batch_size
+            val = tl.load(src_input_ids_ptr + offsets, mask=mask)
+            tl.store(input_ids_ptr + offsets, val, mask=mask)
+            
+        # 9. qo_indptr (batch_size + 1)
+        for i in range(0, bs_1, BLOCK_SIZE):
+            offsets = i + tl.arange(0, BLOCK_SIZE)
+            mask = offsets < bs_1
+            val = tl.load(src_qo_indptr_ptr + offsets, mask=mask)
+            tl.store(qo_indptr_ptr + offsets, val, mask=mask)
+            
+        # 10. kv_indptr (batch_size + 1)
+        for i in range(0, bs_1, BLOCK_SIZE):
+            offsets = i + tl.arange(0, BLOCK_SIZE)
+            mask = offsets < bs_1
+            val = tl.load(src_kv_indptr_ptr + offsets, mask=mask)
+            tl.store(kv_indptr_ptr + offsets, val, mask=mask)
+            
+        # 11. out_cache_loc (batch_size * draft_tokens_expand)
+        ocl_size = batch_size * draft_tokens_expand
+        for i in range(0, ocl_size, BLOCK_SIZE):
+            offsets = i + tl.arange(0, BLOCK_SIZE)
+            mask = offsets < ocl_size
+            val = tl.load(src_out_cache_loc_ptr + offsets, mask=mask)
+            tl.store(out_cache_loc_ptr + offsets, val, mask=mask)
+            
+        # 12. mask_indptr (batch_size + 1)
+        for i in range(0, bs_1, BLOCK_SIZE):
+            offsets = i + tl.arange(0, BLOCK_SIZE)
+            mask = offsets < bs_1
+            val = tl.load(src_mask_indptr_ptr + offsets, mask=mask)
+            tl.store(mask_indptr_ptr + offsets, val, mask=mask)
+            
+        # 13. seq_lens (batch_size)
+        for i in range(0, batch_size, BLOCK_SIZE):
+            offsets = i + tl.arange(0, BLOCK_SIZE)
+            mask = offsets < batch_size
+            val = tl.load(src_seq_lens_ptr + offsets, mask=mask)
+            tl.store(seq_lens_ptr + offsets, val, mask=mask)
+
+    # Large tasks distributed among other blocks
+    else:
+        # 4 large tasks
+        # 0: spec_kv_indices
+        # 1: spec_kv_indices_mtd
+        # 2: kv_indices
+        # 3: hidden_states
+        
+        # Adjust pid to be 0-based for large tasks
+        worker_id = pid - 1
+        num_workers = grid_size - 1
+        
+        # Interleaved assignment
+        # Task 0
+        for i in range(worker_id * BLOCK_SIZE, ind_size, num_workers * BLOCK_SIZE):
+            offsets = i + tl.arange(0, BLOCK_SIZE)
+            mask = offsets < ind_size
+            val = tl.load(src_spec_kv_indices_ptr + offsets, mask=mask)
+            tl.store(spec_kv_indices_ptr + offsets, val, mask=mask)
+            
+        # Task 1
+        for i in range(worker_id * BLOCK_SIZE, ind_size_mtd, num_workers * BLOCK_SIZE):
+            offsets = i + tl.arange(0, BLOCK_SIZE)
+            mask = offsets < ind_size_mtd
+            val = tl.load(src_spec_kv_indices_mtd_ptr + offsets, mask=mask)
+            tl.store(spec_kv_indices_mtd_ptr + offsets, val, mask=mask)
+            
+        # Task 2
+        for i in range(worker_id * BLOCK_SIZE, ind_size_verify, num_workers * BLOCK_SIZE):
+            offsets = i + tl.arange(0, BLOCK_SIZE)
+            mask = offsets < ind_size_verify
+            val = tl.load(src_kv_indices_ptr + offsets, mask=mask)
+            tl.store(kv_indices_ptr + offsets, val, mask=mask)
+            
+        # Task 3: Hidden States
+        hs_total = token_nums * hidden_size
+        for i in range(worker_id * BLOCK_SIZE, hs_total, num_workers * BLOCK_SIZE):
+            offsets = i + tl.arange(0, BLOCK_SIZE)
+            mask = offsets < hs_total
+            val = tl.load(src_hidden_states_ptr + offsets, mask=mask)
+            tl.store(hidden_states_ptr + offsets, val, mask=mask)
+
+
+def update_eagle_inputs(
+    # Dest tensors
+    verified_id, spec_pos, spec_loc, 
+    spec_kv_indptr, spec_kv_indices, spec_qo_indptr, 
+    hidden_states,
+    pos_ids, spec_kv_indices_mtd, accept_len, input_ids,
+    qo_indptr, kv_indptr, kv_indices, out_cache_loc, mask_indptr, seq_lens,
+    
+    # Src tensors
+    src_verified_id, src_spec_pos, src_spec_loc, 
+    src_spec_kv_indptr, src_spec_kv_indices, src_spec_qo_indptr, 
+    src_hidden_states,
+    src_pos_ids, src_spec_kv_indices_mtd, src_accept_len, src_input_ids,
+    src_qo_indptr, src_kv_indptr, src_kv_indices, src_out_cache_loc, src_mask_indptr, src_seq_lens,
+    
+    # Sizes
+    token_nums, pad_token_nums, batch_size, 
+    ind_size, ind_size_mtd, ind_size_verify,
+    draft_tokens_expand, hidden_size
+):
+    grid = (128, )
+    BLOCK_SIZE = 256
+    
+    update_eagle_inputs_kernel[grid](
+        # Dest pointers
+        verified_id, spec_pos, spec_loc, 
+        spec_kv_indptr, spec_kv_indices, spec_qo_indptr, 
+        hidden_states,
+        pos_ids, spec_kv_indices_mtd, accept_len, input_ids,
+        qo_indptr, kv_indptr, kv_indices, out_cache_loc, mask_indptr, seq_lens,
+        
+        # Src pointers
+        src_verified_id, src_spec_pos, src_spec_loc, 
+        src_spec_kv_indptr, src_spec_kv_indices, src_spec_qo_indptr, 
+        src_hidden_states,
+        src_pos_ids, src_spec_kv_indices_mtd, src_accept_len, src_input_ids,
+        src_qo_indptr, src_kv_indptr, src_kv_indices, src_out_cache_loc, src_mask_indptr, src_seq_lens,
+        
+        # Sizes
+        token_nums, pad_token_nums, batch_size, 
+        ind_size, ind_size_mtd, ind_size_verify,
+        draft_tokens_expand, hidden_size,
+        
+        BLOCK_SIZE=BLOCK_SIZE
+    )
+
+
 if __name__ == "__main__":
     import time
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -686,3 +901,74 @@ if __name__ == "__main__":
     
     run_test("Prune KV", prune_kv_indices_pytorch_reference, prune_kv_indices, 
              [future, kv_indices, kv_indptr, acc_len], inplace_idx=1)
+
+    # 5. Update Eagle Inputs
+    B = 32
+    H = 64
+    token_nums = 20
+    pad_token_nums = 24
+    draft_tokens_expand = 6
+    batch_size = B
+    hidden_size = H
+    
+    verified_id = torch.zeros(pad_token_nums, dtype=torch.int64, device=device)
+    spec_pos = torch.zeros(pad_token_nums, dtype=torch.int64, device=device)
+    spec_loc = torch.zeros(pad_token_nums, dtype=torch.int64, device=device)
+    spec_kv_indptr = torch.zeros(B+1, dtype=torch.int32, device=device)
+    ind_size = B * draft_tokens_expand 
+    spec_kv_indices = torch.zeros(ind_size, dtype=torch.int64, device=device)
+    spec_qo_indptr = torch.zeros(B+1, dtype=torch.int32, device=device)
+    
+    hidden_states = torch.zeros((token_nums, H), dtype=torch.float16, device=device)
+    
+    pos_ids = torch.zeros(B, dtype=torch.int64, device=device)
+    ind_size_mtd = B
+    spec_kv_indices_mtd = torch.zeros(ind_size_mtd, dtype=torch.int64, device=device)
+    accept_len = torch.zeros(B, dtype=torch.int64, device=device)
+    input_ids = torch.zeros(B, dtype=torch.int64, device=device)
+    qo_indptr = torch.zeros(B+1, dtype=torch.int32, device=device)
+    kv_indptr = torch.zeros(B+1, dtype=torch.int32, device=device)
+    ind_size_verify = B * 10
+    kv_indices = torch.zeros(ind_size_verify, dtype=torch.int64, device=device)
+    out_cache_loc = torch.zeros(B * draft_tokens_expand, dtype=torch.int64, device=device)
+    mask_indptr = torch.zeros(B+1, dtype=torch.int32, device=device)
+    seq_lens = torch.zeros(B, dtype=torch.int32, device=device)
+    
+    # Src
+    src_verified_id = torch.randint(0, 100, (pad_token_nums,), dtype=torch.int64, device=device)
+    src_spec_pos = torch.randint(0, 100, (pad_token_nums,), dtype=torch.int64, device=device)
+    src_spec_loc = torch.randint(0, 100, (pad_token_nums,), dtype=torch.int64, device=device)
+    src_spec_kv_indptr = torch.randint(0, 100, (B+1,), dtype=torch.int32, device=device)
+    src_spec_kv_indices = torch.randint(0, 100, (ind_size,), dtype=torch.int64, device=device)
+    src_spec_qo_indptr = torch.randint(0, 100, (B+1,), dtype=torch.int32, device=device)
+    src_hidden_states = torch.randn((token_nums, H), dtype=torch.float16, device=device)
+    src_pos_ids = torch.randint(0, 100, (B,), dtype=torch.int64, device=device)
+    src_spec_kv_indices_mtd = torch.randint(0, 100, (ind_size_mtd,), dtype=torch.int64, device=device)
+    src_accept_len = torch.randint(0, 100, (B,), dtype=torch.int64, device=device)
+    src_input_ids = torch.randint(0, 100, (B,), dtype=torch.int64, device=device)
+    src_qo_indptr = torch.randint(0, 100, (B+1,), dtype=torch.int32, device=device)
+    src_kv_indptr = torch.randint(0, 100, (B+1,), dtype=torch.int32, device=device)
+    src_kv_indices = torch.randint(0, 100, (ind_size_verify,), dtype=torch.int64, device=device)
+    src_out_cache_loc = torch.randint(0, 100, (B * draft_tokens_expand,), dtype=torch.int64, device=device)
+    src_mask_indptr = torch.randint(0, 100, (B+1,), dtype=torch.int32, device=device)
+    src_seq_lens = torch.randint(0, 100, (B,), dtype=torch.int32, device=device)
+
+    print("\n" + "="*40 + "\nUpdate Eagle Inputs\n" + "="*40)
+    update_eagle_inputs(
+        verified_id, spec_pos, spec_loc, 
+        spec_kv_indptr, spec_kv_indices, spec_qo_indptr, 
+        hidden_states,
+        pos_ids, spec_kv_indices_mtd, accept_len, input_ids,
+        qo_indptr, kv_indptr, kv_indices, out_cache_loc, mask_indptr, seq_lens,
+        
+        src_verified_id, src_spec_pos, src_spec_loc, 
+        src_spec_kv_indptr, src_spec_kv_indices, src_spec_qo_indptr, 
+        src_hidden_states,
+        src_pos_ids, src_spec_kv_indices_mtd, src_accept_len, src_input_ids,
+        src_qo_indptr, src_kv_indptr, src_kv_indices, src_out_cache_loc, src_mask_indptr, src_seq_lens,
+        
+        token_nums, pad_token_nums, batch_size, 
+        ind_size, ind_size_mtd, ind_size_verify,
+        draft_tokens_expand, hidden_size
+    )
+    print("Update Eagle Inputs: Done (No Check)")

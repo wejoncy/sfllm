@@ -127,6 +127,8 @@ class EagleE2ECudaGraphRunner():
 
     # @torch.compile
     def prepare_replay(self, scheduled_batch):
+        if hasattr(self, 'prepare_replay_triton'):
+            return self.prepare_replay_triton(scheduled_batch)
         batch_size = len(scheduled_batch)
         spec_info = scheduled_batch.spec_info
         # for draft extend
@@ -164,6 +166,44 @@ class EagleE2ECudaGraphRunner():
             verify_forward_batch.out_cache_loc)
         self.mask_indptr_buffer[:batch_size+1].copy_(verify_forward_batch.mask_indptr)
         self.seq_lens_buffer[:batch_size].copy_(verify_forward_batch.seq_lens)
+
+    def prepare_replay_triton(self, scheduled_batch):
+        from sfllm.kernels.triton_utils import update_eagle_inputs
+        
+        batch_size = len(scheduled_batch)
+        spec_info = scheduled_batch.spec_info
+        forward_batch_spec = scheduled_batch.forward_batch_spec
+        verify_forward_batch = scheduled_batch.forward_batch
+        
+        # Sizes
+        pad_token_nums = batch_size * (1 + self.server_args.speculative_num_steps)
+        token_nums = spec_info.verified_id.shape[-1]
+        ind_size = forward_batch_spec.kv_indices.shape[0]
+        ind_size_mtd = forward_batch_spec.kv_indices_mtd.shape[0]
+        ind_size_verify = verify_forward_batch.kv_indices.shape[0]
+        draft_tokens_expand = self.server_args.speculative_num_draft_tokens
+        hidden_size = spec_info.hidden_states.shape[-1]
+
+        update_eagle_inputs(
+            # Dest
+            self.verified_id, self.spec_position_ids_extend, self.spec_out_cache_loc,
+            self.spec_kv_indptr_buffer, self.spec_kv_indices_buffer, self.spec_qo_indptr_buffer,
+            self.hidden_states_buffer,
+            self.position_ids, self.spec_kv_indices_mtd_buffer, self.accept_length_buffer, self.input_ids,
+            self.qo_indptr_buffer, self.kv_indptr_buffer, self.kv_indices_buffer, self.out_cache_loc, self.mask_indptr_buffer, self.seq_lens_buffer,
+            
+            # Src
+            spec_info.verified_id, forward_batch_spec.position_ids_extend, forward_batch_spec.out_cache_loc,
+            forward_batch_spec.kv_indptr, forward_batch_spec.kv_indices, forward_batch_spec.qo_indptr,
+            spec_info.hidden_states,
+            scheduled_batch.position_ids, forward_batch_spec.kv_indices_mtd, spec_info.accept_length, scheduled_batch.input_ids,
+            verify_forward_batch.qo_indptr, verify_forward_batch.kv_indptr, verify_forward_batch.kv_indices, verify_forward_batch.out_cache_loc, verify_forward_batch.mask_indptr, verify_forward_batch.seq_lens,
+            
+            # Sizes
+            token_nums, pad_token_nums, batch_size,
+            ind_size, ind_size_mtd, ind_size_verify,
+            draft_tokens_expand, hidden_size
+        )
 
 
     @torch.inference_mode()
