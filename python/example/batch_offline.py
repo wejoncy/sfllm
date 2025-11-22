@@ -32,6 +32,6 @@ if __name__ == "__main__":
         for _, output_d in output.items():
             v = f"Prompt: {output_d['prompt']}\nGenerated text: {output_d['text']}"
             # print(v)
-    print(engine.scheduler.metrics.cum_accept_tokens,
-          engine.scheduler.metrics.cum_forward_tokens)
+    print(engine.scheduler.metrics.cum_spec_accept_tokens-
+          engine.scheduler.metrics.cum_forward_ct)
     print("Inference step completed.")
