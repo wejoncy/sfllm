@@ -403,6 +403,13 @@ class InferenceEngine:
             prompt = [prompt]
         for p in prompt:
             self.add_request(p, sampling_params)
+        
+        if not stream:
+            self.event_loop_overlap()
+            while not self.output_batch_queue.empty():
+                new_batch = self.output_batch_queue.get()
+                yield from self.response(new_batch, stream=stream)
+            return
 
         import threading
         thread = threading.Thread(target=self.event_loop_overlap)
