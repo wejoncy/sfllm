@@ -9,94 +9,10 @@ from sfllm.engine.schedule_batch import ScheduleBatch
 from sfllm.engine.memory_pool import BlockMemoryManager
 from sfllm.spec_decoding.spec_common import SpeculativeAlgorithm
 from sfllm.engine.model_worker import ModelWorker
+from sfllm.engine.scheduler_metrics import RunningMetrics
 
 
 logger = logging.getLogger(__name__)
-class RunningMetrics:
-    def __init__(
-        self,
-        waiting_queue: queue.Queue,
-        running_queue: queue.Queue,
-        mem_pool: BlockMemoryManager,
-        server_args=None,
-    ):
-        self.tokens_generated = 0
-        self.total_forward_tokens = 0
-        self.cum_forward_tokens = 0
-        self.total_accept_tokens = 0
-        self.cum_accept_tokens = 0
-        self.prefill_tokens = 0
-        self.last_prefill_refresh_time = time.perf_counter()
-        self.last_refresh_time = time.perf_counter()
-        self.waiting_queue = waiting_queue
-        self.running_queue = running_queue
-        self.mem_pool = mem_pool
-        self.server_args = server_args
-
-    def log_prefill_metrics(self, cur_prefill_tokens: int):
-        current_time = time.perf_counter()
-        elapsed = current_time - self.last_prefill_refresh_time
-        log_interval = 1.0  # seconds
-        if self.prefill_tokens == 0:
-            self.prefill_tokens = cur_prefill_tokens
-            self.last_prefill_refresh_time = current_time
-            return
-        if elapsed > log_interval or cur_prefill_tokens == 0:
-            msg = f"Prefill batch. #prefill_tokens: {self.prefill_tokens}. "
-            msg += (
-                f"Prefill throughput (token/s): {self.prefill_tokens / elapsed:.2f}, "
-                f"#queue-req p+d: {self.waiting_queue.qsize()}+{self.running_queue.qsize()}, "
-            )
-            logger.info(msg)
-            self.prefill_tokens = 0
-            self.last_prefill_refresh_time = current_time
-
-        self.prefill_tokens += cur_prefill_tokens
-
-    def log_decode_metrics(self, running_batch: ScheduleBatch, is_prefill: bool=False):
-        seq_group = running_batch.sequences
-        decode_tokens = len(seq_group)
-        prefill_mask = int(not is_prefill)
-        if running_batch.spec_info is not None:
-            # each sequence at least generate one token
-            if running_batch.spec_info.accept_length_cpu is not None:
-                accept_tokens = running_batch.spec_info.accept_length_cpu.sum().item()
-            else:
-                accept_tokens = 0
-            decode_tokens += max(0, accept_tokens)
-            self.total_accept_tokens += decode_tokens
-            self.total_forward_tokens += len(seq_group)
-            self.cum_accept_tokens += decode_tokens
-            self.cum_forward_tokens += len(seq_group)
-
-        current_time = time.perf_counter()
-        elapsed = current_time - self.last_refresh_time
-
-        refresh_interval = 2.0  # seconds
-        if self.tokens_generated == 0:
-            self.last_refresh_time = current_time
-            self.tokens_generated = decode_tokens * prefill_mask
-            return
-
-        tps = self.tokens_generated / elapsed
-        if (tps > 0 and elapsed > refresh_interval) or (tps == 0 and elapsed > refresh_interval * 10) or is_prefill:
-            msg = f"Decode batch. #running-req: {len(seq_group)}. "
-            cache_usage = self.mem_pool.get_usage()
-            msg += (
-                f"gen throughput (token/s): {tps:.2f}, "
-                f"#queue-req p+d: {self.waiting_queue.qsize()}+{self.running_queue.qsize()}, "
-                f"cache usage: {cache_usage:.2f}%"
-            )
-            if running_batch.spec_info is not None:
-                avg_accept_lengths = self.total_accept_tokens / self.total_forward_tokens
-                msg += f", accept len: {avg_accept_lengths:.2f}"
-            logger.info(msg)
-            self.last_refresh_time = current_time
-            self.tokens_generated = 0
-            self.total_accept_tokens = self.total_forward_tokens = 0
-
-        self.tokens_generated += decode_tokens * prefill_mask
-
 
 class SchedulerPolicy:
     def __init__(self, memory_pool: BlockMemoryManager):
@@ -267,9 +183,6 @@ class Scheduler:
                 sequence.status = "FAILED"
                 failed_sequences.append(sequence)
                 self.free_sequence_resources(sequence)
-
-        self.metrics.log_prefill_metrics(prefill_tokens)
-        self.metrics.log_decode_metrics(running_batch, is_prefill=prefill_tokens > 0)
 
         return running_batch, failed_sequences
 

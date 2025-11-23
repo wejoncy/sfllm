@@ -102,10 +102,9 @@ class RequestSequence(RawSequence):
         self.last_generated_token_pos = self.prompt_token_len
     
     def is_done(self) -> bool:
-        invalid_token = len(list(filter(lambda x: x < 0, self.tokens[-10:])))
         return (
             not self.status.is_active()
-            or len(self.tokens) - self.prompt_token_len - invalid_token
+            or self.last_generated_token_pos - self.prompt_token_len
             >= self.sampling_params.max_new_tokens
         )
 
