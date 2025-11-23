@@ -24,6 +24,8 @@ class ScheduleBatch:
         self.copy_done:torch.Event = None
         self.next_token_ids:torch.Tensor = None
         self.spec_info: SpecInput = None
+        ###
+        self.overlap_affiliated: Optional[tuple[torch.Tensor, torch.cuda.Stream]] = None
 
 
     def empty(self):
@@ -116,19 +118,30 @@ class ScheduleBatch:
         self.spec_info = SpecInput()
         self.spec_info.hash = self.get_seq_groups_hash()
 
-
-    def prepare_decode_for_draft(self, position_ids_list: List[int]):
+    def update_spec_info_if_needed(self, hidden_states_buffer:torch.Tensor):
+        if self.spec_info is None:
+            return
         g_hash = self.get_seq_groups_hash()
         if self.spec_info.hash != g_hash:
+            from sfllm.kernels.triton_utils import copy_tensors_to_buffer,move_neg1_to_tail
             self.spec_info = self.spec_info.raw_new()
             self.spec_info.hash = g_hash
-            self.spec_info.verified_id = torch.cat([seq.verified_id for seq in self.sequences], dim=-1)
+            self.spec_info.verified_id = move_neg1_to_tail(torch.cat([seq.verified_id for seq in self.sequences], dim=-1))
+            self.spec_info.verified_id = torch.where(self.spec_info.verified_id < 0,torch.zeros_like(self.spec_info.verified_id),
+                                                  self.spec_info.verified_id)
             self.spec_info.accept_length = torch.cat([seq.accept_length for seq in self.sequences], dim=-1)
-            self.spec_info.hidden_states = torch.cat([seq.hidden_states for seq in self.sequences], dim=0)
+            assert isinstance(self.sequences[0].hidden_states, tuple)
+            src_hd_list = [ seq.hidden_states[0] for seq in self.sequences]
+            src_range_list = [ seq.hidden_states[1] for seq in self.sequences]
+            src_range = torch.stack(src_range_list, dim=0)
+            draft_steps = hidden_states_buffer.shape[1]
+            hidden_states_buffer = hidden_states_buffer.view(-1, hidden_states_buffer.shape[-1])
+            self.spec_info.hidden_states = copy_tensors_to_buffer(src_hd_list, src_range, hidden_states_buffer)
+            self.spec_info.hidden_states = self.spec_info.hidden_states[:len(src_hd_list)*draft_steps]
             if self.sequences[0].out_cache_loc_lazy is not None:
                 self.spec_info.out_cache_loc = torch.cat([seq.out_cache_loc_lazy for seq in self.sequences])
             # self.spec_info.logits = torch.cat([seq.logits for seq in self.sequences])
-
+    def prepare_decode_for_draft(self, position_ids_list: List[int], is_overlap:bool=False, compute_stream:torch.cuda.Stream=None):
         # prepare position_ids for draft model extend for last verified tokens
         positions_outs = []
         batch_size = len(self.sequences)
@@ -173,9 +186,10 @@ class ScheduleBatch:
         self.forward_batch_spec.kv_indices_mtd = kv_indices_mtd_spec
         self.forward_batch_spec.padded_token = padded_token
         self.forward_batch_spec.out_cache_loc = out_cache_loc_spec
-        self.forward_batch_spec.qo_indptr = self.forward_batch.kv_indptr.clone()
-        accept_length = torch.maximum(self.spec_info.accept_length, torch.zeros_like(self.spec_info.accept_length))+ 1
-        self.forward_batch_spec.qo_indptr[1:batch_size + 1] = (accept_length).cumsum(dim=0, dtype=torch.int32)
+        if not is_overlap:
+            self.forward_batch_spec.qo_indptr = self.forward_batch.kv_indptr.clone()
+            accept_length = self.spec_info.accept_length.clamp(min=0) + 1
+            self.forward_batch_spec.qo_indptr[1:batch_size + 1] = (accept_length).cumsum(dim=0, dtype=torch.int32)
         self.forward_batch_spec.max_extend_len = max([len(seq.new_tokens) for seq in self.sequences])
         self.forward_batch_spec.position_ids_extend = torch.tensor(
             position_ids_list, dtype=torch.long, pin_memory=True).to(self.device, non_blocking=True)
@@ -195,6 +209,13 @@ class ScheduleBatch:
         # it's for verify_extend
         minux_const = torch.arange(1, len(self.sequences)+1, dtype=torch.int32, device=device)
         forward_batch_target.kv_indptr[1:].sub_(minux_const)
+        if is_overlap:
+            hidden_states_buffer,compute_stream = self.overlap_affiliated
+            with torch.cuda.stream(compute_stream):
+                self.update_spec_info_if_needed(hidden_states_buffer=hidden_states_buffer)
+                self.forward_batch_spec.qo_indptr = torch.zeros_like(self.forward_batch.kv_indptr)
+                accept_length = self.spec_info.accept_length.clamp(min=0) + 1
+                self.forward_batch_spec.qo_indptr[1:batch_size + 1] = (accept_length).cumsum(dim=0, dtype=torch.int32)
 
     def prepare_inputs(self, is_overlap:bool=False):
         cur_seq_lens_list = [0]
@@ -281,7 +302,7 @@ class ScheduleBatch:
             if self.forward_batch.forward_mode == ForwardMode.EXTEND:
                 self.prepare_prefill_for_draft()
             else:
-                self.prepare_decode_for_draft(position_ids_list)
+                self.prepare_decode_for_draft(position_ids_list, is_overlap=is_overlap)
 
     def prepare_sample(self):
         temperatures = []

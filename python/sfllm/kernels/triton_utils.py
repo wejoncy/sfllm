@@ -13,71 +13,43 @@ from typing import List, Optional
 
 @triton.jit  
 def split_lastdim_kernel(
-    # Input tensors
-    next_token_ids_ptr,     # Input tokens [total_tokens]
-    accept_length_ptr,      # Accept lengths [batch_size]
-    cumsum_offsets_ptr,     # Pre-computed cumulative offsets [batch_size + 1]
-    # Output tensor
-    output_tensor_ptr,      # Output tensor [batch_size, max_tokens]
-    # Dimensions
-    batch_size: tl.constexpr,
-    max_tokens: tl.constexpr,
-    total_tokens: tl.constexpr,
-    SEQUENCES_PER_BLOCK: tl.constexpr,  # Process multiple sequences per block
+    next_token_ids_ptr,
+    accept_length_ptr,
+    output_tensor_ptr,
+    batch_size,
+    max_tokens,
     BLOCK_SIZE: tl.constexpr,
+    BLOCK_BATCH: tl.constexpr
 ):
-    """
-    Optimized kernel that processes multiple sequences per Triton block.
+    pid = tl.program_id(0)
     
-    This reduces grid size and SM allocation by having each block handle
-    SEQUENCES_PER_BLOCK sequences instead of just one sequence per block.
-    Ideal for small sequences (1-6 tokens) with large batch sizes.
-    """
-    # Block and thread identification
-    block_id = tl.program_id(0)
+    # 1. Compute src_start (Internal Prefix Sum)
+    offs_batch = tl.arange(0, BLOCK_BATCH)
+    mask_batch = offs_batch < batch_size
+    lens = tl.load(accept_length_ptr + offs_batch, mask=mask_batch, other=0)
+    offsets = tl.cumsum(lens, 0) - lens
+    src_start = tl.sum(tl.where(offs_batch == pid, offsets, 0))
+
+    # 2. Copy and Fill
+    cur_len = tl.load(accept_length_ptr + pid)
+    output_ptr = output_tensor_ptr + pid * max_tokens
     
-    # Each block processes SEQUENCES_PER_BLOCK sequences
-    seq_start = block_id * SEQUENCES_PER_BLOCK
-    
-    # Process all sequences assigned to this block
-    for seq_offset in range(SEQUENCES_PER_BLOCK):
-        seq_id = seq_start + seq_offset
+    for off in range(0, max_tokens, BLOCK_SIZE):
+        cols = off + tl.arange(0, BLOCK_SIZE)
+        mask_out = cols < max_tokens
+        mask_valid = cols < cur_len
         
-        # Bounds check - use conditional processing instead of break
-        if seq_id < batch_size:
-            # Load sequence metadata
-            accept_len = tl.load(accept_length_ptr + seq_id)
-            input_start = tl.load(cumsum_offsets_ptr + seq_id)
-            output_row_start = seq_id * max_tokens
+        # Default to -1
+        vals = tl.full([BLOCK_SIZE], -1, dtype=tl.int64)
+        
+        # Load valid data
+        mask_load = mask_out & mask_valid
+        # Optimization: only load if we have valid elements
+        if tl.max(mask_load, 0):
+            src_vals = tl.load(next_token_ids_ptr + src_start + cols, mask=mask_load, other=0)
+            vals = tl.where(mask_valid, src_vals, vals)
             
-            # Process tokens using fixed block size
-            token_offsets = tl.arange(0, BLOCK_SIZE)
-            num_blocks = (max_tokens + BLOCK_SIZE - 1) // BLOCK_SIZE
-            
-            for block_idx in range(num_blocks):
-                block_start = block_idx * BLOCK_SIZE
-                token_indices = block_start + token_offsets
-                
-                # Masks for bounds checking
-                within_output_mask = token_indices < max_tokens
-                within_accept_mask = token_indices < accept_len
-                copy_mask = within_output_mask & within_accept_mask
-                
-                # Initialize with zeros
-                output_tokens = tl.zeros([BLOCK_SIZE], dtype=tl.int64)
-                
-                # Copy valid tokens
-                if tl.sum(copy_mask) > 0:
-                    input_positions = input_start + token_indices
-                    input_bounds_mask = copy_mask & (input_positions < total_tokens)
-                    tokens = tl.load(next_token_ids_ptr + input_positions, 
-                                   mask=input_bounds_mask, other=0)
-                    output_tokens = tl.where(copy_mask, tokens, output_tokens)
-                
-                # Store to output tensor
-                output_positions = output_row_start + token_indices
-                tl.store(output_tensor_ptr + output_positions, output_tokens, 
-                        mask=within_output_mask)
+        tl.store(output_ptr + cols, vals, mask=mask_out)
 
 
 def split_lastdim_async(
@@ -87,36 +59,34 @@ def split_lastdim_async(
 ) -> List[torch.Tensor]:
     device = next_token_ids.device
     batch_size = accept_length.shape[0]
-    total_tokens = output_buffers.shape[-1]
     
-    cumsum_offsets = torch.cat([torch.zeros(1, device=device, dtype=accept_length.dtype), 
-                               torch.cumsum(accept_length, dim=0)])
-    
-    max_tokens = total_tokens   # Conservative upper bound
-    BLOCK_SIZE = 16
     if output_buffers is not None:
-        assert output_buffers.is_contiguous() and output_buffers.shape[0] == batch_size
         output_tensor = output_buffers
         max_tokens = output_buffers.shape[1]
-        BLOCK_SIZE = triton.next_power_of_2(max_tokens)
     else:
-        output_tensor = torch.zeros(batch_size, max_tokens, dtype=next_token_ids.dtype, device=device)
+        # Fallback if not provided (though user said it is given)
+        total_tokens = next_token_ids.shape[0]
+        max_tokens = total_tokens 
+        output_tensor = torch.empty(batch_size, max_tokens, dtype=next_token_ids.dtype, device=device)
         
-    SEQUENCES_PER_BLOCK = 8  # Each block handles 8 sequences
-    grid_size = (batch_size + SEQUENCES_PER_BLOCK - 1) // SEQUENCES_PER_BLOCK
-    
-    grid = (grid_size,)
+    BLOCK_SIZE = 64
+    if max_tokens < 64:
+        BLOCK_SIZE = triton.next_power_of_2(max_tokens)
+        
+    BLOCK_BATCH = triton.next_power_of_2(batch_size)
+    BLOCK_BATCH = max(16, BLOCK_BATCH)
+
+    grid = (batch_size,)
     split_lastdim_kernel[grid](
         next_token_ids,
         accept_length,
-        cumsum_offsets,
         output_tensor,
         batch_size,
         max_tokens,
-        total_tokens,
-        SEQUENCES_PER_BLOCK,
-        BLOCK_SIZE  # BLOCK_SIZE
+        BLOCK_SIZE=BLOCK_SIZE,
+        BLOCK_BATCH=BLOCK_BATCH
     )
+    
     if output_buffers is not None:
         return output_buffers
 
@@ -131,7 +101,8 @@ def split_lastdim_async(
 
 def split_lastdim_pytorch_reference(
     next_token_ids: torch.Tensor,
-    accept_length: torch.Tensor  
+    accept_length: torch.Tensor,
+    output_buffer: Optional[torch.Tensor] = None
 ) -> List[torch.Tensor]:
     """
     Reference PyTorch implementation for comparison and fallback.
@@ -144,6 +115,16 @@ def split_lastdim_pytorch_reference(
                                dtype=accept_length.dtype), accept_length]), 
         dim=0
     )
+    
+    if output_buffer is not None:
+        output_buffer.fill_(-1)
+        for i in range(accept_length.shape[0]):
+            start = cumsum_lengths[i]
+            end = cumsum_lengths[i + 1]
+            length = end - start
+            output_buffer[i, :length] = next_token_ids[start:end]
+        return output_buffer
+
     segments = []
     for i in range(accept_length.shape[0]):
         start = cumsum_lengths[i]
@@ -252,15 +233,15 @@ def split_firstdim_kernel(
     # Input tensor
     input_ptr,              # Input tensor [total_batch, hidden_size]
     accept_length_ptr,      # Accept lengths for each output batch [num_outputs]
-    cumsum_offsets_ptr,     # Pre-computed cumulative offsets [num_outputs + 1]
     # Output tensor
     output_ptr,             # Output tensor [num_outputs, max_batch_size, hidden_size]
     # Dimensions
-    num_outputs: tl.constexpr,
-    max_batch_size: tl.constexpr,
+    num_outputs,
+    max_batch_size,
     hidden_size: tl.constexpr,
-    total_batch: tl.constexpr,
+    total_batch,
     BLOCK_SIZE_HIDDEN: tl.constexpr,
+    BLOCK_OUTPUTS: tl.constexpr
 ):
     """
     Kernel for splitting batch dimension dynamically.
@@ -271,7 +252,6 @@ def split_firstdim_kernel(
     Args:
         input_ptr: Input tensor [total_batch, hidden_size]
         accept_length_ptr: Number of batch items for each output [num_outputs]
-        cumsum_offsets_ptr: Cumulative sum of accept_length [num_outputs + 1]
         output_ptr: Output tensor [num_outputs, max_batch_size, hidden_size]
     """
     # Get 2D program ID
@@ -281,9 +261,16 @@ def split_firstdim_kernel(
     if output_id >= num_outputs or batch_idx >= max_batch_size:
         return
     
+    # 1. Compute offsets internally
+    offs = tl.arange(0, BLOCK_OUTPUTS)
+    mask_outputs = offs < num_outputs
+    lens = tl.load(accept_length_ptr + offs, mask=mask_outputs, other=0)
+    offsets = tl.cumsum(lens, 0) - lens
+
     # Load metadata for this output group
     accept_len = tl.load(accept_length_ptr + output_id)
-    input_batch_start = tl.load(cumsum_offsets_ptr + output_id)
+    # input_batch_start = tl.load(cumsum_offsets_ptr + output_id)
+    input_batch_start = tl.sum(tl.where(offs == output_id, offsets, 0))
     
     # Check if this batch index is valid for current output
     if batch_idx >= accept_len:
@@ -342,10 +329,10 @@ def split_firstdim_async(
     num_outputs = accept_length.shape[0]
     
     # Compute cumulative offsets
-    cumsum_offsets = torch.cat([
-        torch.zeros(1, device=device, dtype=accept_length.dtype),
-        torch.cumsum(accept_length, dim=0)
-    ])
+    # cumsum_offsets = torch.cat([
+    #     torch.zeros(1, device=device, dtype=accept_length.dtype),
+    #     torch.cumsum(accept_length, dim=0)
+    # ])
     
     # Determine max batch size
     
@@ -364,6 +351,9 @@ def split_firstdim_async(
     
     # Kernel configuration
     BLOCK_SIZE_HIDDEN = 128  # Vectorize over hidden dimension
+    BLOCK_OUTPUTS = 128
+    if num_outputs > BLOCK_OUTPUTS:
+        BLOCK_OUTPUTS = triton.next_power_of_2(num_outputs)
     
     # Launch kernel with 2D grid
     grid = (num_outputs, max_batch_size)
@@ -371,13 +361,13 @@ def split_firstdim_async(
     split_firstdim_kernel[grid](
         input_tensor,
         accept_length,
-        cumsum_offsets,
         output_tensor,
         num_outputs,
         max_batch_size,
         hidden_size,
         total_batch,
-        BLOCK_SIZE_HIDDEN
+        BLOCK_SIZE_HIDDEN,
+        BLOCK_OUTPUTS
     )
     
     return output_tensor
@@ -416,50 +406,57 @@ def split_firstdim_pytorch_reference(
 def compact_accepted_tokens_kernel(
     x_ptr,
     kv_indptr_ptr,
-    out_loc_ptr,
     accept_len_ptr,
-    BLOCK_SIZE: tl.constexpr
-):
-    pid = tl.program_id(0)
-    
-    # Current batch index
-    batch_idx = pid
-    
-    # Read source start and length
-    src_start = tl.load(kv_indptr_ptr + batch_idx)
-    length = tl.load(accept_len_ptr + batch_idx)
-    
-    # Read destination start
-    dst_start = tl.load(out_loc_ptr + batch_idx)
-    
-    # Loop to copy (handle length > BLOCK_SIZE)
-    for off in range(0, length, BLOCK_SIZE):
-        cols = off + tl.arange(0, BLOCK_SIZE)
-        mask = cols < length
-        
-        # Read
-        val = tl.load(x_ptr + src_start + cols, mask=mask)
-        
-        # Write
-        tl.store(x_ptr + dst_start + cols, val, mask=mask)
-
-
-@triton.jit
-def fill_tail_kernel(
-    x_ptr,
-    start_idx_ptr,
+    batch_size,
     total_size,
     fill_value,
-    BLOCK_SIZE: tl.constexpr
+    BLOCK_SIZE: tl.constexpr,
+    BLOCK_BATCH: tl.constexpr
 ):
     pid = tl.program_id(0)
-    start_idx = tl.load(start_idx_ptr)
-    block_start = pid * BLOCK_SIZE + start_idx
+    num_pids = tl.num_programs(0)
     
-    offsets = block_start + tl.arange(0, BLOCK_SIZE)
-    mask = offsets < total_size
+    # 1. Compute offsets internally
+    offs_batch = tl.arange(0, BLOCK_BATCH)
+    mask_batch = offs_batch < batch_size
+    lens = tl.load(accept_len_ptr + offs_batch, mask=mask_batch, other=0)
+    offsets = tl.cumsum(lens, 0) - lens
+    total_accepted = tl.sum(lens)
+
+    # 2. Copy Logic
+    if pid < batch_size:
+        # Read source start and length
+        src_start = tl.load(kv_indptr_ptr + pid)
+        length = tl.load(accept_len_ptr + pid)
+        
+        # Read destination start
+        dst_start = tl.sum(tl.where(offs_batch == pid, offsets, 0))
+        
+        # Loop to copy (handle length > BLOCK_SIZE)
+        for off in range(0, length, BLOCK_SIZE):
+            cols = off + tl.arange(0, BLOCK_SIZE)
+            mask = cols < length
+            
+            # Read
+            val = tl.load(x_ptr + src_start + cols, mask=mask)
+            
+            # Write
+            tl.store(x_ptr + dst_start + cols, val, mask=mask)
+
+    # 3. Fill Tail Logic
+    tail_start = total_accepted
+    tail_len = total_size - tail_start
     
-    tl.store(x_ptr + offsets, fill_value, mask=mask)
+    if tail_len > 0:
+        # Distribute tail filling among all blocks
+        items_per_pid = (tail_len + num_pids - 1) // num_pids
+        my_start = tail_start + pid * items_per_pid
+        my_end = min(tail_start + (pid + 1) * items_per_pid, total_size)
+        
+        for off in range(my_start, my_end, BLOCK_SIZE):
+            cols = off + tl.arange(0, BLOCK_SIZE)
+            mask = cols < my_end
+            tl.store(x_ptr + cols, fill_value, mask=mask)
 
 
 def compact_accepted_tokens(
@@ -469,37 +466,29 @@ def compact_accepted_tokens(
     fill_value: int = -1
 ) -> None:
     batch_size = kv_indptr.shape[0] - 1
-    
-    # 1. Calculate destination offsets
-    out_loc = torch.zeros_like(kv_indptr)
-    out_loc[1:] = torch.cumsum(accept_length, dim=0)
+    total_size = x.numel()
     
     # 2. Launch parallel copy kernel
     # One block per batch is usually enough for draft tokens
-    grid = (batch_size,)
     # Use a reasonable block size, e.g., 256, enough to cover most draft lengths
     BLOCK_SIZE = 256 
+    BLOCK_BATCH = 128
+    if batch_size > BLOCK_BATCH:
+        BLOCK_BATCH = triton.next_power_of_2(batch_size)
+    
+    # Ensure enough blocks for filling if batch_size is small
+    grid_size = max(batch_size, 32)
+    grid = (grid_size,)
     
     compact_accepted_tokens_kernel[grid](
         x,
         kv_indptr,
-        out_loc,
         accept_length,
-        BLOCK_SIZE=BLOCK_SIZE
-    )
-    
-    # 3. Fill tail with -1
-    total_size = x.numel()
-    BLOCK_SIZE_FILL = 1024
-    # Launch enough blocks to cover the worst case (start_idx=0)
-    grid_fill = (triton.cdiv(total_size, BLOCK_SIZE_FILL),)
-    
-    fill_tail_kernel[grid_fill](
-        x,
-        out_loc[-1],
+        batch_size,
         total_size,
         fill_value,
-        BLOCK_SIZE=BLOCK_SIZE_FILL
+        BLOCK_SIZE=BLOCK_SIZE,
+        BLOCK_BATCH=BLOCK_BATCH
     )
 
 
@@ -524,9 +513,9 @@ def update_kv_indices_kernel(
     kv_indices_ptr,
     kv_indptr_ptr,
     accept_length_ptr,
-    cum_accept_length_ptr,
-    batch_size: tl.constexpr,
-    BLOCK_SIZE: tl.constexpr
+    batch_size,
+    BLOCK_SIZE: tl.constexpr,
+    BLOCK_BATCH: tl.constexpr
 ):
     pid = tl.program_id(0)
     if pid >= batch_size:
@@ -547,7 +536,15 @@ def update_kv_indices_kernel(
     
     # Source range
     # cum_accept_length has size batch_size + 1.
-    src_base = tl.load(cum_accept_length_ptr + pid)
+    # src_base = tl.load(cum_accept_length_ptr + pid)
+    
+    # Compute offsets internally
+    offs_batch = tl.arange(0, BLOCK_BATCH)
+    mask_batch = offs_batch < batch_size
+    lens = tl.load(accept_length_ptr + offs_batch, mask=mask_batch, other=0)
+    offsets = tl.cumsum(lens, 0) - lens
+    
+    src_base = tl.sum(tl.where(offs_batch == pid, offsets, 0))
     src_start = src_base + 1
     
     # Copy loop
@@ -580,19 +577,22 @@ def prune_kv_indices(
     batch_size = len(accept_length)
     device = future_kvindice.device
     
-    cum_accept_length = torch.cat([torch.zeros(1, device=device, dtype=torch.int64), accept_length.cumsum(dim=0)])
+    # cum_accept_length = torch.cat([torch.zeros(1, device=device, dtype=torch.int64), accept_length.cumsum(dim=0)])
     
     grid = (batch_size,)
     BLOCK_SIZE = 128 
+    BLOCK_BATCH = 128
+    if batch_size > BLOCK_BATCH:
+        BLOCK_BATCH = triton.next_power_of_2(batch_size)
     
     update_kv_indices_kernel[grid](
         future_kvindice,
         kv_indices,
         kv_indptr,
         accept_length,
-        cum_accept_length,
         batch_size,
-        BLOCK_SIZE
+        BLOCK_SIZE,
+        BLOCK_BATCH
     )
 
     kv_indices[:] = move_neg1_to_tail(kv_indices)
@@ -836,6 +836,138 @@ def update_eagle_inputs(
     )
 
 
+@triton.jit
+def multi_tensor_copy_kernel(
+    src_ptrs_ptr,       # [N], int64, pointers to source tensors
+    src_ranges_ptr,     # [N, 2], int32, [src_start, src_end] indices in source tensors
+    out_ptr,            # Output buffer pointer
+    hidden_size,
+    num_tensors,
+    BLOCK_M: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+    BLOCK_TENSORS: tl.constexpr
+):
+    # pid_batch: which tensor to process
+    pid_batch = tl.program_id(0)
+    # pid_m: which row block within the tensor
+    pid_m = tl.program_id(1)
+    # pid_n: which col block within hidden_size
+    pid_n = tl.program_id(2)
+    
+    # 1. Load all ranges to compute offsets locally
+    # This avoids a separate kernel launch for prefix sum
+    offs = tl.arange(0, BLOCK_TENSORS)
+    mask = offs < num_tensors
+    
+    # Load starts and ends [N, 2]
+    starts = tl.load(src_ranges_ptr + offs * 2, mask=mask, other=0)
+    ends = tl.load(src_ranges_ptr + offs * 2 + 1, mask=mask, other=0)
+    lengths = ends - starts
+    
+    # Exclusive scan for destination offsets
+    offsets = tl.cumsum(lengths, 0) - lengths
+    
+    # Extract parameters for the current tensor (pid_batch)
+    is_my_batch = (offs == pid_batch)
+    dst_start = tl.sum(tl.where(is_my_batch, offsets, 0))
+    src_start = tl.sum(tl.where(is_my_batch, starts, 0))
+    src_end = tl.sum(tl.where(is_my_batch, ends, 0))
+    
+    num_rows = src_end - src_start
+    
+    # 2. Check if this block is within valid rows
+    row_offset = pid_m * BLOCK_M
+    if row_offset >= num_rows:
+        return
+    
+    # 3. Load source base address
+    # src_ptrs_ptr stores int64 addresses. We load it and cast to pointer.
+    src_addr_int = tl.load(src_ptrs_ptr + pid_batch)
+    
+    # 4. Calculate column offset
+    n_offset = pid_n * BLOCK_N
+    if n_offset >= hidden_size:
+        return
+
+    rows = row_offset + tl.arange(0, BLOCK_M)
+    cols = n_offset + tl.arange(0, BLOCK_N)
+    
+    # Masks
+    row_mask = rows < num_rows
+    col_mask = cols < hidden_size
+    mask = row_mask[:, None] & col_mask[None, :]
+    
+    # Load from Source
+    # src_ptr = src_base + (src_start + rows) * hidden_size + cols
+    src_ptr = src_addr_int.to(tl.pointer_type(out_ptr.dtype.element_ty))
+    src_offsets = (src_start + rows[:, None]) * hidden_size + cols[None, :]
+    val = tl.load(src_ptr + src_offsets, mask=mask)
+    
+    # Store to Dest
+    # dst_index = (dst_start + rows) * hidden_size + cols
+    dst_offsets_val = (dst_start + rows[:, None]) * hidden_size + cols[None, :]
+    tl.store(out_ptr + dst_offsets_val, val, mask=mask)
+
+
+def copy_tensors_to_buffer_pytorch_reference(
+    tensors: List[torch.Tensor],
+    ranges: torch.Tensor, # [N, 2]
+    out_buffer: torch.Tensor
+) -> None:
+    out = out_buffer.clone()
+    offset = 0
+    for i, t in enumerate(tensors):
+        r = ranges[i]
+        length = r[1] - r[0]
+        out[offset : offset + length] = t[r[0]:r[1]]
+        offset += length
+    return out
+
+def copy_tensors_to_buffer(
+    tensors: List[torch.Tensor],
+    ranges: torch.Tensor, # [N, 2]
+    out_buffer: torch.Tensor,
+    max_blocks_m: int = 8
+) -> None:
+    if not tensors:
+        return
+        
+    num_tensors = len(tensors)
+    assert ranges.shape[0] == num_tensors
+    
+    device = out_buffer.device
+    hidden_size = out_buffer.shape[1]
+    assert out_buffer.dim() == 2
+    
+    # 1. Extract data pointers
+    ptr_list = [t.data_ptr() for t in tensors]
+    # Use non_blocking=True to avoid CPU-GPU sync
+    src_ptrs = torch.tensor(ptr_list, dtype=torch.int64, device="cpu", 
+                            pin_memory=True).to(device, non_blocking=True)
+    BLOCK_M = 8 
+    BLOCK_N = 512 
+    BLOCK_TENSORS = 128
+    if num_tensors > BLOCK_TENSORS:
+        BLOCK_TENSORS = triton.next_power_of_2(num_tensors)
+    
+    # Grid: [Num_Tensors, Max_Rows_Blocks, Num_Hidden_Blocks]
+    grid_n = triton.cdiv(hidden_size, BLOCK_N)
+    
+    grid = (num_tensors, max_blocks_m, grid_n)
+    
+    multi_tensor_copy_kernel[grid](
+        src_ptrs,
+        ranges,
+        out_buffer,
+        hidden_size,
+        num_tensors,
+        BLOCK_M=BLOCK_M,
+        BLOCK_N=BLOCK_N,
+        BLOCK_TENSORS=BLOCK_TENSORS
+    )
+    return out_buffer.view(-1, hidden_size)
+
+
 if __name__ == "__main__":
     import time
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -851,26 +983,38 @@ if __name__ == "__main__":
         out_r = ref_fn(*args_r)
         out_t = tri_fn(*args_t)
         
-        if inplace_idx is not None: out_t = args_t[inplace_idx]
-        if check_ref: out_r = check_ref(out_r)
-        if isinstance(out_r, tuple): out_r = out_r[0]
+        match = True
+        if isinstance(out_r, list) and isinstance(out_t, list):
+            if len(out_r) != len(out_t):
+                match = False
+            else:
+                for r, t in zip(out_r, out_t):
+                    m = torch.allclose(r, t) if r.is_floating_point() else torch.equal(r, t)
+                    if not m:
+                        match = False
+                        break
+        else:
+            if inplace_idx is not None: out_t = args_t[inplace_idx]
+            if check_ref: out_r = check_ref(out_r)
+            if isinstance(out_r, tuple): out_r = out_r[0]
+                
+            match = torch.allclose(out_r, out_t) if out_r.is_floating_point() else torch.equal(out_r, out_t)
             
-        match = torch.allclose(out_r, out_t) if out_r.is_floating_point() else torch.equal(out_r, out_t)
         print(f"Match: {match}")
         if not match: return
 
         # Benchmark
         torch.cuda.synchronize()
         t0 = time.time()
-        for _ in range(1000): ref_fn(*args)
+        for _ in range(400): ref_fn(*args)
         torch.cuda.synchronize()
         t_ref = time.time() - t0
         
         t0 = time.time()
-        for _ in range(1000): tri_fn(*args)
+        for _ in range(400): tri_fn(*args)
         torch.cuda.synchronize()
         t_tri = time.time() - t0
-        print(f"Ref: {t_ref*1000:.2f}ms | Tri: {t_tri*1000:.2f}ms | Speedup: {t_ref/t_tri:.2f}x")
+        print(f"Ref: {t_ref*400:.2f}ms | Tri: {t_tri*400:.2f}ms | Speedup: {t_ref/t_tri:.2f}x")
 
     # 1. Batch Split
     B, H = 10, 4096
@@ -902,73 +1046,26 @@ if __name__ == "__main__":
     run_test("Prune KV", prune_kv_indices_pytorch_reference, prune_kv_indices, 
              [future, kv_indices, kv_indptr, acc_len], inplace_idx=1)
 
-    # 5. Update Eagle Inputs
-    B = 32
-    H = 64
-    token_nums = 20
-    pad_token_nums = 24
-    draft_tokens_expand = 6
-    batch_size = B
-    hidden_size = H
-    
-    verified_id = torch.zeros(pad_token_nums, dtype=torch.int64, device=device)
-    spec_pos = torch.zeros(pad_token_nums, dtype=torch.int64, device=device)
-    spec_loc = torch.zeros(pad_token_nums, dtype=torch.int64, device=device)
-    spec_kv_indptr = torch.zeros(B+1, dtype=torch.int32, device=device)
-    ind_size = B * draft_tokens_expand 
-    spec_kv_indices = torch.zeros(ind_size, dtype=torch.int64, device=device)
-    spec_qo_indptr = torch.zeros(B+1, dtype=torch.int32, device=device)
-    
-    hidden_states = torch.zeros((token_nums, H), dtype=torch.float16, device=device)
-    
-    pos_ids = torch.zeros(B, dtype=torch.int64, device=device)
-    ind_size_mtd = B
-    spec_kv_indices_mtd = torch.zeros(ind_size_mtd, dtype=torch.int64, device=device)
-    accept_len = torch.zeros(B, dtype=torch.int64, device=device)
-    input_ids = torch.zeros(B, dtype=torch.int64, device=device)
-    qo_indptr = torch.zeros(B+1, dtype=torch.int32, device=device)
-    kv_indptr = torch.zeros(B+1, dtype=torch.int32, device=device)
-    ind_size_verify = B * 10
-    kv_indices = torch.zeros(ind_size_verify, dtype=torch.int64, device=device)
-    out_cache_loc = torch.zeros(B * draft_tokens_expand, dtype=torch.int64, device=device)
-    mask_indptr = torch.zeros(B+1, dtype=torch.int32, device=device)
-    seq_lens = torch.zeros(B, dtype=torch.int32, device=device)
-    
-    # Src
-    src_verified_id = torch.randint(0, 100, (pad_token_nums,), dtype=torch.int64, device=device)
-    src_spec_pos = torch.randint(0, 100, (pad_token_nums,), dtype=torch.int64, device=device)
-    src_spec_loc = torch.randint(0, 100, (pad_token_nums,), dtype=torch.int64, device=device)
-    src_spec_kv_indptr = torch.randint(0, 100, (B+1,), dtype=torch.int32, device=device)
-    src_spec_kv_indices = torch.randint(0, 100, (ind_size,), dtype=torch.int64, device=device)
-    src_spec_qo_indptr = torch.randint(0, 100, (B+1,), dtype=torch.int32, device=device)
-    src_hidden_states = torch.randn((token_nums, H), dtype=torch.float16, device=device)
-    src_pos_ids = torch.randint(0, 100, (B,), dtype=torch.int64, device=device)
-    src_spec_kv_indices_mtd = torch.randint(0, 100, (ind_size_mtd,), dtype=torch.int64, device=device)
-    src_accept_len = torch.randint(0, 100, (B,), dtype=torch.int64, device=device)
-    src_input_ids = torch.randint(0, 100, (B,), dtype=torch.int64, device=device)
-    src_qo_indptr = torch.randint(0, 100, (B+1,), dtype=torch.int32, device=device)
-    src_kv_indptr = torch.randint(0, 100, (B+1,), dtype=torch.int32, device=device)
-    src_kv_indices = torch.randint(0, 100, (ind_size_verify,), dtype=torch.int64, device=device)
-    src_out_cache_loc = torch.randint(0, 100, (B * draft_tokens_expand,), dtype=torch.int64, device=device)
-    src_mask_indptr = torch.randint(0, 100, (B+1,), dtype=torch.int32, device=device)
-    src_seq_lens = torch.randint(0, 100, (B,), dtype=torch.int32, device=device)
+    # 6. Multi Tensor Copy (Gather & Pack)
+    H = 3072
+    out_buffer = torch.zeros((100, H), dtype=torch.float16, device=device)
+    # Create tensors with enough data
+    tensors = [torch.randn(20, H, dtype=torch.float16, device=device) for _ in range(3)]
+    ranges = torch.tensor([[0, 2], [1, 4], [2, 4]], dtype=torch.int32, device=device)
+    def copy_tri(ts, rs, out):
+        copy_tensors_to_buffer(ts, rs, out, max_blocks_m=4)
+        return out
 
-    print("\n" + "="*40 + "\nUpdate Eagle Inputs\n" + "="*40)
-    update_eagle_inputs(
-        verified_id, spec_pos, spec_loc, 
-        spec_kv_indptr, spec_kv_indices, spec_qo_indptr, 
-        hidden_states,
-        pos_ids, spec_kv_indices_mtd, accept_len, input_ids,
-        qo_indptr, kv_indptr, kv_indices, out_cache_loc, mask_indptr, seq_lens,
-        
-        src_verified_id, src_spec_pos, src_spec_loc, 
-        src_spec_kv_indptr, src_spec_kv_indices, src_spec_qo_indptr, 
-        src_hidden_states,
-        src_pos_ids, src_spec_kv_indices_mtd, src_accept_len, src_input_ids,
-        src_qo_indptr, src_kv_indptr, src_kv_indices, src_out_cache_loc, src_mask_indptr, src_seq_lens,
-        
-        token_nums, pad_token_nums, batch_size, 
-        ind_size, ind_size_mtd, ind_size_verify,
-        draft_tokens_expand, hidden_size
-    )
-    print("Update Eagle Inputs: Done (No Check)")
+    run_test("Multi Tensor Copy", copy_tensors_to_buffer_pytorch_reference, copy_tri, [tensors, ranges, out_buffer], inplace_idx=2)
+
+    # 7. Split Last Dim
+    B = 10
+    accept_len = torch.tensor([2, 3, 1, 4, 2, 3, 1, 4, 2, 3], device=device)
+    total_tokens = accept_len.sum().item()
+    next_token_ids = torch.arange(total_tokens, device=device)
+    
+    # Create output buffer for testing
+    max_tokens = accept_len.max().item()
+    output_buffer = torch.empty(B, max_tokens, dtype=next_token_ids.dtype, device=device)
+    
+    run_test("Split Last Dim", split_lastdim_pytorch_reference, split_lastdim_async, [next_token_ids, accept_len, output_buffer])

@@ -19,7 +19,7 @@ from sfllm.engine.schedule_batch import ScheduleBatch, BatchResult
 from sfllm.server_args import ServerArgs
 from sfllm.utils.nutils import configure_logger,resolve_future_token_ids
 from sfllm.kernels.triton_utils import split_lastdim_async
-from sfllm.kernels.triton_utils import move_neg1_to_tail, compact_accepted_tokens,prune_kv_indices
+from sfllm.kernels.triton_utils import move_neg1_to_tail, compact_accepted_tokens,prune_kv_indices,split_firstdim_async
 
 logger = logging.getLogger(__name__)
 class InferenceEngine:
@@ -203,6 +203,8 @@ class InferenceEngine:
             cur_batch = new_batch
 
             if not cur_batch.empty():
+                if self.is_spec_algo:
+                    cur_batch.overlap_affiliated = (hidden_states_buf, compute_stream)
                 with torch.cuda.stream(scheduler_stream):
                     cur_batch.prepare_inputs(is_overlap=True)
                     cur_batch.prepare_sample()
@@ -234,7 +236,7 @@ class InferenceEngine:
                             b = cur_batch.forward_batch_spec.kv_indptr
                         else:
                             b = cur_batch.forward_batch_spec.kv_indptr[1:]+torch.arange(1,1+len(cur_batch), device=device_id)
-                            b = torch.cat([torch.tensor([0], device=device_id), b], dim=0)
+                            b = torch.cat([torch.zeros((1,), dtype=torch.long, device=device_id), b], dim=0)
                         # x1=x.clone()
                         compact_accepted_tokens(x, b, cur_batch.forward_batch.seq_lens)
 
@@ -305,9 +307,8 @@ class InferenceEngine:
                         next_token_ids = model_output.next_token_ids
                         # assert fake_tokenid_indices[:-1]-fake_tokenid_indices[1:] == -1
                         # must !!!!!!!!!!
-                        # future_token_out_buffer = future_tokenid_bufs[
-                        #     fake_tokenid_indices[0]:fake_tokenid_indices[-1]+1].view(len(cur_batch), -1)
-                        # split_lastdim_async(next_token_ids, update_accept_length, future_token_out_buffer)
+                        future_token_out_buffer = future_tokenid_bufs[1:fake_tokenid_indices.shape[0]+1].view(len(cur_batch), -1)
+                        split_lastdim_async(next_token_ids, update_accept_length, future_token_out_buffer)
 
                         # if cur_batch.forward_batch.is_decode():
                         #     # cur_batch.forward_batch.out_cache_loc
@@ -317,18 +318,20 @@ class InferenceEngine:
 
                         #     # even we don't know the accept index yet, we can adjust it in GPU async
                         #     # would it affect when this is in the scheduler stream?                            
-                        cum_update_accept_length = torch.cat([torch.tensor([0], device=device_id), update_accept_length.cumsum(dim=0)], dim=0)
+                        cum_update_accept_length = torch.cat([torch.zeros((1,), dtype=torch.long, device=device_id), update_accept_length.cumsum(dim=0)], dim=0)
                         for idx, seq in enumerate(cur_batch):
                             seq.accept_length = raw_accept_length[idx:idx+1]
                             if cur_batch.forward_batch.is_decode():
-                                # seq.verified_id = future_token_out_buffer[idx:idx+1]
-                                seq.verified_id = next_token_ids[cum_update_accept_length[idx]: cum_update_accept_length[idx + 1]]
-                                seq.hidden_states = model_output.spec_info.hidden_states[cum_update_accept_length[idx]: cum_update_accept_length[idx + 1]]
+                                seq.verified_id = future_token_out_buffer[idx]
+                                # sync the below code
+                                # seq.verified_id = next_token_ids[cum_update_accept_length[idx]: cum_update_accept_length[idx + 1]]
+                                # seq.hidden_states = model_output.spec_info.hidden_states[cum_update_accept_length[idx]: cum_update_accept_length[idx + 1]]
+                                seq.hidden_states = (model_output.spec_info.hidden_states, cum_update_accept_length[idx:idx+2])
                                 seq.out_cache_loc_lazy = cur_batch.forward_batch.out_cache_loc.view(len(cur_batch), num_draft_tokens)[idx]
                             else:
                                 # the first token generated from prefill
-                                seq.verified_id = model_output.spec_info.verified_id[idx:idx+1]
-                                seq.hidden_states = model_output.spec_info.hidden_states[idx:idx+1]
+                                seq.verified_id = model_output.spec_info.verified_id[idx]
+                                seq.hidden_states = (model_output.spec_info.hidden_states[idx:idx+1], torch.arange(0,2, device=device_id))
                         # replace the spec_info with cpu version
                         async_spec_info = model_output.spec_info
                         model_output.spec_info = model_output.spec_info.raw_new()
