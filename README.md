@@ -19,6 +19,9 @@ SFLLM (Serving Framework for Large Language Models) is designed to provide effic
 - **Eagle3 Speculative Decoding**: Advanced speculative decoding with Eagle3 algorithm for faster generation
 - **Overlap Scheduling**: Intelligent overlapping of computation and communication for improved throughput
 - **Eagle3 with CUDA Graph**: Optimized Eagle3 implementation with CUDA graph acceleration
+- **spec decoding with overlap** make the GPU are busy all the time
+    <img width="1509" height="481" alt="image" src="https://github.com/user-attachments/assets/a917fa16-cdd8-4ed5-a426-64aa7460edcc" />
+
 
 ## Installation
 
