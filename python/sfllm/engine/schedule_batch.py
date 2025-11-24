@@ -69,8 +69,8 @@ class ScheduleBatch:
     def fake_tokenid_indices(self, future_limit: int, future_token_stride: int = 1):
         starts = torch.tensor(
             [(seq.sequence_id * future_token_stride) % future_limit for seq in self.sequences],
-            dtype=torch.int64, pin_memory=True)#.to("cpu", non_blocking=True)
-        offsets = torch.arange(-(future_token_stride - 1), 1, dtype=torch.int64, device="cpu")
+            dtype=torch.int64, pin_memory=True, device="cpu").to("cuda", non_blocking=True)
+        offsets = torch.arange(-(future_token_stride - 1), 1, dtype=torch.int64, device="cuda")
         result = (starts[:, None] + offsets).view(-1)
 
         # fake_ids = [range((seq.sequence_id*future_token_stride) % future_limit) for seq in self.sequences]

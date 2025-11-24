@@ -288,27 +288,24 @@ class InferenceEngine:
                             cur_batch.forward_batch_spec.position_ids_extend = cur_batch.forward_batch_spec.position_ids_extend[:token_len]
                             cur_batch.forward_batch_spec.out_cache_loc = cur_batch.forward_batch_spec.out_cache_loc[:token_len]
 
-
-                        # cur_batch.spec_info.verified_id = torch.cat([sequence.verified_id for sequence in cur_batch], dim=0)
-
                 with torch.cuda.stream(compute_stream):
                     compute_stream.wait_stream(scheduler_stream)
                     if cur_batch.forward_batch.is_decode():
                         resolve_future_token_ids(cur_batch.input_ids, future_tokenid_bufs)
                     model_output:BatchResult = self.model_worker.forward(cur_batch)
-                    fake_tokenid_indices = cur_batch.fake_tokenid_indices(future_limit, future_token_stride)
                     cur_batch.add_placeholder_token(future_limit, future_token_stride)
                     if not self.is_spec_algo:
+                        fake_tokenid_indices = cur_batch.fake_tokenid_indices(future_limit, future_token_stride)
                         assert model_output.next_token_ids.shape[-1] == len(cur_batch)
+                        fake_tokenid_indices = fake_tokenid_indices.to(device=device_id, non_blocking=True)
                         future_tokenid_bufs[fake_tokenid_indices] = model_output.next_token_ids
                     else:
                         raw_accept_length = model_output.spec_info.accept_length
                         update_accept_length = raw_accept_length+1
-                        next_token_ids = model_output.next_token_ids
-                        # assert fake_tokenid_indices[:-1]-fake_tokenid_indices[1:] == -1
                         # must !!!!!!!!!!
-                        future_token_out_buffer = future_tokenid_bufs[1:fake_tokenid_indices.shape[0]+1].view(len(cur_batch), -1)
-                        split_lastdim_async(next_token_ids, update_accept_length, future_token_out_buffer)
+                        full_token_size = len(cur_batch) * draft_token_steps 
+                        future_token_out_buffer = future_tokenid_bufs[1:full_token_size+1].view(len(cur_batch), -1)
+                        split_lastdim_async(model_output.next_token_ids, update_accept_length, future_token_out_buffer)
 
                         # if cur_batch.forward_batch.is_decode():
                         #     # cur_batch.forward_batch.out_cache_loc
@@ -336,8 +333,6 @@ class InferenceEngine:
                         async_spec_info = model_output.spec_info
                         model_output.spec_info = model_output.spec_info.raw_new()
                         model_output.spec_info.accept_length_cpu = raw_accept_length.to("cpu", non_blocking=True)
-                        # if async_spec_info.accept_index is not None:
-                        #     model_output.spec_info.accept_index = async_spec_info.accept_index.to("cpu", non_blocking=True)
                         if async_spec_info.out_cache_loc is not None:
                             model_output.spec_info.out_cache_loc = async_spec_info.out_cache_loc.to("cpu", non_blocking=True)
                         model_output.out_cache_loc = cur_batch.forward_batch.out_cache_loc.to("cpu", non_blocking=True)
