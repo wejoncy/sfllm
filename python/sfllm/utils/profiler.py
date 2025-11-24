@@ -78,3 +78,4 @@ class SchedulerProfilerMixin:
         )
         self.torch_profiler.export_chrome_trace(trace_file)
         self.profile_in_progress = False
+        logger.info(f"Traces are saved to: {trace_file}")
