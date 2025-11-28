@@ -229,7 +229,6 @@ class InferenceEngine:
                         seq_mask_len = num_draft_tokens * (cur_batch.forward_batch.seq_lens + num_draft_tokens)
                         cum_seq_mask_len = torch.cumsum(seq_mask_len, dim=0, dtype=torch.int32)
                         cur_batch.forward_batch.mask_indptr[1:] = cum_seq_mask_len
-                        cur_batch.forward_batch_spec.kv_indices = cur_batch.forward_batch_spec.kv_indices_mtd
                         #####
                         x = cur_batch.forward_batch_spec.kv_indices_mtd
                         if cur_batch.spec_info.out_cache_loc is not None:
@@ -238,7 +237,8 @@ class InferenceEngine:
                             b = cur_batch.forward_batch_spec.kv_indptr[1:]+torch.arange(1,1+len(cur_batch), device=device_id)
                             b = torch.cat([torch.zeros((1,), dtype=torch.long, device=device_id), b], dim=0)
                         # x1=x.clone()
-                        compact_accepted_tokens(x, b, cur_batch.forward_batch.seq_lens)
+                        cur_batch.forward_batch_spec.kv_indices_mtd = compact_accepted_tokens(x, b, cur_batch.forward_batch.seq_lens)
+                        cur_batch.forward_batch_spec.kv_indices = cur_batch.forward_batch_spec.kv_indices_mtd
 
                         # row_ids = torch.arange(x.shape[0], device=device_id)
                         # seg_ids = torch.searchsorted(b, row_ids, right=True) - 1  # [N]
@@ -280,9 +280,9 @@ class InferenceEngine:
 
                         x = cur_batch.forward_batch_spec.position_ids_extend
                         b = torch.arange(0, (len(cur_batch)+1)*draft_token_steps, draft_token_steps, device=device_id)
-                        compact_accepted_tokens(x, b, accept_length, fill_value=0)
+                        cur_batch.forward_batch_spec.position_ids_extend = compact_accepted_tokens(x, b, accept_length, fill_value=0)
                         x = cur_batch.forward_batch_spec.out_cache_loc
-                        compact_accepted_tokens(x, b, accept_length, fill_value=0)
+                        cur_batch.forward_batch_spec.out_cache_loc = compact_accepted_tokens(x, b, accept_length, fill_value=0)
                         if cur_batch.spec_info.verified_id.shape[0] != cur_batch.forward_batch_spec.position_ids_extend.shape[0]:
                             token_len = cur_batch.spec_info.verified_id.shape[0]
                             cur_batch.forward_batch_spec.position_ids_extend = cur_batch.forward_batch_spec.position_ids_extend[:token_len]
