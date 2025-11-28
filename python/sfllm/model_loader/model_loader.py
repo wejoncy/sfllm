@@ -126,7 +126,7 @@ def initialize_model(model_name:str, dtype:str="auto"):
         model_name: The name or path of the model to load
     """
     config = transformers.AutoConfig.from_pretrained(model_name)
-    if conf_dtype := getattr(config, "dtype", None):
+    if conf_dtype := getattr(config, "dtype", None) is None:
         conf_dtype = getattr(config, "torch_dtype", None)
         assert conf_dtype is not None, "config dtype is None"
         config.dtype = conf_dtype
