@@ -1,4 +1,5 @@
 from torch import nn
+import torch
 
 class CustomOp(nn.Module):
     def __init__(self):
@@ -9,6 +10,8 @@ class CustomOp(nn.Module):
         raise NotImplementedError
 
     def dispatch_forward(self):
+        if hasattr(self, 'forward_cuda') and torch.cuda.is_available():
+            return self.forward_cuda
         return self.forward_native
 
 
