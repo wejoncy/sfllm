@@ -155,10 +155,20 @@ class RotaryEmbedding(CustomOp):
         query: torch.Tensor,
         key: torch.Tensor,
         offsets: Optional[torch.Tensor] = None,
+        fused_set_kv_buffer_arg: Optional[Tuple[Any, ...]] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         head_size = self.head_size
         def _view_3d(x, head_size):
             return x.view(x.shape[0], -1, head_size)
+        if fused_set_kv_buffer_arg is not None:
+            fused_set_kv_buffer_arg = (
+                _view_3d(fused_set_kv_buffer_arg[0], head_size),
+                _view_3d(fused_set_kv_buffer_arg[1], head_size),
+                _view_3d(fused_set_kv_buffer_arg[2], head_size),
+                fused_set_kv_buffer_arg[3],
+            )
+        else:
+            fused_set_kv_buffer_arg = (None, None, None, None)
         torch.ops.sfkernels.apply_rope_pos_ids_cos_sin_cache(
                     _view_3d(query, head_size),
                     _view_3d(key, head_size),
@@ -167,7 +177,8 @@ class RotaryEmbedding(CustomOp):
                     self.cos_sin_cache,
                     positions.long(),
                     (not self.is_neox_style),
-                    False, None, None, None, None)
+                    False, 
+                    *fused_set_kv_buffer_arg)
         return query, key
 
     def extra_repr(self) -> str:

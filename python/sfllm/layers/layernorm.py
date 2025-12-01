@@ -92,6 +92,8 @@ class RMSNorm(CustomOp):
             return x, residual
     
     def forward_cuda(self, x: torch.Tensor, residual: Optional[torch.Tensor] = None):
+        if self.variance_size_override is not None:
+            return self.forward_native(x, residual)
         import sf_kernel
         orig_dtype = self.override_orig_dtype or x.dtype
         out = torch.empty_like(x, dtype=orig_dtype)
