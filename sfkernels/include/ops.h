@@ -51,3 +51,25 @@ void build_tree_kernel_efficient(
     int64_t depth,
     int64_t draft_token_num,
     int64_t tree_mask_mode);
+
+/*
+ * From csrc/elementwise
+ */
+// void rmsnorm(at::Tensor& output, at::Tensor& input, at::Tensor& weight, double eps, bool enable_pdl);
+// void sgl_fused_add_rmsnorm(torch::Tensor input, torch::Tensor residual, torch::Tensor weight, double eps, bool enable_pdl);
+void silu_and_mul(at::Tensor& out, at::Tensor& input);
+void gelu_tanh_and_mul(at::Tensor& out, at::Tensor& input);
+void gelu_and_mul(at::Tensor& out, at::Tensor& input);
+void apply_rope_pos_ids_cos_sin_cache(
+    at::Tensor q,
+    at::Tensor k,
+    at::Tensor q_rope,
+    at::Tensor k_rope,
+    at::Tensor cos_sin_cache,
+    at::Tensor pos_ids,
+    bool interleave,
+    bool enable_pdl,
+    const std::optional<at::Tensor>& v,
+    const std::optional<at::Tensor>& k_buffer,
+    const std::optional<at::Tensor>& v_buffer,
+    const std::optional<at::Tensor>& kv_cache_loc);
