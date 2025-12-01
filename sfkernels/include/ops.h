@@ -55,7 +55,7 @@ void build_tree_kernel_efficient(
 /*
  * From csrc/elementwise
  */
-// void rmsnorm(at::Tensor& output, at::Tensor& input, at::Tensor& weight, double eps, bool enable_pdl);
+void rmsnorm(at::Tensor& output, at::Tensor& input, at::Tensor& weight, double eps, at::optional<at::Tensor> input_2=at::nullopt);
 // void sgl_fused_add_rmsnorm(torch::Tensor input, torch::Tensor residual, torch::Tensor weight, double eps, bool enable_pdl);
 void silu_and_mul(at::Tensor& out, at::Tensor& input);
 void gelu_tanh_and_mul(at::Tensor& out, at::Tensor& input);
