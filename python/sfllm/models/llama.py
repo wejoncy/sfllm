@@ -153,8 +153,13 @@ class LlamaAttention(nn.Module):
     ) -> torch.Tensor:
         qkv = self.qkv_proj(hidden_states)
         q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
-        q, k = self.rotary_emb(positions, q, k)
-        attn_output = self.attn(q, k, v, forward_batch)
+        if forward_batch.past_key_values is not None:
+            k_buffer,v_buffer = forward_batch.past_key_values[self.attn.layer_id]
+            fused_set_kv_buffer_arg = (v, k_buffer,v_buffer, forward_batch.out_cache_loc)
+        else:
+            fused_set_kv_buffer_arg = None
+        q, k = self.rotary_emb(positions, q, k, fused_set_kv_buffer_arg=fused_set_kv_buffer_arg)
+        attn_output = self.attn(q, k, v, forward_batch, save_kv_cache=False)
         output = self.o_proj(attn_output)
         return output
 

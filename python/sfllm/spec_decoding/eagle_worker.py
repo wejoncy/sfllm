@@ -431,6 +431,7 @@ class EagleWorker:
         # Reshape out_cache_loc to (running_steps, bs * topk)
         out_cache_loc = out_cache_loc.reshape(bs, self.topk, running_steps)
         out_cache_loc = out_cache_loc.permute((2, 0, 1)).reshape(running_steps, -1)
+        out_cache_loc = out_cache_loc.contiguous()
         attn_metadatas = self.attn_metadatas
 
         # Start decoding
