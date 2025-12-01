@@ -69,8 +69,8 @@ class ScheduleBatch:
     def fake_tokenid_indices(self, future_limit: int, future_token_stride: int = 1):
         starts = torch.tensor(
             [(seq.sequence_id * future_token_stride) % future_limit for seq in self.sequences],
-            dtype=torch.int64, pin_memory=True)#.to("cpu", non_blocking=True)
-        offsets = torch.arange(-(future_token_stride - 1), 1, dtype=torch.int64, device="cpu")
+            dtype=torch.int64, pin_memory=True, device="cpu").to("cuda", non_blocking=True)
+        offsets = torch.arange(-(future_token_stride - 1), 1, dtype=torch.int64, device="cuda")
         result = (starts[:, None] + offsets).view(-1)
 
         # fake_ids = [range((seq.sequence_id*future_token_stride) % future_limit) for seq in self.sequences]
@@ -130,14 +130,17 @@ class ScheduleBatch:
             self.spec_info.verified_id = torch.where(self.spec_info.verified_id < 0,torch.zeros_like(self.spec_info.verified_id),
                                                   self.spec_info.verified_id)
             self.spec_info.accept_length = torch.cat([seq.accept_length for seq in self.sequences], dim=-1)
-            assert isinstance(self.sequences[0].hidden_states, tuple)
-            src_hd_list = [ seq.hidden_states[0] for seq in self.sequences]
-            src_range_list = [ seq.hidden_states[1] for seq in self.sequences]
-            src_range = torch.stack(src_range_list, dim=0)
-            draft_steps = hidden_states_buffer.shape[1]
-            hidden_states_buffer = hidden_states_buffer.view(-1, hidden_states_buffer.shape[-1])
-            self.spec_info.hidden_states = copy_tensors_to_buffer(src_hd_list, src_range, hidden_states_buffer)
-            self.spec_info.hidden_states = self.spec_info.hidden_states[:len(src_hd_list)*draft_steps]
+            if hidden_states_buffer is not None:
+                assert isinstance(self.sequences[0].hidden_states, tuple)
+                src_hd_list = [ seq.hidden_states[0] for seq in self.sequences]
+                src_range_list = [ seq.hidden_states[1] for seq in self.sequences]
+                src_range = torch.stack(src_range_list, dim=0)
+                draft_steps = hidden_states_buffer.shape[1]
+                hidden_states_buffer = hidden_states_buffer.view(-1, hidden_states_buffer.shape[-1])
+                self.spec_info.hidden_states = copy_tensors_to_buffer(src_hd_list, src_range, hidden_states_buffer)
+                self.spec_info.hidden_states = self.spec_info.hidden_states[:len(src_hd_list)*draft_steps]
+            else:
+                self.spec_info.hidden_states = torch.cat([seq.hidden_states for seq in self.sequences], dim=0)
             if self.sequences[0].out_cache_loc_lazy is not None:
                 self.spec_info.out_cache_loc = torch.cat([seq.out_cache_loc_lazy for seq in self.sequences])
             # self.spec_info.logits = torch.cat([seq.logits for seq in self.sequences])
@@ -186,10 +189,6 @@ class ScheduleBatch:
         self.forward_batch_spec.kv_indices_mtd = kv_indices_mtd_spec
         self.forward_batch_spec.padded_token = padded_token
         self.forward_batch_spec.out_cache_loc = out_cache_loc_spec
-        if not is_overlap:
-            self.forward_batch_spec.qo_indptr = self.forward_batch.kv_indptr.clone()
-            accept_length = self.spec_info.accept_length.clamp(min=0) + 1
-            self.forward_batch_spec.qo_indptr[1:batch_size + 1] = (accept_length).cumsum(dim=0, dtype=torch.int32)
         self.forward_batch_spec.max_extend_len = max([len(seq.new_tokens) for seq in self.sequences])
         self.forward_batch_spec.position_ids_extend = torch.tensor(
             position_ids_list, dtype=torch.long, pin_memory=True).to(self.device, non_blocking=True)
@@ -216,6 +215,11 @@ class ScheduleBatch:
                 self.forward_batch_spec.qo_indptr = torch.zeros_like(self.forward_batch.kv_indptr)
                 accept_length = self.spec_info.accept_length.clamp(min=0) + 1
                 self.forward_batch_spec.qo_indptr[1:batch_size + 1] = (accept_length).cumsum(dim=0, dtype=torch.int32)
+        else:
+            self.update_spec_info_if_needed(None)
+            self.forward_batch_spec.qo_indptr = self.forward_batch.kv_indptr.clone()
+            accept_length = self.spec_info.accept_length.clamp(min=0) + 1
+            self.forward_batch_spec.qo_indptr[1:batch_size + 1] = (accept_length).cumsum(dim=0, dtype=torch.int32)
 
     def prepare_inputs(self, is_overlap:bool=False):
         cur_seq_lens_list = [0]

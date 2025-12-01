@@ -405,6 +405,7 @@ def split_firstdim_pytorch_reference(
 @triton.jit
 def compact_accepted_tokens_kernel(
     x_ptr,
+    out_ptr,
     kv_indptr_ptr,
     accept_len_ptr,
     batch_size,
@@ -441,7 +442,7 @@ def compact_accepted_tokens_kernel(
             val = tl.load(x_ptr + src_start + cols, mask=mask)
             
             # Write
-            tl.store(x_ptr + dst_start + cols, val, mask=mask)
+            tl.store(out_ptr + dst_start + cols, val, mask=mask)
 
     # 3. Fill Tail Logic
     tail_start = total_accepted
@@ -456,7 +457,7 @@ def compact_accepted_tokens_kernel(
         for off in range(my_start, my_end, BLOCK_SIZE):
             cols = off + tl.arange(0, BLOCK_SIZE)
             mask = cols < my_end
-            tl.store(x_ptr + cols, fill_value, mask=mask)
+            tl.store(out_ptr + cols, fill_value, mask=mask)
 
 
 def compact_accepted_tokens(
@@ -464,10 +465,12 @@ def compact_accepted_tokens(
     kv_indptr: torch.Tensor,
     accept_length: torch.Tensor,
     fill_value: int = -1
-) -> None:
+) -> torch.Tensor:
     batch_size = kv_indptr.shape[0] - 1
     total_size = x.numel()
     
+    output = torch.empty_like(x)
+
     # 2. Launch parallel copy kernel
     # One block per batch is usually enough for draft tokens
     # Use a reasonable block size, e.g., 256, enough to cover most draft lengths
@@ -482,6 +485,7 @@ def compact_accepted_tokens(
     
     compact_accepted_tokens_kernel[grid](
         x,
+        output,
         kv_indptr,
         accept_length,
         batch_size,
@@ -490,6 +494,7 @@ def compact_accepted_tokens(
         BLOCK_SIZE=BLOCK_SIZE,
         BLOCK_BATCH=BLOCK_BATCH
     )
+    return output
 
 
 def compact_accepted_tokens_pytorch_reference(x, kv_indptr, accept_length):

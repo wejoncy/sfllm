@@ -126,7 +126,13 @@ def initialize_model(model_name:str, dtype:str="auto"):
         model_name: The name or path of the model to load
     """
     config = transformers.AutoConfig.from_pretrained(model_name)
-    dtype = config.dtype if dtype == "auto" else getattr(torch, dtype)
+    conf_dtype = getattr(config, "dtype", None)
+    if conf_dtype is None:
+        conf_dtype = getattr(config, "torch_dtype", None)
+        assert conf_dtype is not None, "config dtype is None"
+    conf_dtype = getattr(torch, conf_dtype) if isinstance(conf_dtype, str) else conf_dtype
+    config.dtype = conf_dtype
+    dtype = conf_dtype if dtype == "auto" else getattr(torch, dtype)
     return load_model(model_name, config, dtype)
 
 def load_model(model_name:str, config, dtype:torch.dtype=torch.float16):
