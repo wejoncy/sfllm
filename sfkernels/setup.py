@@ -43,7 +43,7 @@ sources = [
     "csrc/common_extension.cc",
     "csrc/eagle_utils.cu",
     "csrc/elementwise/activation.cu",
-    # "csrc/elementwise/layernorm.cu",
+    "csrc/elementwise/layernorm.cu",
     "csrc/elementwise/rope.cu",
 ]
 
