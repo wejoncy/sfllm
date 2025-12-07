@@ -176,6 +176,9 @@ void rmsnorm(at::Tensor& output, at::Tensor& input, at::Tensor& weight,
     int num_tokens = input.numel() / hidden_size;
     
     CHECK_INPUT(input);
+    if (input_2.has_value()) {
+        CHECK_INPUT(input_2.value());
+    }
     CHECK_INPUT(weight);
     CHECK_INPUT(output);
     
