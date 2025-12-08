@@ -41,7 +41,7 @@ class ModelRunner:
     def __init__(self, server_args: ServerArgs, device_id: int = 0, is_draft: bool = False):
         self.is_draft = is_draft
         if is_draft:
-            model_path = server_args.draft_model_path
+            model_path = server_args.speculative_draft_model_path
         else:
             model_path = server_args.model_path
             self.tokenizer = transformers.AutoTokenizer.from_pretrained(model_path)
