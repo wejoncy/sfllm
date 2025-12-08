@@ -15,7 +15,7 @@ class ServerArgs:
     disable_overlap: bool = False
     # speculative decoding
     speculative_algorithm: Optional[str] = None
-    draft_model_path: Optional[str] = None
+    speculative_draft_model_path: Optional[str] = None
     speculative_eagle_topk: int = 4
     speculative_num_steps: int = 4
     speculative_num_draft_tokens: int = 8
@@ -122,7 +122,7 @@ class ServerArgs:
             help="The speculative decoding algorithm to use.",
         )
         parser.add_argument(
-            "--draft-model-path",
+            "--speculative-draft-model-path",
             type=str,
             default=ServerArgs.draft_model_path,
             help="The path of the draft model.",
