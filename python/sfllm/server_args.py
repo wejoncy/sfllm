@@ -19,6 +19,9 @@ class ServerArgs:
     speculative_eagle_topk: int = 4
     speculative_num_steps: int = 4
     speculative_num_draft_tokens: int = 8
+
+    #piecewise for prefill
+    enable_piecewise_cuda_graph: bool = False
     
     # Optimization/debug options
     cuda_graph_max_bs: Optional[int] = 64
@@ -124,7 +127,7 @@ class ServerArgs:
         parser.add_argument(
             "--speculative-draft-model-path",
             type=str,
-            default=ServerArgs.draft_model_path,
+            default=ServerArgs.speculative_draft_model_path,
             help="The path of the draft model.",
         )
         parser.add_argument(
@@ -149,6 +152,11 @@ class ServerArgs:
             "--enable-debug",
             action="store_true",
             help="Enable debug mode.",
+        )
+        parser.add_argument(
+            "--enable-piecewise-cuda-graph",
+            action="store_true",
+            help="Enable piecewise cuda graph for prefill.",
         )
 
     @classmethod

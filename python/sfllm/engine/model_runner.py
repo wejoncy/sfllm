@@ -70,12 +70,13 @@ class ModelRunner:
         config = self.model.config
         max_kv_splits = 16
         max_batch_size = 512
+        head_dim = getattr(config, "head_dim", config.hidden_size // config.num_attention_heads)
         self.attn_logits = torch.empty(
             (
                 max_batch_size*2,
                 config.num_attention_heads,
                 max_kv_splits,
-                config.head_dim,
+                head_dim,
             ),
             dtype=torch.float32,
             device="cuda",

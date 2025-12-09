@@ -30,6 +30,7 @@ from typing import (
 
 import filelock
 import huggingface_hub.constants
+from transformers.utils.hub import cached_file
 import numpy as np
 import safetensors.torch
 import torch
@@ -61,6 +62,24 @@ def _hf_weight_generator(hf_weights_files, is_safetensors:bool):
             del state
             torch.cuda.empty_cache()
 
+def _get_resolved_base_dir(model_name_or_path, quantize_config_filename) -> Path:
+    if os.path.isdir(model_name_or_path):  # Local
+        resolved_config_file = Path(model_name_or_path) / quantize_config_filename
+        if not resolved_config_file.exists():
+            resolved_config_file = None
+    else:  # Remote
+        user_agent = {"file_type": "config", "from_auto_class": True}
+        try:
+            resolved_config_file = cached_file(
+                model_name_or_path,
+                quantize_config_filename,
+                cache_dir=None,
+                user_agent=user_agent,
+            )
+            resolved_config_file = Path(resolved_config_file)
+        except:  # noqa : E722
+            resolved_config_file = None
+    return resolved_config_file
 
 def _get_resolved_weight_or_index_file(model_name_or_path):
     if Path(model_name_or_path).exists():  # local
@@ -74,7 +93,7 @@ def _get_resolved_weight_or_index_file(model_name_or_path):
             raise FileNotFoundError("model weight is not found")
     else:
         for possible_index_name in ["model.safetensors.index.json", "pytorch_model.bin.index.json"]:
-            weight_or_index_file = BaseQuantizeConfig.get_resolved_base_dir(model_name_or_path, possible_index_name)
+            weight_or_index_file = _get_resolved_base_dir(model_name_or_path, possible_index_name)
             if weight_or_index_file:break
         if not weight_or_index_file:
             for possible_weight_file in ["model.safetensors", "pytorch_model.bin"]:
@@ -84,7 +103,6 @@ def _get_resolved_weight_or_index_file(model_name_or_path):
 
 
 def _load_check_point(model_name_or_path, disable_mmap: bool = False):
-    from transformers.utils.hub import cached_file
     import concurrent
     weight_or_index_file = _get_resolved_weight_or_index_file(model_name_or_path)
     if weight_or_index_file.endswith(".index.json"):

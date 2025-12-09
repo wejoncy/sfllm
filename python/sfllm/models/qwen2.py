@@ -107,6 +107,7 @@ class Qwen2Attention(nn.Module):
             [self.total_num_heads, self.total_num_kv_heads,self.total_num_kv_heads ]
             ).cumsum(dim=-1)*self.head_dim
         self.qkv_proj.weight.offset = offset.int()
+        self.qkv_proj.bias.offset = offset.int()
         self.o_proj = nn.Linear(
             self.total_num_heads * self.head_dim,
             hidden_size,
@@ -166,10 +167,7 @@ class Qwen2DecoderLayer(nn.Module):
             layer_id=layer_id,
             rope_theta=rope_theta,
             rope_scaling=rope_scaling,
-            max_position_embeddings=max_position_embeddings,
-            
-            dual_chunk_attention_config=dual_chunk_attention_config,
-            
+            max_position_embeddings=max_position_embeddings,            
         )
         self.mlp = Qwen2MLP(
             hidden_size=self.hidden_size,
@@ -320,7 +318,7 @@ class Qwen2ForCausalLM(nn.Module):
         self.model = Qwen2Model(config)
 
         # handle the lm head on different pp ranks
-        if self.pp_group.world_size == 1 and config.tie_word_embeddings:
+        if config.tie_word_embeddings:
             self.lm_head = self.model.embed_tokens
         else:
             self.lm_head = nn.Linear(
@@ -359,10 +357,8 @@ class Qwen2ForCausalLM(nn.Module):
 
         if not get_embedding:
             return self.logits_processor(
-                input_ids,
                 hidden_states,
                 self.lm_head,
-                forward_batch,
                 aux_hidden_states,
                 forward_batch,
             )
@@ -406,16 +402,7 @@ class Qwen2ForCausalLM(nn.Module):
                 # Models trained using ColossalAI may include these tensors in
                 # the checkpoint. Skip them.
                 continue
-            if self.config.tie_word_embeddings and "lm_head.weight" in name:
-                if self.pp_group.world_size > 1 and self.pp_group.is_last_rank:
-                    # Handle pp weight tying here
-                    # find the embed_tokens.weight in the weights
-                    embed_token_weights = next(
-                        filter(lambda x: x[0] == "model.embed_tokens.weight", weights)
-                    )[1]
-                    loaded_weight = embed_token_weights
-                else:
-                    continue
+
             if name.startswith("model.vision_tower") and name not in params_dict:
                 continue
 
@@ -429,7 +416,7 @@ class Qwen2ForCausalLM(nn.Module):
                 if name not in params_dict:
                     continue
                 param = params_dict[name]
-                weight_loader = param.weight_loader
+                weight_loader = getattr(param, "weight_loader", default_weight_loader)
                 weight_loader(param, loaded_weight, shard_id)
                 break
             else:
