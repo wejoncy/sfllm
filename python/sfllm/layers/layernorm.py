@@ -90,6 +90,26 @@ class RMSNorm(CustomOp):
             return x
         else:
             return x, residual
+    
+    def forward_cuda(self, x: torch.Tensor, residual: Optional[torch.Tensor] = None):
+        if self.variance_size_override is not None:
+            return self.forward_native(x, residual)
+        import sf_kernel
+        orig_dtype = self.override_orig_dtype or x.dtype
+        out = torch.empty_like(x, dtype=orig_dtype)
+        sf_kernel.rmsnorm(
+            out,
+            x,
+            self.weight,
+            self.variance_epsilon,
+            residual,
+        )
+        if residual is None:
+            return out
+        else:
+            if self.fp32_residual:
+                residual = residual.float()
+            return out, residual
 
 
 class GemmaRMSNorm(CustomOp):

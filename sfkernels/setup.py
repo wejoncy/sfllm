@@ -36,11 +36,15 @@ operator_namespace = "sfkernels"
 include_dirs = [
     root / "include",
     root / "csrc",
+    root / "third_patry/flashinfer/include",
 ]
 
 sources = [
     "csrc/common_extension.cc",
     "csrc/eagle_utils.cu",
+    "csrc/elementwise/activation.cu",
+    "csrc/elementwise/layernorm.cu",
+    "csrc/elementwise/rope.cu",
 ]
 
 default_target = "70"
@@ -71,6 +75,8 @@ nvcc_flags = [
     "-gencode",
     f"arch=compute_{gpu_target},code=sm_{gpu_target}",
     "-DENABLE_BF16",
+    "-DFLASHINFER_ENABLE_F16",
+    "-DFLASHINFER_ENABLE_BF16",
 ]
 if os.name == "nt":
     # Windows specific flags

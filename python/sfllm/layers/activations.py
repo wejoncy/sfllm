@@ -34,6 +34,13 @@ class SiluAndMul(CustomOp):
         d = x.shape[-1] // 2
         return F.silu(x[..., :d]) * x[..., d:]
 
+    def forward_cuda(self, x: torch.Tensor) -> torch.Tensor:
+        d = x.shape[-1] // 2
+        output_shape = x.shape[:-1] + (d,)
+        out = torch.empty(output_shape, dtype=x.dtype, device=x.device)
+        torch.ops.sfkernels.silu_and_mul(out, x)
+        return out
+
 
 class GeluAndMul(CustomOp):
     def __init__(self, approximate="tanh"):
@@ -43,6 +50,16 @@ class GeluAndMul(CustomOp):
     def forward_native(self, x: torch.Tensor) -> torch.Tensor:
         d = x.shape[-1] // 2
         return F.gelu(x[..., :d], approximate=self.approximate) * x[..., d:]
+
+    def forward_cuda(self, x: torch.Tensor) -> torch.Tensor:
+        d = x.shape[-1] // 2
+        output_shape = x.shape[:-1] + (d,)
+        out = torch.empty(output_shape, dtype=x.dtype, device=x.device)
+        if self.approximate == "tanh":
+            torch.ops.sfkernels.gelu_tanh_and_mul(out, x)
+        else:
+            torch.ops.sfkernels.gelu_and_mul(out, x)
+        return out
 
 
 class NewGELU(CustomOp):

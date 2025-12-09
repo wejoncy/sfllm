@@ -45,7 +45,8 @@ except ImportError:
 try:
     build_tree_kernel_efficient = torch.ops.sfkernels.build_tree_kernel_efficient
     verify_tree_greedy = torch.ops.sfkernels.verify_tree_greedy
-    __all__ = ["build_tree_kernel_efficient", "verify_tree_greedy"]
+    rmsnorm = torch.ops.sfkernels.rmsnorm
+    __all__ = ["build_tree_kernel_efficient", "verify_tree_greedy", "rmsnorm"]
 except AttributeError:
     print("Warning: CUDA kernels not available. Functions may not be registered properly.")
     __all__ = []

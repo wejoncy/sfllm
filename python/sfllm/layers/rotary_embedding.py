@@ -148,6 +148,38 @@ class RotaryEmbedding(CustomOp):
         key_rot = self._apply_rotary_emb_wrapped(key_rot, cos, sin, self.is_neox_style)
         key = torch.cat((key_rot, key_pass), dim=-1).reshape(key_shape)
         return query, key
+    
+    def forward_cuda(
+        self,
+        positions: torch.Tensor,
+        query: torch.Tensor,
+        key: torch.Tensor,
+        offsets: Optional[torch.Tensor] = None,
+        fused_set_kv_buffer_arg: Optional[Tuple[Any, ...]] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        head_size = self.head_size
+        def _view_3d(x, head_size):
+            return x.view(x.shape[0], -1, head_size)
+        if fused_set_kv_buffer_arg is not None:
+            fused_set_kv_buffer_arg = (
+                _view_3d(fused_set_kv_buffer_arg[0], head_size),
+                _view_3d(fused_set_kv_buffer_arg[1], head_size),
+                _view_3d(fused_set_kv_buffer_arg[2], head_size),
+                fused_set_kv_buffer_arg[3],
+            )
+        else:
+            fused_set_kv_buffer_arg = (None, None, None, None)
+        torch.ops.sfkernels.apply_rope_pos_ids_cos_sin_cache(
+                    _view_3d(query, head_size),
+                    _view_3d(key, head_size),
+                    _view_3d(query, head_size),
+                    _view_3d(key, head_size),
+                    self.cos_sin_cache,
+                    positions.long(),
+                    (not self.is_neox_style),
+                    False, 
+                    *fused_set_kv_buffer_arg)
+        return query, key
 
     def extra_repr(self) -> str:
         s = f"head_size={self.head_size}, rotary_dim={self.rotary_dim}"
@@ -2228,41 +2260,6 @@ def apply_rotary_pos_emb_native(
     k_embed = k_embed.to(orig_k_dtype)
 
     return q_embed, k_embed
-
-
-def apply_rotary_pos_emb_npu(
-    q: torch.Tensor,
-    k: torch.Tensor,
-    cos: torch.Tensor,
-    sin: torch.Tensor,
-    unsqueeze_dim=1,
-) -> Tuple[torch.Tensor, torch.Tensor]:
-    """Ascend implementation equivalent to apply_rotary_pos_emb_native.
-
-    Args:
-        q: [num_tokens, num_heads, head_size]
-        k: [num_tokens, num_kv_heads, head_size]
-        cos: [num_tokens, head_size]
-        sin: [num_tokens, head_size]
-    """
-    if (
-        cos.dim() != 2
-        or q.dim() != 3
-        or q.shape[1] >= NPU_ROTARY_MUL_MAX_NUM_HEADS
-        or q.shape[2] >= NPU_ROTARY_MUL_MAX_HEAD_SIZE
-    ):
-        # Note: num_heads and head_size of q must be less than 1000 and 896, respectively
-        return apply_rotary_pos_emb_native(q, k, cos, sin, unsqueeze_dim)
-    cos = cos.unsqueeze(unsqueeze_dim).unsqueeze(0)
-    sin = sin.unsqueeze(unsqueeze_dim).unsqueeze(0)
-    q = q.unsqueeze(0)
-    k = k.unsqueeze(0)
-    q_embed = torch_npu.npu_rotary_mul(q, cos, sin)
-    k_embed = torch_npu.npu_rotary_mul(k, cos, sin)
-    q_embed = q_embed.squeeze(0)
-    k_embed = k_embed.squeeze(0)
-    return q_embed, k_embed
-
 
 
 apply_rotary_pos_emb = apply_rotary_pos_emb_native

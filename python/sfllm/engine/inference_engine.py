@@ -47,7 +47,7 @@ class InferenceEngine:
         schedule_batch: ScheduleBatch,
         batch_result: BatchResult,
         failed_sequences: List[RequestSequence],
-    ) -> None:
+    ) -> List[int]:
         """Post-process the model outputs and update the sequences."""
         if not isinstance(batch_result, BatchResult):
             assert False, "Only BatchResult is supported now."
@@ -61,6 +61,8 @@ class InferenceEngine:
             accept_length_cpu = batch_result.spec_info.accept_length_cpu.clamp(min=0)
             cum_token_cnts = (accept_length_cpu+1).cumsum(dim=0).tolist()
             cum_token_cnts = [0] + cum_token_cnts
+        
+        valid_ids = set(range(len(schedule_batch)))
         for idx, sequence in enumerate(schedule_batch):
             if self.enable_overlap:
                 if sequence.status.is_active():
@@ -98,7 +100,7 @@ class InferenceEngine:
                     self.scheduler.running_queue.put(sequence)
             elif not sequence.status.is_active():
                 # a sequence may be calculted one more step after completed
-                pass
+                valid_ids.remove(idx)
             else:
                 neg_idx = len(sequence.out_cache_loc)
                 while neg_idx > 0 and sequence.out_cache_loc[neg_idx-1] < 0:
@@ -111,7 +113,7 @@ class InferenceEngine:
                 # 100 should be safe to set as buffer
                 if sid is not None and sid + 100 < sequence.sequence_id:
                     self.scheduler.abort_requests.remove(sid)
-
+        return list(valid_ids)
 
     def new_request(self, prompt: str|Tuple[str, List[int]], sampling_params: SamplingParams) -> int:
         if isinstance(prompt, str):
@@ -347,8 +349,8 @@ class InferenceEngine:
                 copy_done.synchronize()
                 if self.is_spec_algo:
                     self.model_worker.spec_postprocess(last_batch, model_output, async_overlap=True)
-                self.post_forward(last_batch, model_output, failed_sequences)
-                self.output_batch_queue.put(last_batch)
+                valid_ids = self.post_forward(last_batch, model_output, failed_sequences)
+                self.output_batch_queue.put([last_batch[i] for i in valid_ids])
 
             last_batch = cur_batch
 
@@ -407,6 +409,8 @@ class InferenceEngine:
             while not self.output_batch_queue.empty():
                 new_batch = self.output_batch_queue.get()
                 yield from self.response(new_batch, stream=stream)
+                # all state for a same sequence will share the same sequence object
+                self.output_batch_queue.queue.clear()
             return
 
         import threading
