@@ -8,7 +8,12 @@ import hashlib
 import json
 import logging
 import os
+import glob
+import json
+from pathlib import Path
+import safetensors
 import re
+from tqdm import tqdm
 import tempfile
 from collections import defaultdict
 from typing import (
@@ -39,6 +44,81 @@ logger = logging.getLogger(__name__)
 # lock files in the temp directory will be automatically deleted when the
 # system reboots, so users will not complain about annoying lock files
 temp_dir = tempfile.gettempdir()
+
+def _hf_weight_generator(hf_weights_files, is_safetensors:bool):
+    if is_safetensors:
+        from safetensors.torch import safe_open
+        for st_file in hf_weights_files:
+            with safe_open(st_file, framework="pt", device="cuda") as f:
+                for name in f.keys():  # noqa: SIM118
+                    param = f.get_tensor(name)
+                    yield name, param
+    else:
+        for bin_file in hf_weights_files:
+            state = torch.load(bin_file, map_location="cuda")
+            for name, param in state.items():
+                yield name, param
+            del state
+            torch.cuda.empty_cache()
+
+
+def _get_resolved_weight_or_index_file(model_name_or_path):
+    if Path(model_name_or_path).exists():  # local
+        weight_or_index_file = glob.glob(str(Path(model_name_or_path).absolute()/ '*.index.json'))
+        weight_or_index_file += glob.glob(str(Path(model_name_or_path).absolute()/ '*.safetensors'))
+        weight_or_index_file += glob.glob(str(Path(model_name_or_path).absolute()/ 'pytorch_model*.bin'))
+        if weight_or_index_file: 
+            weight_or_index_file = weight_or_index_file[0]
+            
+        else:
+            raise FileNotFoundError("model weight is not found")
+    else:
+        for possible_index_name in ["model.safetensors.index.json", "pytorch_model.bin.index.json"]:
+            weight_or_index_file = BaseQuantizeConfig.get_resolved_base_dir(model_name_or_path, possible_index_name)
+            if weight_or_index_file:break
+        if not weight_or_index_file:
+            for possible_weight_file in ["model.safetensors", "pytorch_model.bin"]:
+                weight_or_index_file = cached_file(model_name_or_path, possible_weight_file)
+                if weight_or_index_file:break
+    return str(weight_or_index_file)
+
+
+def _load_check_point(model_name_or_path, disable_mmap: bool = False):
+    from transformers.utils.hub import cached_file
+    import concurrent
+    weight_or_index_file = _get_resolved_weight_or_index_file(model_name_or_path)
+    if weight_or_index_file.endswith(".index.json"):
+        with open(weight_or_index_file, "r") as f:
+            index = json.loads(f.read())
+        if "weight_map" in index:
+            index = index["weight_map"]
+        checkpoint_files = sorted(list(set(index.values())))
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            future_to_checkpoint_files = {executor.submit(cached_file, model_name_or_path, f): f for f in checkpoint_files}
+            checkpoint_files = [future.result() for future in concurrent.futures.as_completed(future_to_checkpoint_files)]
+        #checkpoint_files = [cached_file(model_name_or_path, f) for f in checkpoint_files]
+    else:
+        checkpoint_files = [weight_or_index_file]
+
+    if len(checkpoint_files) > 0:
+        for i in tqdm(range(len(checkpoint_files)), desc="loading weights"):
+            if not checkpoint_files[i].endswith("safetensors"):
+                weights = torch.load(checkpoint_files[i], map_location="cuda", weights_only=True)
+                yield weights
+            else:
+                if disable_mmap:# or os.name == "nt":
+                    # weights = safetensors.torch.load_file(checkpoint_files[i], device="cpu")
+                    # yield weights
+                    with open(checkpoint_files[i], "rb") as f:
+                        result = safetensors.torch.load(f.read())
+                        for name, param in result.items():
+                            yield name, param
+                else:
+                    with safetensors.safe_open(checkpoint_files[i], framework="pt", device="cpu") as f:
+                        for name in f.keys():
+                            yield name, f.get_tensor(name)
+    else:
+        raise ValueError(f"{model_name_or_path} is not a folder containing weights or safetensors")
 
 
 def get_layer_id(weight_name):
