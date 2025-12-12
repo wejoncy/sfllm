@@ -22,6 +22,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from sfllm.layers.op_base import CustomOp
+from sfllm.model_loader.weight_utils import set_weight_attrs
 
 logger = logging.getLogger(__name__)
 
@@ -199,25 +200,6 @@ class XIELU(CustomOp):
                     "torch._dynamo is compiling, using Python version of xIELU."
                 )
         return self._xielu_python(input)
-
-def set_weight_attrs(
-    weight: torch.Tensor,
-    weight_attrs: Optional[Dict[str, Any]],
-):
-    """Set attributes on a weight tensor.
-
-    This method is used to set attributes on a weight tensor. This method
-    will not overwrite existing attributes.
-
-    Args:
-        weight: The weight tensor.
-        weight_attrs: A dictionary of attributes to set on the weight tensor.
-    """
-    if weight_attrs is None:
-        return
-    for key, value in weight_attrs.items():
-        assert not hasattr(weight, key), f"Overwriting existing tensor attribute: {key}"
-        setattr(weight, key, value)
 
 class ScaledActivation(nn.Module):
     """An activation function with post-scale parameters.
