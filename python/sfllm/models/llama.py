@@ -80,7 +80,7 @@ class LlamaMLP(nn.Module):
         x = self.act_fn(gate_up)
         x, _ = self.down_proj(
             x,
-            skip_all_reduce=True,
+            # skip_all_reduce=True,
         )
         return x
 
@@ -160,7 +160,7 @@ class LlamaAttention(nn.Module):
             self.scaling,
             num_kv_heads=self.num_kv_heads,
             layer_id=layer_id,
-            quant_config=quant_config,
+            # quant_config=quant_config,
             prefix=add_prefix("attn", prefix),
         )
 

@@ -15,11 +15,14 @@
 
 import os
 import platform
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
 import torch
-from setuptools import find_packages, setup
+from setuptools import Extension, find_packages, setup
+from setuptools.command.build_ext import build_ext
 from torch.utils.cpp_extension import BuildExtension, CUDAExtension
 
 root = Path(__file__).parent.resolve()
@@ -28,6 +31,101 @@ arch = platform.machine().lower()
 
 def _get_version():
     return "0.1.0"
+
+
+class CMakeExtension(Extension):
+    def __init__(self, name: str, sourcedir: str = ""):
+        super().__init__(name, sources=[])
+        self.sourcedir = str(Path(sourcedir).resolve())
+
+
+class CMakeBuild(build_ext):
+    def build_extension(self, ext: Extension) -> None:
+        import torch
+
+        cmake_env = os.environ.copy()
+        if platform.system() == "Windows":
+            try:
+                from setuptools._distutils._msvccompiler import _get_vc_env
+
+                plat_name = getattr(self, "plat_name", None) or "win-amd64"
+                plat_spec = "x64" if "amd64" in plat_name else "x86"
+                cmake_env.update(_get_vc_env(plat_spec))
+            except Exception:
+                # Best effort: CMake may still work if the environment is already configured.
+                pass
+
+        ext_fullpath = Path(self.get_ext_fullpath(ext.name)).resolve()
+        extdir = ext_fullpath.parent
+        extdir.mkdir(parents=True, exist_ok=True)
+
+        cfg = "Debug" if self.debug else "Release"
+        build_temp = Path(self.build_temp) / ext.name.replace(".", "_")
+        build_temp.mkdir(parents=True, exist_ok=True)
+
+        # Generator selection: Ninja gives the best incremental experience.
+        cmake_generator = os.environ.get("CMAKE_GENERATOR")
+        use_ninja = cmake_generator is None and shutil.which("ninja") is not None
+
+        # Keep the build directory stable -> incremental rebuilds.
+        gpu_target = os.environ.get("GPU_TARGET")
+        if gpu_target is None and torch.cuda.is_available() and torch.version.hip is None:
+            try:
+                prop = torch.cuda.get_device_properties(0)
+                gpu_target = str(prop.major * 10 + prop.minor)
+            except Exception:
+                gpu_target = "86"
+        gpu_target = gpu_target or "86"
+
+        # PyTorch's CMake prefers TORCH_CUDA_ARCH_LIST (e.g. 8.6) over CMAKE_CUDA_ARCHITECTURES.
+        try:
+            gpu_target_int = int(gpu_target)
+            torch_cuda_arch_list = f"{gpu_target_int // 10}.{gpu_target_int % 10}"
+        except Exception:
+            torch_cuda_arch_list = "8.6"
+
+        torch_cuda_arch_list = os.environ.get("TORCH_CUDA_ARCH_LIST", torch_cuda_arch_list)
+
+        operator_namespace = os.environ.get("OPERATOR_NAMESPACE", "sfkernels")
+
+        cmake_args = [
+            f"-DCMAKE_LIBRARY_OUTPUT_DIRECTORY={extdir}",
+            f"-DCMAKE_ARCHIVE_OUTPUT_DIRECTORY={build_temp}",
+            f"-DCMAKE_RUNTIME_OUTPUT_DIRECTORY={extdir}",
+            f"-DCMAKE_BUILD_TYPE={cfg}",
+            f"-DGPU_TARGET={gpu_target}",
+            f"-DOPERATOR_NAMESPACE={operator_namespace}",
+            f"-DPython3_EXECUTABLE={sys.executable}",
+            # Let CMake find Torch via PyTorch's bundled CMake config.
+            f"-DCMAKE_PREFIX_PATH={torch.utils.cmake_prefix_path}",
+            f"-DTORCH_CUDA_ARCH_LIST={torch_cuda_arch_list}",
+        ]
+
+        build_args = ["--config", cfg]
+        if use_ninja:
+            cmake_args += ["-G", "Ninja"]
+        elif cmake_generator is not None:
+            cmake_args += ["-G", cmake_generator]
+
+        # Parallel build
+        if "CMAKE_BUILD_PARALLEL_LEVEL" not in os.environ:
+            build_args += ["--", f"-j{os.cpu_count() or 8}"]
+
+        subprocess.check_call(["cmake", ext.sourcedir, *cmake_args], cwd=build_temp, env=cmake_env)
+        subprocess.check_call(["cmake", "--build", ".", *build_args], cwd=build_temp, env=cmake_env)
+
+        # CMake builds an untagged module name (e.g. common_ops.pyd). The setuptools
+        # build pipeline expects an ABI-tagged filename (e.g. common_ops.cp312-win_amd64.pyd)
+        # and may copy/rename it for us; clean up the untagged artifact.
+        try:
+            untagged = extdir / "common_ops.pyd"
+            if untagged.exists() and untagged != ext_fullpath and ext_fullpath.exists():
+                untagged.unlink()
+                manifest = extdir / "common_ops.pyd.manifest"
+                if manifest.exists():
+                    manifest.unlink()
+        except Exception:
+            pass
 
 
 # D:\Users\wen\miniconda3\Lib\site-packages\torch\include\torch\csrc\dynamo\compiled_autograd.h:1134
@@ -41,10 +139,12 @@ include_dirs = [
 
 sources = [
     "csrc/common_extension.cc",
-    "csrc/eagle_utils.cu",
+    "csrc/spec/eagle_utils.cu",
     "csrc/elementwise/activation.cu",
     "csrc/elementwise/layernorm.cu",
     "csrc/elementwise/rope.cu",
+    "csrc/quant/per_token_quant_fp8.cu",
+    "csrc/quant/per_tensor_quant_fp8.cu",
 ]
 
 default_target = "70"
@@ -138,12 +238,19 @@ ext_modules = [
     ),
 ]
 
+use_cmake = os.environ.get("USE_CMAKE", "0") in ("1", "true", "True")
+if use_cmake:
+    ext_modules = [CMakeExtension("sf_kernel.common_ops", sourcedir=str(root))]
+    cmdclass = {"build_ext": CMakeBuild}
+else:
+    cmdclass = {"build_ext": BuildExtension.with_options(use_ninja=True)}
+
 setup(
     name="sf_kernel",
     version=_get_version(),
     packages=find_packages(where="python"),
     package_dir={"": "python"},
     ext_modules=ext_modules,
-    cmdclass={"build_ext": BuildExtension.with_options(use_ninja=True)},
+    cmdclass=cmdclass,
     options={"bdist_wheel": {"py_limited_api": "cp39"}},
 )

@@ -9,7 +9,12 @@ class ServerArgs:
     tokenizer_path: Optional[str] = None
     tokenizer_mode: str = "auto"
     tokenizer_worker_num: int = 1
+
+    #dtype and quantization
     dtype: Literal["float16", "bfloat16", "float32", "auto"] = "auto"
+    quantization: Optional[str] = None
+
+    # Resource management
     mem_fraction: float = 0.7
     max_context_length: int = 8192
     disable_overlap: bool = False
@@ -51,6 +56,13 @@ class ServerArgs:
             default=ServerArgs.dtype,
             choices=["half", "float16", "bfloat16", "float32"],
             help="The data type for model weights and computations.",
+        )
+        parser.add_argument(
+            "--quantization",
+            type=str,
+            default=ServerArgs.quantization,
+            choices=[None, "int8", "fp8"],
+            help="The quantization method for model weights.",
         )
         parser.add_argument(
             "--tokenizer-path",

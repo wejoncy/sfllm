@@ -198,3 +198,27 @@ def set_weight_attrs(
     for key, value in weight_attrs.items():
         assert not hasattr(weight, key), f"Overwriting existing tensor attribute: {key}"
         setattr(weight, key, value)
+
+def replace_parameter(layer: torch.nn.Module, param_name: str, new_data: torch.Tensor):
+    """
+    Replace a parameter of a layer while maintaining the ability to reload the weight.
+    Called within implementations of the `process_weights_after_loading` method.
+
+    This function should not be called on weights which are tied/shared
+
+    Args:
+        layer: Layer containing parameter to replace
+        param_name: Name of parameter to replace
+        new_data: New data of the new parameter
+    """
+    # should not be used on a tied/shared param
+    if isinstance(new_data, torch.nn.Parameter):
+        new_data = new_data.data
+    new_param = torch.nn.Parameter(new_data, requires_grad=False)
+
+    old_param: torch.nn.Parameter | None = getattr(layer, param_name, None)
+    if old_param is not None and hasattr(old_param, "weight_loader"):
+        weight_loader = old_param.weight_loader
+        set_weight_attrs(new_param, {"weight_loader": weight_loader})
+
+    setattr(layer, param_name, new_param)
