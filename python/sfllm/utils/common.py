@@ -13,6 +13,7 @@
 # ==============================================================================
 """Common utilities."""
 from __future__ import annotations
+import os
 from typing import Callable, List, Optional
 import numpy as np
 import logging
@@ -146,3 +147,14 @@ def direct_register_custom_op(
     except AttributeError as error:
         # Always re-raise AttributeError as it indicates missing dependencies
         raise error
+
+
+def get_bool_env_var(name: str, default: str = "false") -> bool:
+    # FIXME: move your environment variable to sglang.srt.environ
+    value = os.getenv(name, default)
+    value = value.lower()
+
+    truthy_values = ("true", "1")
+    falsy_values = ("false", "0")
+
+    return value in truthy_values

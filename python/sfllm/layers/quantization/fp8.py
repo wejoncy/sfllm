@@ -8,15 +8,10 @@ from torch.nn.parameter import Parameter
 from sfllm.utils.platform import current_platform
 
 # from vllm import _custom_ops as ops
-
-from sfllm.layers.linear import (
-    LinearBase,
-    LinearMethodBase,
-    UnquantizedLinearMethod,
-)
 from sfllm.layers.quantization.base_config import (
     QuantizationConfig,
     QuantizeMethodBase,
+    LinearMethodBase,
 )
 from sfllm.utils import get_tensor_model_parallel_world_size,get_tensor_model_parallel_rank
 
@@ -33,7 +28,7 @@ from sfllm.layers.quantization.fp8_utils import (
     _is_fp8_fnuz,
 )
 
-from sfllm.layers.linear import UnquantizedLinearMethod
+from sfllm.layers.quantization.unquant import UnquantizedLinearMethod
 from sfllm.layers.quantization.utils import (
     convert_to_channelwise,
     is_layer_skipped,

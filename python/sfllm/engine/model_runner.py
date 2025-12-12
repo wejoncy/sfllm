@@ -45,7 +45,7 @@ class ModelRunner:
         else:
             model_path = server_args.model_path
             self.tokenizer = transformers.AutoTokenizer.from_pretrained(model_path)
-        self.model = initialize_model(model_path, server_args.dtype)
+        self.model = initialize_model(model_path, server_args.dtype, server_args.quantization)
         self.device_id = device_id
         self.sampler = Sampler(self.model.config)
         self.rank = 0

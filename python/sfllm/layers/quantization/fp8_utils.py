@@ -12,8 +12,15 @@ from sfllm.layers.quantization.fp8_kernel import (
     w8a8_block_fp8_matmul_deepgemm,
     w8a8_block_fp8_matmul_triton,
 )
+from sfllm.utils import get_bool_env_var
+from sfllm.utils.platform import current_platform
 
 _is_fp8_fnuz = is_fp8_fnuz()
+_is_cuda = current_platform.is_cuda()
+_is_torch_scale_mm_available = current_platform.has_device_capability((8,9))
+# Input scaling factors are no longer optional in _scaled_mm starting
+# from pytorch 2.5. Allocating a dummy tensor to pass as input_scale
+TORCH_DEVICE_IDENTITY = None
 
 CUTLASS_BLOCK_FP8_SUPPORTED = False
 
@@ -115,6 +122,14 @@ def _apply_fallback_scaled_mm(
     bias,
     input_dtype,
 ):
+    if not _is_torch_scale_mm_available:
+        # Massage the input to be 2D
+        qinput = qinput.view(-1, qinput.shape[-1])
+        output = triton_scaled_mm(
+            qinput, weight, x_scale, weight_scale, input_dtype, bias
+        )
+        return output.view(*output_shape)
+
     global TORCH_DEVICE_IDENTITY
     if TORCH_DEVICE_IDENTITY is None:
         TORCH_DEVICE_IDENTITY = torch.ones(1, dtype=torch.float32, device=weight.device)
@@ -200,7 +215,7 @@ def apply_fp8_linear(
                     qinput, x_scale = per_token_group_quant_fp8(
                         input_2d, group_size=input_2d.shape[1]
                     )
-# torch.scaled_mm supports per tensor weights + activations only
+    # torch.scaled_mm supports per tensor weights + activations only
     # so fallback to naive if per channel or per token
     per_tensor_weights = weight_scale.numel() == 1
     per_tensor_activations = x_scale.numel() == 1
