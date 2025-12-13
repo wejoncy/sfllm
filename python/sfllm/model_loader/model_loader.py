@@ -90,13 +90,23 @@ def initialize_model(model_name:str, dtype:str="auto", quantization:Optional[str
         model_name: The name or path of the model to load
     """
     model_config = ModelConfig(model_name, quantization=quantization)
+    before_avail_memory, _ = torch.cuda.mem_get_info(0)
     model = load_model(model_config)
-
     with TorchDefaultReset(model_config.dtype, device="cuda"):
         for _, module in model.named_modules():
             quant_method = getattr(module, "quant_method", None)
             if quant_method is not None:
                 quant_method.process_weights_after_loading(module)
+    torch.cuda.empty_cache()
+    after_avail_memory,_ = torch.cuda.mem_get_info(0)
+    weight_load_mem_usage = before_avail_memory - after_avail_memory
+    logger.info(
+        f"Load weight end. "
+        f"type={type(model).__name__}, "
+        f"dtype={model_config.dtype}, "
+        f"avail mem={after_avail_memory / 1024 ** 3:.2f} GB, "
+        f"weight load={weight_load_mem_usage / 1024 ** 3:.2f} GB."
+    )
     return model
 
 
@@ -115,20 +125,10 @@ def load_model(model_config: ModelConfig):
     packed_modules_mapping = getattr(model_class, "packed_modules_mapping", {})
     remap_prefix = getattr(model_class, "remap_prefix", None)
     quant_config = _get_quantization_config(model_config, packed_modules_mapping, remap_prefix)
-    before_avail_memory, _ = torch.cuda.mem_get_info(0)
     with TorchDefaultReset(model_config.dtype, device="cuda"):
         model = model_class(model_config.hf_config, quant_config=quant_config)
         weight_iterator = _load_check_point(model_config.model_path)
         model.load_weights(weight_iterator)
     model = model.eval()
-    after_avail_memory,_ = torch.cuda.mem_get_info(0)
-    weight_load_mem_usage = before_avail_memory - after_avail_memory
-    logger.info(
-        f"Load weight end. "
-        f"type={type(model).__name__}, "
-        f"dtype={model_config.dtype}, "
-        f"avail mem={after_avail_memory / 1024 ** 3:.2f} GB, "
-        f"weight load={weight_load_mem_usage / 1024 ** 3:.2f} GB."
-    )
     model.dtype = model_config.dtype
     return model
