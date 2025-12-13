@@ -124,10 +124,10 @@ def _apply_fallback_scaled_mm(
 ):
     if not _is_torch_scale_mm_available:
         # Massage the input to be 2D
-        qinput = qinput.view(-1, qinput.shape[-1])
-        output = triton_scaled_mm(
-            qinput, weight, x_scale, weight_scale, input_dtype, bias
-        )
+        x = (qinput.to(input_dtype) * x_scale).to(input_dtype)
+        output = x@((weight.to(x.dtype)*weight_scale).to(x.dtype))
+        output = output if bias is None else output + bias
+
         return output.view(*output_shape)
 
     global TORCH_DEVICE_IDENTITY
@@ -244,6 +244,13 @@ def apply_fp8_linear(
         return _process_scaled_mm_output(output, input_2d.shape, output_shape)
 
     if per_tensor_weights and per_tensor_activations:
+        if not _is_torch_scale_mm_available:
+            # Massage the input to be 2D
+            x = (qinput.to(input.dtype) * x_scale).to(input.dtype)
+            output = x@((weight.to(x.dtype)*weight_scale).to(x.dtype))
+            output = output if bias is None else output + bias
+            return output.view(*output_shape)
+
         # Fused GEMM_DQ
         output = torch._scaled_mm(
             qinput,
