@@ -140,7 +140,7 @@ def apply_int8_linear(
             result += bias
         return result
     
-    result = input @ (weight.t().bfloat16() * weight_scale.bfloat16())
+    result = input @ (weight.bfloat16() * weight_scale.bfloat16())
     if bias is not None:
         result += bias
     return result
