@@ -179,3 +179,46 @@ def default_weight_loader(
         # NOTE: This exception is added for the purpose of setting breakpoint to
         # debug weight loading issues.
         raise
+
+def set_weight_attrs(
+    weight: torch.Tensor,
+    weight_attrs: Optional[Dict[str, Any]],
+):
+    """Set attributes on a weight tensor.
+
+    This method is used to set attributes on a weight tensor. This method
+    will not overwrite existing attributes.
+
+    Args:
+        weight: The weight tensor.
+        weight_attrs: A dictionary of attributes to set on the weight tensor.
+    """
+    if weight_attrs is None:
+        return
+    for key, value in weight_attrs.items():
+        assert not hasattr(weight, key), f"Overwriting existing tensor attribute: {key}"
+        setattr(weight, key, value)
+
+def replace_parameter(layer: torch.nn.Module, param_name: str, new_data: torch.Tensor):
+    """
+    Replace a parameter of a layer while maintaining the ability to reload the weight.
+    Called within implementations of the `process_weights_after_loading` method.
+
+    This function should not be called on weights which are tied/shared
+
+    Args:
+        layer: Layer containing parameter to replace
+        param_name: Name of parameter to replace
+        new_data: New data of the new parameter
+    """
+    # should not be used on a tied/shared param
+    if isinstance(new_data, torch.nn.Parameter):
+        new_data = new_data.data
+    new_param = torch.nn.Parameter(new_data, requires_grad=False)
+
+    old_param: torch.nn.Parameter | None = getattr(layer, param_name, None)
+    if old_param is not None and hasattr(old_param, "weight_loader"):
+        weight_loader = old_param.weight_loader
+        set_weight_attrs(new_param, {"weight_loader": weight_loader})
+
+    setattr(layer, param_name, new_param)

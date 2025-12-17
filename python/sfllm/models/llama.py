@@ -26,28 +26,16 @@ from transformers import LlamaConfig
 
 from sfllm.layers.activations import SiluAndMul
 from sfllm.layers.radix_attention import RadixAttention
+from sfllm.layers.linear import QKVParallelLinear, RowParallelLinear,MergedColumnParallelLinear
 from sfllm.layers.rotary_embedding import get_rope
 from sfllm.layers.layernorm import RMSNorm
-from sfllm.engine.forward_params import ForwardMode, ForwardBatch
-from sfllm.server_args import get_global_server_args
+from sfllm.engine.forward_params import ForwardBatch
 from sfllm.engine.schedule_batch import LogitsProcessorOutput
 from sfllm.model_loader.weight_utils import default_weight_loader,get_layer_id
+from sfllm.layers.quantization import QuantizationConfig
+from sfllm.utils import add_prefix, get_tensor_model_parallel_world_size,make_layers_non_pp
 
 logger = logging.getLogger(__name__)
-
-
-def make_layers_non_pp(
-    num_hidden_layers: int,
-    layer_fn,
-) -> torch.nn.ModuleList:
-
-    layers = torch.nn.ModuleList(
-            (
-                layer_fn(idx=idx)
-                for idx in range(num_hidden_layers)
-            )
-        )
-    return layers,0, num_hidden_layers
 
 
 class LlamaMLP(nn.Module):
@@ -56,17 +44,25 @@ class LlamaMLP(nn.Module):
         hidden_size: int,
         intermediate_size: int,
         hidden_act: str,
+        quant_config: Optional[QuantizationConfig] = None,
+        prefix: str = "",
+        reduce_results: bool = True,
     ) -> None:
         super().__init__()
-        self.gate_up_proj = nn.Linear(
+        self.gate_up_proj = MergedColumnParallelLinear(
             hidden_size,
-            intermediate_size*2,
+            [intermediate_size] * 2,
             bias=False,
+            quant_config=quant_config,
+            prefix=add_prefix("gate_up_proj", prefix),
         )
-        self.down_proj = nn.Linear(
+        self.down_proj = RowParallelLinear(
             intermediate_size,
             hidden_size,
             bias=False,
+            quant_config=quant_config,
+            prefix=add_prefix("down_proj", prefix),
+            reduce_results=reduce_results,
         )
         if hidden_act != "silu":
             raise ValueError(
@@ -80,9 +76,12 @@ class LlamaMLP(nn.Module):
         x,
         forward_batch=None,
     ):
-        gate_up = self.gate_up_proj(x)
+        gate_up, _ = self.gate_up_proj(x)
         x = self.act_fn(gate_up)
-        x = self.down_proj(x)
+        x, _ = self.down_proj(
+            x,
+            # skip_all_reduce=True,
+        )
         return x
 
 
@@ -98,14 +97,26 @@ class LlamaAttention(nn.Module):
         rope_scaling: Optional[Dict[str, Any]] = None,
         rope_is_neox_style: bool = True,
         max_position_embeddings: int = 8192,
+        quant_config: Optional[QuantizationConfig] = None,
+        prefix: str = "",
         bias: bool = False,
     ) -> None:
         super().__init__()
         self.hidden_size = hidden_size
+        tp_size = get_tensor_model_parallel_world_size()
         self.total_num_heads = num_heads
-        self.num_heads = self.total_num_heads
+        assert self.total_num_heads % tp_size == 0
+        self.num_heads = self.total_num_heads // tp_size
         self.total_num_kv_heads = num_kv_heads
-        self.num_kv_heads = self.total_num_kv_heads
+        if self.total_num_kv_heads >= tp_size:
+            # Number of KV heads is greater than TP size, so we partition
+            # the KV heads across multiple tensor parallel GPUs.
+            assert self.total_num_kv_heads % tp_size == 0
+        else:
+            # Number of KV heads is less than TP size, so we replicate
+            # the KV heads across multiple tensor parallel GPUs.
+            assert tp_size % self.total_num_kv_heads == 0
+        self.num_kv_heads = max(1, self.total_num_kv_heads // tp_size)
         # MistralConfig has an optional head_dim introduced by Mistral-Nemo
         self.head_dim = getattr(
             config, "head_dim", self.hidden_size // self.total_num_heads
@@ -118,15 +129,21 @@ class LlamaAttention(nn.Module):
         self.rope_theta = rope_theta
         self.max_position_embeddings = max_position_embeddings
 
-        self.qkv_proj = nn.Linear(
+        self.qkv_proj = QKVParallelLinear(
             hidden_size,
-            self.head_dim*(self.total_num_heads+self.total_num_kv_heads*2),
+            self.head_dim,
+            self.total_num_heads,
+            self.total_num_kv_heads,
             bias=bias,
+            quant_config=quant_config,
+            prefix=add_prefix("qkv_proj", prefix),
         )
-        self.o_proj = nn.Linear(
+        self.o_proj = RowParallelLinear(
             self.total_num_heads * self.head_dim,
             hidden_size,
             bias=bias,
+            quant_config=quant_config,
+            prefix=add_prefix("o_proj", prefix),
         )
 
         self.rotary_emb = get_rope(
@@ -143,6 +160,8 @@ class LlamaAttention(nn.Module):
             self.scaling,
             num_kv_heads=self.num_kv_heads,
             layer_id=layer_id,
+            # quant_config=quant_config,
+            prefix=add_prefix("attn", prefix),
         )
 
     def forward(
@@ -151,7 +170,7 @@ class LlamaAttention(nn.Module):
         hidden_states: torch.Tensor,
         forward_batch: ForwardBatch,
     ) -> torch.Tensor:
-        qkv = self.qkv_proj(hidden_states)
+        qkv, _ = self.qkv_proj(hidden_states)
         q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
         if forward_batch.past_key_values is not None:
             k_buffer,v_buffer = forward_batch.past_key_values[self.attn.layer_id]
@@ -160,7 +179,7 @@ class LlamaAttention(nn.Module):
             fused_set_kv_buffer_arg = None
         q, k = self.rotary_emb(positions, q, k, fused_set_kv_buffer_arg=fused_set_kv_buffer_arg)
         attn_output = self.attn(q, k, v, forward_batch, save_kv_cache=False)
-        output = self.o_proj(attn_output)
+        output, _ = self.o_proj(attn_output)
         return output
 
 
@@ -169,6 +188,8 @@ class LlamaDecoderLayer(nn.Module):
         self,
         config: LlamaConfig,
         layer_id: int = 0,
+        quant_config: Optional[QuantizationConfig] = None,
+        prefix: str = "",
     ) -> None:
         super().__init__()
         self.hidden_size = config.hidden_size
@@ -197,12 +218,16 @@ class LlamaDecoderLayer(nn.Module):
             rope_scaling=rope_scaling,
             rope_is_neox_style=rope_is_neox_style,
             max_position_embeddings=max_position_embeddings,
+            quant_config=quant_config,
+            prefix=add_prefix("self_attn", prefix),
             bias=attention_bias,
         )
         self.mlp = LlamaMLP(
             hidden_size=self.hidden_size,
             intermediate_size=config.intermediate_size,
             hidden_act=config.hidden_act,
+            quant_config=quant_config,
+            prefix=add_prefix("mlp", prefix),
         )
         self.input_layernorm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.post_attention_layernorm = RMSNorm(
@@ -238,6 +263,8 @@ class LlamaModel(nn.Module):
     def __init__(
         self,
         config: LlamaConfig,
+        quant_config: Optional[QuantizationConfig] = None,
+        prefix: str = "",
     ) -> None:
         super().__init__()
         self.config = config
@@ -346,21 +373,23 @@ class LlamaForCausalLM(nn.Module):
     def _init_model(
         self,
         config: LlamaConfig,
+        quant_config: Optional[QuantizationConfig] = None,
+        prefix: str = "",
     ):
-        return LlamaModel(config)
+        return LlamaModel(config, quant_config=quant_config, prefix=prefix)
 
     @torch.no_grad()
     def forward(
         self,
         input_ids: torch.Tensor,
-        position_ids: torch.Tensor,
+        positions: torch.Tensor,
         forward_batch: ForwardBatch,
         input_embeds: torch.Tensor = None,
         get_embedding: bool = False,
     ) -> LogitsProcessorOutput:
         hidden_states = self.model(
             input_ids,
-            position_ids,
+            positions,
             forward_batch,
             input_embeds,
         )

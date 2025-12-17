@@ -25,8 +25,11 @@ import torch
 from torch import nn
 from transformers import LlamaConfig
 from sfllm.models.llama import LlamaDecoderLayer, LlamaForCausalLM,LlamaMLP,default_weight_loader
-from sfllm.engine.forward_params import ForwardMode, ForwardBatch
+from sfllm.engine.forward_params import  ForwardBatch
 from sfllm.layers.layernorm import RMSNorm
+from sfllm.layers.linear import QKVParallelLinear
+from sfllm.layers.quantization import QuantizationConfig
+from sfllm.utils import add_prefix, get_tensor_model_parallel_world_size,make_layers_non_pp
 
 
 class LlamaDecoderLayer(LlamaDecoderLayer):
@@ -34,19 +37,21 @@ class LlamaDecoderLayer(LlamaDecoderLayer):
         self,
         config: LlamaConfig,
         layer_id: int = 0,
+        quant_config: Optional[QuantizationConfig] = None,
+        prefix: str = "",
     ) -> None:
-        super().__init__(config, layer_id)
+        super().__init__(config, layer_id, quant_config, prefix)
 
         # override qkv
-        self.self_attn.qkv_proj = nn.Linear(
+        self.self_attn.qkv_proj = QKVParallelLinear(
             2 * self.hidden_size,
-            self.self_attn.head_dim*(self.self_attn.total_num_heads+self.self_attn.total_num_kv_heads*2),
+            self.self_attn.head_dim,
+            self.self_attn.total_num_heads,
+            self.self_attn.total_num_kv_heads,
             bias=False,
+            quant_config=quant_config,
+            prefix=add_prefix("qkv_proj", prefix),
         )
-        offset = torch.Tensor(
-            [self.self_attn.total_num_heads, self.self_attn.total_num_kv_heads,self.self_attn.total_num_kv_heads ]
-            ).cumsum(dim=-1)*self.self_attn.head_dim
-        self.self_attn.qkv_proj.weight.offset = offset.int()
 
         if config.model_type == "llama4_text":
             inter_size = config.intermediate_size_mlp
@@ -54,7 +59,7 @@ class LlamaDecoderLayer(LlamaDecoderLayer):
             inter_size = config.intermediate_size
 
         self.mlp = LlamaMLP(
-            config.hidden_size, inter_size, config.hidden_act
+            config.hidden_size, inter_size, config.hidden_act, quant_config, prefix
         )
 
         self.hidden_norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
@@ -92,6 +97,8 @@ class LlamaModel(nn.Module):
     def __init__(
         self,
         config: LlamaConfig,
+        quant_config: Optional[QuantizationConfig] = None,
+        prefix: str = "",
     ) -> None:
         super().__init__()
         self.config = config
@@ -122,7 +129,7 @@ class LlamaModel(nn.Module):
             bias=getattr(config, "bias", False),
         )
 
-        self.midlayer = LlamaDecoderLayer(config, 0)
+        self.midlayer = LlamaDecoderLayer(config, 0, quant_config, prefix)
 
         self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
@@ -170,14 +177,18 @@ class LlamaForCausalLMEagle3(LlamaForCausalLM):
     def __init__(
         self,
         config: LlamaConfig,
+        quant_config: Optional[QuantizationConfig] = None,
+        prefix: str = "",
     ) -> None:
         nn.Module.__init__(self)
         self.config = config
+        self.quant_config = quant_config
         if self.config.num_hidden_layers != 1:
             raise ValueError("EAGLE3 currently only supports 1 layer")
 
         self.model = LlamaModel(
-            config)
+            config, quant_config=quant_config, prefix=add_prefix("model", prefix)
+        )
         # Llama 3.2 1B Instruct set tie_word_embeddings to True
         # Llama 3.1 8B Instruct set tie_word_embeddings to False
         self.load_lm_head_from_target = False

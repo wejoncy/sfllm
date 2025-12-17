@@ -374,7 +374,8 @@ __device__ __forceinline__ dstDtype castFromFloat(float val) {
 #ifndef USE_ROCM
 #include <c10/util/Float8_e4m3fn.h>
 using FP8_TYPE = c10::Float8_e4m3fn;
-constexpr auto FP8_E4M3_MAX = std::numeric_limits<FP8_TYPE>::max();
+// NOTE: Keep this device-friendly (no std::numeric_limits in device code).
+constexpr float FP8_E4M3_MAX = 448.0f;
 #else  // USE_ROCM
 #if HIP_FP8_TYPE_FNUZ
 #include <c10/util/Float8_e4m3fnuz.h>

@@ -45,7 +45,7 @@ class ModelRunner:
         else:
             model_path = server_args.model_path
             self.tokenizer = transformers.AutoTokenizer.from_pretrained(model_path)
-        self.model = initialize_model(model_path, server_args.dtype)
+        self.model = initialize_model(model_path, server_args.dtype, server_args.quantization)
         self.device_id = device_id
         self.sampler = Sampler(self.model.config)
         self.rank = 0
@@ -202,7 +202,7 @@ class ModelRunner:
         with torch.no_grad():
             self.model(
                 self.input_ids[:profile_batch]*0,
-                position_ids=self.position_ids[:profile_batch]*0,
+                positions=self.position_ids[:profile_batch]*0,
                 forward_batch=forward_batch,
             )
 
@@ -225,7 +225,7 @@ class ModelRunner:
 
         self.model(
             self.input_ids[:batch_size],
-            position_ids=self.position_ids[:batch_size],
+            positions=self.position_ids[:batch_size],
             forward_batch=forward_batch,
         )
         with freeze_gc(False):
@@ -238,7 +238,7 @@ class ModelRunner:
                 with torch.cuda.graph(cudagraph, stream=self.compute_stream, pool=self.graph_pool):
                     output = self.model(
                         self.input_ids[:batch_size],
-                        position_ids=self.position_ids[:batch_size],
+                        positions=self.position_ids[:batch_size],
                         forward_batch=forward_batch,
                     )
                 torch.cuda.synchronize()
@@ -270,7 +270,7 @@ class ModelRunner:
 
         self.model(
             self.input_ids[:batch_size*draft_tokens_expand],
-            position_ids=self.position_ids[:batch_size*draft_tokens_expand],
+            positions=self.position_ids[:batch_size*draft_tokens_expand],
             forward_batch=forward_batch,
         )
 
@@ -285,7 +285,7 @@ class ModelRunner:
                 with torch.cuda.graph(cudagraph, stream=self.compute_stream, pool=self.graph_pool):
                     output = self.model(
                         self.input_ids[:batch_size*draft_tokens_expand],
-                        position_ids=self.position_ids[:batch_size*draft_tokens_expand],
+                        positions=self.position_ids[:batch_size*draft_tokens_expand],
                         forward_batch=forward_batch,
                     )
                 torch.cuda.synchronize()
@@ -318,7 +318,7 @@ class ModelRunner:
 
         self.model(
             self.input_ids[:token_nums],
-            position_ids=self.position_ids[:token_nums],
+            positions=self.position_ids[:token_nums],
             forward_batch=forward_batch,
         )
         self.compute_stream.synchronize()
@@ -337,7 +337,7 @@ class ModelRunner:
                 with torch.cuda.graph(cudagraph, stream=self.compute_stream, pool=self.graph_pool):
                     output = self.model(
                         self.input_ids[:token_nums],
-                        position_ids=self.position_ids[:token_nums],
+                        positions=self.position_ids[:token_nums],
                         forward_batch=forward_batch,
                     )
                 torch.cuda.synchronize()
@@ -386,13 +386,13 @@ class ModelRunner:
             logits, aux_hidden_states = self.output_logits_target_verify[pad_bs_size]
         else:
             logits, aux_hidden_states = self.model(input_ids=scheduled_batch.input_ids,
-                                                   position_ids=scheduled_batch.position_ids,
+                                                   positions=scheduled_batch.position_ids,
                                                    forward_batch=forward_batch)
 
         if self.server_args.enable_debug and not torch.cuda.is_current_stream_capturing():  # print debug log
             # debug mode to compare with non-cuda graph results
             logits_ref, aux_hidden_states_ref = self.model(input_ids=scheduled_batch.input_ids,
-                                                           position_ids=scheduled_batch.position_ids,
+                                                           positions=scheduled_batch.position_ids,
                                                            forward_batch=forward_batch)
             assert torch.allclose(logits, logits_ref, atol=2e-2)
             # if aux_hidden_states is not None:

@@ -39,6 +39,7 @@ class RadixAttention(nn.Module):
         pos_encoding_mode: str = "NONE",
         logit_capping_method: str = "tanh",
         use_irope: bool = False,
+        prefix: str = "",
     ):
         super().__init__()
         self.tp_q_head_num = num_heads

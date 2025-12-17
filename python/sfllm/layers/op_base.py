@@ -18,3 +18,22 @@ class CustomOp(nn.Module):
     # Please do not override this method, because `self._forward_method` can change when in torch compile mode
     def forward(self, *args, **kwargs):
         return self._forward_method(*args, **kwargs)
+    
+    # Dictionary of all custom ops (classes, indexed by registered name).
+    # To check if an op with a name is enabled, call .enabled() on the class.
+    # Examples:
+    # - MyOp.enabled()
+    # - op_registry["my_op"].enabled()
+    op_registry: dict[str, type["CustomOp"]] = {}
+    op_registry_oot: dict[str, type["CustomOp"]] = {}
+
+    # Decorator to register custom ops.
+    @classmethod
+    def register(cls, name: str):
+        def decorator(op_cls):
+            assert name not in cls.op_registry, f"Duplicate op name: {name}"
+            op_cls.name = name
+            cls.op_registry[name] = op_cls
+            return op_cls
+
+        return decorator
