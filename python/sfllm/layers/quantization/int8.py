@@ -4,6 +4,8 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
 import torch
 from torch.nn import Module
 from torch.nn.parameter import Parameter
+from sfllm.layers.quantization.int8_kernel import (
+    per_token_group_quant_int8, w8a8_block_int8_matmul, block_int8_weight_quant)
 
 from sfllm.utils.platform import current_platform
 
@@ -28,7 +30,6 @@ from sfllm.layers.parameter import (
     PerTensorScaleParameter,
 )
 
-
 ACTIVATION_SCHEMES = ["static", "dynamic"]
 
 logger = logging.getLogger(__name__)
@@ -51,11 +52,12 @@ class Int8Config(QuantizationConfig):
             raise ValueError(f"Unsupported activation scheme {activation_scheme}")
         self.activation_scheme = activation_scheme
         self.ignored_layers = ignored_layers or []
+        if activation_scheme == "dynamic" and not is_checkpoint_int8_serialized:
+            weight_block_size = [128, 128]
         if weight_block_size is not None:
             if not is_checkpoint_int8_serialized:
-                raise ValueError(
-                    f"The block-wise quantization only supports int8-serialized checkpoint for now."
-                )
+                assert weight_block_size == [128, 128], \
+                    "Only [128, 128] block size is supported for non-int8 serialized checkpoints."
             if len(weight_block_size) != 2:
                 raise ValueError(
                     f"The quantization block size of weight must have 2 dimensions, but got {len(weight_block_size)} dimensions."
@@ -114,12 +116,27 @@ class Int8Config(QuantizationConfig):
     def get_scaled_act_names(self) -> List[str]:
         return []
 
-def daslab_int8_supported() -> bool:
-    try:
-        import gemm_int8
-    except ImportError:
-        return False
-    return True
+def apply_w8a8_block_int8_linear(
+    input: torch.Tensor,
+    weight: torch.Tensor,
+    block_size: List[int],
+    weight_scale: torch.Tensor,
+    input_scale: Optional[torch.Tensor] = None,
+    bias: Optional[torch.Tensor] = None,
+) -> torch.Tensor:
+    assert input_scale is None
+    # View input as 2D matrix for fp8 methods
+    input_2d = input.view(-1, input.shape[-1])
+    output_shape = [*input.shape[:-1], weight.shape[0]]
+
+    q_input, x_scale = per_token_group_quant_int8(input_2d, block_size[1])
+    output = w8a8_block_int8_matmul(
+        q_input, weight, x_scale, weight_scale, block_size, output_dtype=input.dtype
+    )
+
+    if bias is not None:
+        output = output + bias
+    return output.to(dtype=input.dtype).view(*output_shape)
 
 def apply_int8_linear(
     input: torch.Tensor,
@@ -127,20 +144,11 @@ def apply_int8_linear(
     weight_scale: torch.Tensor,
     input_scale: Optional[torch.Tensor] = None,
     bias: Optional[torch.Tensor] = None,
-    daslab_int8_supported: bool = False,
     use_per_token_if_dynamic: bool = False):
     """Applies INT8 linear with daslab kernel."""
 
-    if daslab_int8_supported:
-        import gemm_int8
-        qinput, x_scale = input_to_int8(input)
-        result = gemm_int8.matmul(qinput, weight.T, alpha=1.0)  # Returns bfloat16 tensor of (a @ b.t()) * alpha
-        result*= (x_scale*weight_scale).bfloat16()
-        if bias is not None:
-            result += bias
-        return result
-    
-    result = input @ (weight.bfloat16() * weight_scale.bfloat16())
+    input_dtype = input.dtype    
+    result = input @ (weight.to(input_dtype) * weight_scale.to(input_dtype))
     if bias is not None:
         result += bias
     return result
@@ -173,7 +181,6 @@ class Int8LinearMethod(LinearMethodBase):
 
     def __init__(self, quant_config: Union[Int8Config, ]):
         self.quant_config = quant_config
-        self.daslab_int8_supported = daslab_int8_supported()
 
         # For GPUs that lack FP8 hardware support, we can leverage the Marlin
         # kernel for fast weight-only FP8 quantization
@@ -194,7 +201,7 @@ class Int8LinearMethod(LinearMethodBase):
         weight_loader = extra_weight_attrs.get("weight_loader")
 
         tp_size = get_tensor_model_parallel_world_size()
-        if self.block_quant:
+        if self.block_quant and self.quant_config.is_checkpoint_int8_serialized:
             block_n, block_k = (
                 self.quant_config.weight_block_size[0],
                 self.quant_config.weight_block_size[1],
@@ -290,9 +297,19 @@ class Int8LinearMethod(LinearMethodBase):
 
     def process_weights_after_loading(self, layer: Module) -> None:
         if self.block_quant:
-            weight, weight_scale = layer.weight.data, layer.weight_scale_inv.data
-            layer.weight.data = weight.data
-            layer.weight_scale_inv.data = weight_scale.data
+            if self.quant_config.is_checkpoint_int8_serialized:
+                weight, weight_scale = layer.weight.data, layer.weight_scale_inv.data
+                layer.weight.data = weight.data
+                layer.weight_scale_inv.data = weight_scale.data
+            else:
+                qweight, weight_scale = block_int8_weight_quant(
+                    layer.weight.data,
+                    self.quant_config.weight_block_size[0],
+                )
+                layer.weight = Parameter(qweight, requires_grad=False)
+                layer.weight_scale_inv = Parameter(
+                    weight_scale, requires_grad=False
+                )
         else:
             layer.weight = Parameter(layer.weight.data, requires_grad=False)
 
@@ -314,7 +331,7 @@ class Int8LinearMethod(LinearMethodBase):
     ) -> torch.Tensor:
         if self.block_quant:
             if isinstance(x, tuple):
-                return self.w8a8_block_int8_linear(
+                return apply_w8a8_block_int8_linear(
                     input=x[0],
                     weight=layer.weight,
                     block_size=self.quant_config.weight_block_size,
@@ -323,7 +340,7 @@ class Int8LinearMethod(LinearMethodBase):
                     bias=bias,
                 )
 
-            return self.w8a8_block_int8_linear(
+            return apply_w8a8_block_int8_linear(
                 input=x,
                 weight=layer.weight,
                 block_size=self.quant_config.weight_block_size,
@@ -338,6 +355,5 @@ class Int8LinearMethod(LinearMethodBase):
             weight_scale=layer.weight_scale,
             input_scale=layer.input_scale,
             bias=bias,
-            daslab_int8_supported=self.daslab_int8_supported,
             use_per_token_if_dynamic=False,
         )
