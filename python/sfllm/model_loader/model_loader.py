@@ -89,7 +89,7 @@ def initialize_model(model_name:str, dtype:str="auto", quantization:Optional[str
     Args:
         model_name: The name or path of the model to load
     """
-    model_config = ModelConfig(model_name, quantization=quantization)
+    model_config = ModelConfig(model_name, dtype=dtype, quantization=quantization)
     before_avail_memory, _ = torch.cuda.mem_get_info(0)
     model = load_model(model_config)
     with TorchDefaultReset(model_config.dtype, device="cuda"):
