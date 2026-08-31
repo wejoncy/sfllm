@@ -4,7 +4,7 @@ from typing import Callable
 import tqdm
 import torch
 
-class EagleE2ECudaGraphRunner():
+class SpeculativeE2ECudaGraphRunner():
     def __init__(self, draft_model_runner, target_model_runner, model_func:Callable):
         self.device_id = draft_model_runner.device_id
         self.draft_model_runner = draft_model_runner
@@ -32,6 +32,9 @@ class EagleE2ECudaGraphRunner():
         self.input_ids = draft_model_runner.input_ids
         self.verified_id = torch.zeros((4096,), dtype=torch.long, device=self.device_id)
         self.position_ids = draft_model_runner.position_ids
+        # Capture warmup requires valid token and RoPE indices.
+        self.input_ids.zero_()
+        self.position_ids.zero_()
         self.spec_kv_indices_mtd_buffer = torch.zeros_like(draft_model_runner.kv_indices_buffer)
         self.spec_out_cache_loc = draft_model_runner.out_cache_loc
         self.spec_position_ids_extend = torch.zeros_like(self.position_ids)
@@ -46,11 +49,21 @@ class EagleE2ECudaGraphRunner():
         self.cuda_graphs = {}
         self.graph_pool  = draft_model_runner.graph_pool
         self.graph_outputs = {}
-        # new buffers
-        self.logits_buffer = torch.empty(
-            (self.server_args.cuda_graph_max_bs, 
-             draft_model_runner.get_config().draft_vocab_size), dtype=torch.float16, device=draft_model_runner.device_id)
-
+        max_batch_size = int(self.server_args.cuda_graph_max_bs)
+        requested_batch_sizes = self.server_args.cuda_graph_bs
+        self.capture_batch_sizes = sorted(
+            set(requested_batch_sizes or range(1, max_batch_size + 1))
+        )
+        invalid_batch_sizes = [
+            batch_size
+            for batch_size in self.capture_batch_sizes
+            if batch_size < 1 or batch_size > max_batch_size
+        ]
+        if invalid_batch_sizes:
+            raise ValueError(
+                "CUDA Graph batch sizes must be in "
+                f"[1, {max_batch_size}], got {invalid_batch_sizes}."
+            )
     def prepare_cudagraph_inputs_for_capture(self, batch_size:int):
         from sfllm.spec_decoding.spec_utils import EagleSpecInput
         from sfllm.engine.schedule_batch import ScheduleBatch
@@ -113,7 +126,10 @@ class EagleE2ECudaGraphRunner():
         self.server_args.enable_debug = old_DEBUG
         self.compute_stream.synchronize()
         with freeze_gc(False):
-            for batch_size in tqdm.tqdm(list(reversed(range(1, 32))), desc="Capturing CUDA Graphs"):
+            for batch_size in tqdm.tqdm(
+                list(reversed(self.capture_batch_sizes)),
+                desc="Capturing speculative end-to-end CUDA Graphs",
+            ):
                 (scheduled_batch) = self.prepare_cudagraph_inputs_for_capture(batch_size)
                 cudagraph = torch.cuda.CUDAGraph()
 
@@ -123,7 +139,7 @@ class EagleE2ECudaGraphRunner():
                 self.graph_outputs[batch_size] = output
                 self.cuda_graphs[batch_size] = cudagraph
            
-        self.cuda_graphs[1].replay()
+        self.cuda_graphs[self.capture_batch_sizes[0]].replay()
 
     # @torch.compile
     def prepare_replay(self, scheduled_batch):

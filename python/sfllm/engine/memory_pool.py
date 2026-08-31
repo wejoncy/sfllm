@@ -43,7 +43,7 @@ class BlockMemoryManager:
         self.num_blocks = num_blocks
         self.num_blocks, self.block_shape = self.get_num_blocks(server_args)
         self.blocks = [BlockMemory(i) for i in range(self.num_blocks)]
-        self.free_block_ids = list(range(1, self.num_blocks))
+        self.free_block_ids = deque(range(1, self.num_blocks))
         self.release_block_ids = []
         self.used_block_ids = set([])
         self.kv_buffers = []
@@ -117,14 +117,19 @@ class BlockMemoryManager:
         return len(self.free_block_ids) >= token_len
 
     def persist_alloc_block_from_rear(self, num_tokens: int) -> List[int]:
-        popped = self.free_block_ids[-num_tokens:]
-        self.free_block_ids = self.free_block_ids[:-num_tokens]
+        popped = [
+            self.free_block_ids.pop()
+            for _ in range(min(num_tokens, len(self.free_block_ids)))
+        ]
+        popped.reverse()
         return popped
 
     def alloc_block(self, token_nums: int) -> List[int]:
         """Allocate a block of memory."""
-        block_ids = self.free_block_ids[:token_nums]
-        self.free_block_ids = self.free_block_ids[token_nums:]
+        block_ids = [
+            self.free_block_ids.popleft()
+            for _ in range(min(token_nums, len(self.free_block_ids)))
+        ]
         self.used_block_ids.update(block_ids)
         return block_ids
 

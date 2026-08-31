@@ -11,6 +11,7 @@ import queue
 from typing import Dict, Any, List, Tuple, Generator, Union
 
 from sfllm.engine.model_worker import ModelWorker
+from sfllm.spec_decoding.dflash2_worker import DFlash2Worker
 from sfllm.spec_decoding.eagle_worker import EagleWorker
 from sfllm.engine.scheduler import Scheduler
 from sfllm.engine.sampling_params import SamplingParams
@@ -30,7 +31,12 @@ class InferenceEngine:
         Initialize the inference worker.
         """
         configure_logger(server_args)
-        self.model_worker = ModelWorker(server_args) if server_args.speculative_algorithm != "eagle3" else EagleWorker(server_args)
+        if server_args.speculative_algorithm == "eagle3":
+            self.model_worker = EagleWorker(server_args)
+        elif server_args.speculative_algorithm == "dflash2":
+            self.model_worker = DFlash2Worker(server_args)
+        else:
+            self.model_worker = ModelWorker(server_args)
         self.server_args = server_args
         self.running = False
         self.scheduler = Scheduler(server_args, self.model_worker)
@@ -64,6 +70,19 @@ class InferenceEngine:
         
         valid_ids = set(range(len(schedule_batch)))
         for idx, sequence in enumerate(schedule_batch):
+            if self.is_spec_algo:
+                committed_tokens = token_ids[
+                    cum_token_cnts[idx] : cum_token_cnts[idx + 1]
+                ]
+                generated_count = (
+                    sequence.last_generated_token_pos - sequence.prompt_token_len
+                )
+                remaining_tokens = max(
+                    sequence.sampling_params.max_new_tokens - generated_count,
+                    0,
+                )
+                committed_tokens = committed_tokens[:remaining_tokens]
+
             if self.enable_overlap:
                 if sequence.status.is_active():
                     assert sequence.tokens[sequence.last_generated_token_pos] < 0, (
@@ -72,11 +91,12 @@ class InferenceEngine:
                     assert token_ids[idx] >= 0, "Generated token should be valid"
                     if self.is_spec_algo:
                         draft_token_steps = self.server_args.speculative_num_steps+1
-                        new_token = token_ids[cum_token_cnts[idx]: cum_token_cnts[idx + 1]]
                         last_pos = sequence.last_generated_token_pos
-                        sequence.tokens[last_pos:last_pos+len(new_token)] = new_token
-                        sequence.tokens[last_pos+len(new_token): last_pos+draft_token_steps] = []
-                        sequence.generated_tokens = new_token
+                        sequence.tokens[last_pos:last_pos+len(committed_tokens)
+                        ] = committed_tokens
+                        sequence.tokens[last_pos + len(committed_tokens) : last_pos + draft_token_steps
+                        ] = []
+                        sequence.generated_tokens = committed_tokens
                         sequence.last_generated_token_pos += len(sequence.generated_tokens)
                     else:
                         sequence.tokens[sequence.last_generated_token_pos] = token_ids[idx]
@@ -84,7 +104,7 @@ class InferenceEngine:
                         sequence.last_generated_token_pos += 1
             else:
                 if self.is_spec_algo:
-                    sequence.new_tokens = token_ids[cum_token_cnts[idx]: cum_token_cnts[idx + 1]]
+                    sequence.new_tokens = committed_tokens
                     sequence.generated_tokens = sequence.new_tokens.copy()
                     sequence.tokens.extend(sequence.new_tokens)
                     sequence.last_generated_token_pos += len(sequence.generated_tokens)
@@ -179,7 +199,9 @@ class InferenceEngine:
             future_token_stride = draft_token_steps
             target_mem_pool = self.scheduler.mem_pool
             draft_mem_pool = self.scheduler.draft_memory_pool
-            hidden_size = self.server_args.model_config.hidden_size*3
+            hidden_size = (
+                self.model_worker.draft_model_runner.model.speculative_hidden_size
+            )
             dtype = self.model_worker.dtype
             hidden_states_buf = torch.empty((128, draft_token_steps, hidden_size), device=device_id, dtype=dtype)
 
@@ -233,6 +255,10 @@ class InferenceEngine:
                         cur_batch.forward_batch.mask_indptr[1:] = cum_seq_mask_len
                         #####
                         x = cur_batch.forward_batch_spec.kv_indices_mtd
+                        # These staging tensors were allocated on scheduler_stream
+                        # and lose their last reference when replaced below.
+                        # Keep their storage alive through compute-side compaction.
+                        x.record_stream(compute_stream)
                         if cur_batch.spec_info.out_cache_loc is not None:
                             b = cur_batch.forward_batch_spec.kv_indptr
                         else:
@@ -281,9 +307,11 @@ class InferenceEngine:
                         cur_batch.forward_batch.kv_indptr[1:] -= cum_extra_length
 
                         x = cur_batch.forward_batch_spec.position_ids_extend
+                        x.record_stream(compute_stream)
                         b = torch.arange(0, (len(cur_batch)+1)*draft_token_steps, draft_token_steps, device=device_id)
                         cur_batch.forward_batch_spec.position_ids_extend = compact_accepted_tokens(x, b, accept_length, fill_value=0)
                         x = cur_batch.forward_batch_spec.out_cache_loc
+                        x.record_stream(compute_stream)
                         cur_batch.forward_batch_spec.out_cache_loc = compact_accepted_tokens(x, b, accept_length, fill_value=0)
                         if cur_batch.spec_info.verified_id.shape[0] != cur_batch.forward_batch_spec.position_ids_extend.shape[0]:
                             token_len = cur_batch.spec_info.verified_id.shape[0]

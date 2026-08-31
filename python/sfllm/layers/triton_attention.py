@@ -68,7 +68,7 @@ class RaggedAttention:
             forward_batch.update(k, v, layer.layer_id)
 
         custom_mask = forward_batch.custom_mask
-        is_causal = True
+        is_causal = layer.is_causal
         mask_indptr = forward_batch.mask_indptr
         sm_scale = layer.scaling
         logit_cap=0.0
