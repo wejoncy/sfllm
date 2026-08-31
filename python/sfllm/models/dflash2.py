@@ -15,6 +15,11 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
+try:
+    from flashinfer import top_k as _flashinfer_top_k
+except ImportError:
+    _flashinfer_top_k = None
+
 from sfllm.engine.forward_params import ForwardBatch
 from sfllm.layers.layernorm import RMSNorm
 from sfllm.model_loader.weight_utils import default_weight_loader
@@ -364,9 +369,17 @@ class DFlash2DraftModel(nn.Module):
         logits = torch.matmul(
             hidden_states.to(target_head_weight.dtype), target_head_weight.T
         )
-        values, ids = torch.topk(
-            logits, self.dflash_config.selector_top_k, dim=-1, sorted=True
-        )
+        if _flashinfer_top_k is None:
+            values, ids = torch.topk(
+                logits, self.dflash_config.selector_top_k, dim=-1, sorted=True
+            )
+        else:
+            values, ids = _flashinfer_top_k(
+                logits,
+                self.dflash_config.selector_top_k,
+                sorted=True,
+                deterministic=True,
+            )
         return ids.to(torch.int64), values.float()
 
     def project_target_hidden(self, target_hidden: torch.Tensor) -> torch.Tensor:

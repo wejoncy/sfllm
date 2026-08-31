@@ -24,7 +24,9 @@
 
 using namespace flashinfer;
 
-void apply_rope_pos_ids_cos_sin_cache(
+namespace {
+
+void apply_rope_pos_ids_cos_sin_cache_impl(
     at::Tensor q,
     at::Tensor k,
     at::Tensor q_rope,
@@ -36,7 +38,10 @@ void apply_rope_pos_ids_cos_sin_cache(
     const std::optional<at::Tensor>& v,
     const std::optional<at::Tensor>& k_buffer,
     const std::optional<at::Tensor>& v_buffer,
-    const std::optional<at::Tensor>& kv_cache_loc) {
+    const std::optional<at::Tensor>& kv_cache_loc,
+    const at::Tensor* q_norm_weight,
+    const at::Tensor* k_norm_weight,
+    double qk_norm_epsilon) {
   CHECK_LAST_DIM_CONTIGUOUS(q);
   CHECK_LAST_DIM_CONTIGUOUS(k);
 
@@ -82,6 +87,18 @@ void apply_rope_pos_ids_cos_sin_cache(
   unsigned int num_kv_heads = k.size(1);
   unsigned int head_dim = q.size(2);
   unsigned int nnz = q.size(0);
+  const bool apply_qk_norm = q_norm_weight != nullptr;
+  if (apply_qk_norm) {
+    const at::Tensor& q_weight = *q_norm_weight;
+    const at::Tensor& k_weight = *k_norm_weight;
+    CHECK_INPUT(q_weight);
+    CHECK_INPUT(k_weight);
+    CHECK_EQ(q_weight.scalar_type(), q.scalar_type());
+    CHECK_EQ(k_weight.scalar_type(), q.scalar_type());
+    CHECK_EQ(q_weight.numel(), head_dim);
+    CHECK_EQ(k_weight.numel(), head_dim);
+    CHECK_EQ(rotary_dim, head_dim);
+  }
   size_t q_stride_n = q.stride(0);
   size_t q_stride_h = q.stride(1);
   size_t k_stride_n = k.stride(0);
@@ -101,6 +118,9 @@ void apply_rope_pos_ids_cos_sin_cache(
           static_cast<c_type*>(q.data_ptr()),
           static_cast<c_type*>(k.data_ptr()),
           save_kv_cache ? static_cast<c_type*>(v->data_ptr()) : nullptr,
+          apply_qk_norm ? static_cast<c_type*>(q_norm_weight->data_ptr()) : nullptr,
+          apply_qk_norm ? static_cast<c_type*>(k_norm_weight->data_ptr()) : nullptr,
+          static_cast<float>(qk_norm_epsilon),
           static_cast<c_type*>(q_rope.data_ptr()),
           static_cast<c_type*>(k_rope.data_ptr()),
           save_kv_cache ? static_cast<c_type*>(k_buffer->data_ptr()) : nullptr,
@@ -129,6 +149,7 @@ void apply_rope_pos_ids_cos_sin_cache(
           kv_cache_loc_ptr,
           interleave,
           save_kv_cache,
+          apply_qk_norm,
           enable_pdl,
           stream);
       TORCH_CHECK(
@@ -165,4 +186,43 @@ void apply_rope_pos_ids_cos_sin_cache(
     }
     return true;
   });
+}
+
+}  // namespace
+
+void apply_rope_pos_ids_cos_sin_cache(
+    at::Tensor q,
+    at::Tensor k,
+    at::Tensor q_rope,
+    at::Tensor k_rope,
+    at::Tensor cos_sin_cache,
+    at::Tensor pos_ids,
+    bool interleave,
+    bool enable_pdl,
+    const std::optional<at::Tensor>& v,
+    const std::optional<at::Tensor>& k_buffer,
+    const std::optional<at::Tensor>& v_buffer,
+    const std::optional<at::Tensor>& kv_cache_loc) {
+  apply_rope_pos_ids_cos_sin_cache_impl(
+      q, k, q_rope, k_rope, cos_sin_cache, pos_ids, interleave, enable_pdl,
+      v, k_buffer, v_buffer, kv_cache_loc, nullptr, nullptr, 0.0);
+}
+
+void qk_norm_rope_and_cache(
+    at::Tensor q,
+    at::Tensor k,
+    at::Tensor v,
+    at::Tensor q_norm_weight,
+    at::Tensor k_norm_weight,
+    at::Tensor cos_sin_cache,
+    at::Tensor pos_ids,
+    bool interleave,
+    at::Tensor k_buffer,
+    at::Tensor v_buffer,
+    at::Tensor kv_cache_loc,
+    double epsilon) {
+  apply_rope_pos_ids_cos_sin_cache_impl(
+      q, k, q, k, cos_sin_cache, pos_ids, interleave, false,
+      v, k_buffer, v_buffer, kv_cache_loc,
+      &q_norm_weight, &k_norm_weight, epsilon);
 }

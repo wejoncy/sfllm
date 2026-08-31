@@ -48,6 +48,12 @@ TORCH_LIBRARY_FRAGMENT(sfkernels, m) {
       "Tensor? v, Tensor!? k_buffer, Tensor!? v_buffer, Tensor? kv_cache_loc) -> ()");
   m.impl("apply_rope_pos_ids_cos_sin_cache", torch::kCUDA, &apply_rope_pos_ids_cos_sin_cache);
 
+  m.def(
+      "qk_norm_rope_and_cache(Tensor! q, Tensor! k, Tensor v, Tensor q_norm_weight, "
+      "Tensor k_norm_weight, Tensor cos_sin_cache, Tensor pos_ids, bool interleave, "
+      "Tensor! k_buffer, Tensor! v_buffer, Tensor kv_cache_loc, float epsilon) -> ()");
+  m.impl("qk_norm_rope_and_cache", torch::kCUDA, &qk_norm_rope_and_cache);
+
   // quantization fp8 ops
   m.def("sgl_per_tensor_quant_fp8(Tensor input, Tensor output_q, Tensor output_s, bool is_static) -> ()");
   m.impl("sgl_per_tensor_quant_fp8", torch::kCUDA, &sgl_per_tensor_quant_fp8);

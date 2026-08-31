@@ -109,16 +109,16 @@ class Qwen3Attention(nn.Module):
         if self.alt_stream is not None and torch.cuda.is_current_stream_capturing():
             current_stream = torch.cuda.current_stream()
             self.alt_stream.wait_stream(current_stream)
-            q_by_head = q.reshape(-1, self.head_dim)
+            q_by_head = q.view(q.shape[0], -1, self.head_dim)
             q_by_head = self.q_norm(q_by_head)
             with torch.cuda.stream(self.alt_stream):
-                k_by_head = k.reshape(-1, self.head_dim)
+                k_by_head = k.view(k.shape[0], -1, self.head_dim)
                 k_by_head = self.k_norm(k_by_head)
             current_stream.wait_stream(self.alt_stream)
         else:
-            q_by_head = q.reshape(-1, self.head_dim)
+            q_by_head = q.view(q.shape[0], -1, self.head_dim)
             q_by_head = self.q_norm(q_by_head)
-            k_by_head = k.reshape(-1, self.head_dim)
+            k_by_head = k.view(k.shape[0], -1, self.head_dim)
             k_by_head = self.k_norm(k_by_head)
         q = q_by_head.view(q.shape)
         k = k_by_head.view(k.shape)
@@ -132,13 +132,28 @@ class Qwen3Attention(nn.Module):
     ) -> torch.Tensor:
         qkv, _ = self.qkv_proj(hidden_states)
         q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
-        q, k = self._apply_qk_norm(q, k)
         if forward_batch.past_key_values is not None:
-            k_buffer,v_buffer = forward_batch.past_key_values[self.attn.layer_id]
-            fused_set_kv_buffer_arg = (v, k_buffer,v_buffer, forward_batch.out_cache_loc)
+            q_by_head = q.view(q.shape[0], self.num_heads, self.head_dim)
+            k_by_head = k.view(k.shape[0], self.num_kv_heads, self.head_dim)
+            v_by_head = v.view(v.shape[0], self.num_kv_heads, self.head_dim)
+            k_buffer, v_buffer = forward_batch.past_key_values[self.attn.layer_id]
+            torch.ops.sfkernels.qk_norm_rope_and_cache(
+                q_by_head,
+                k_by_head,
+                v_by_head,
+                self.q_norm.weight,
+                self.k_norm.weight,
+                self.rotary_emb.cos_sin_cache,
+                positions,
+                not self.rotary_emb.is_neox_style,
+                k_buffer,
+                v_buffer,
+                forward_batch.out_cache_loc,
+                self.q_norm.variance_epsilon,
+            )
         else:
-            fused_set_kv_buffer_arg = None
-        q, k = self.rotary_emb(positions, q, k, fused_set_kv_buffer_arg=fused_set_kv_buffer_arg)
+            q, k = self._apply_qk_norm(q, k)
+            q, k = self.rotary_emb(positions, q, k)
         attn_output = self.attn(q, k, v, forward_batch, save_kv_cache=False)
         output, _ = self.o_proj(attn_output)
         return output

@@ -19,6 +19,11 @@ from typing import Optional, Tuple, Union
 import torch
 import torch.nn as nn
 
+try:
+    import flashinfer.norm as _flashinfer_norm
+except ImportError:
+    _flashinfer_norm = None
+
 from sfllm.layers.op_base import CustomOp
 logger = logging.getLogger(__name__)
 
@@ -92,11 +97,31 @@ class RMSNorm(CustomOp):
             return x, residual
     
     def forward_cuda(self, x: torch.Tensor, residual: Optional[torch.Tensor] = None):
-        if self.variance_size_override is not None:
+        if (
+            self.variance_size_override is not None
+            or self.cast_x_before_out_mul
+            or self.weight.dtype != x.dtype
+            or self.override_orig_dtype not in (None, x.dtype)
+            or (
+                residual is not None
+                and (residual.dtype != x.dtype or self.fp32_residual)
+            )
+        ):
             return self.forward_native(x, residual)
+
+        if _flashinfer_norm is not None:
+            if residual is None:
+                return _flashinfer_norm.rmsnorm(
+                    x, self.weight, self.variance_epsilon
+                )
+            _flashinfer_norm.fused_add_rmsnorm(
+                x, residual, self.weight, self.variance_epsilon
+            )
+            return x, residual
+
         import sf_kernel
-        orig_dtype = self.override_orig_dtype or x.dtype
-        out = torch.empty_like(x, dtype=orig_dtype)
+
+        out = torch.empty_like(x)
         sf_kernel.rmsnorm(
             out,
             x,
@@ -104,12 +129,7 @@ class RMSNorm(CustomOp):
             self.variance_epsilon,
             residual,
         )
-        if residual is None:
-            return out
-        else:
-            if self.fp32_residual:
-                residual = residual.float()
-            return out, residual
+        return out if residual is None else (out, residual)
 
 
 class GemmaRMSNorm(CustomOp):

@@ -129,3 +129,72 @@ def test_apply_rope_pos_ids_cos_sin_cache(batch_size, seq_len, num_heads, head_d
     # Allow slightly higher tolerance for bfloat16 and trigonometric ops
     torch.testing.assert_close(q_rope, q_ref, atol=5e-2, rtol=1e-2)
     torch.testing.assert_close(k_rope, k_ref, atol=5e-2, rtol=1e-2)
+
+
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+def test_qk_norm_rope_and_cache(dtype):
+    torch.manual_seed(0)
+    num_tokens, num_q_heads, num_kv_heads, head_dim = 17, 32, 8, 128
+    rope = RotaryEmbedding(
+        head_dim,
+        head_dim,
+        4096,
+        base=1_000_000,
+        is_neox_style=True,
+        dtype=dtype,
+    ).cuda()
+    qkv = torch.randn(
+        num_tokens,
+        (num_q_heads + 2 * num_kv_heads) * head_dim,
+        dtype=dtype,
+        device="cuda",
+    )
+    q, k, v = qkv.split(
+        [num_q_heads * head_dim, num_kv_heads * head_dim, num_kv_heads * head_dim],
+        dim=-1,
+    )
+    q = q.view(num_tokens, num_q_heads, head_dim)
+    k = k.view(num_tokens, num_kv_heads, head_dim)
+    v = v.view(num_tokens, num_kv_heads, head_dim)
+    q_ref, k_ref, v_ref = q.clone(), k.clone(), v.clone()
+    q_weight = torch.randn(head_dim, dtype=dtype, device="cuda")
+    k_weight = torch.randn(head_dim, dtype=dtype, device="cuda")
+    positions = torch.arange(num_tokens, dtype=torch.int64, device="cuda") + 3
+    cache_locs = torch.arange(num_tokens, dtype=torch.int64, device="cuda") + 11
+    k_cache = torch.empty(
+        num_tokens + 11, num_kv_heads, head_dim, dtype=dtype, device="cuda"
+    )
+    v_cache = torch.empty_like(k_cache)
+
+    def rmsnorm(x, weight):
+        x_float = x.float()
+        return (
+            x_float
+            * torch.rsqrt(x_float.square().mean(dim=-1, keepdim=True) + 1e-6)
+            * weight.float()
+        ).to(dtype)
+
+    q_ref, k_ref = rope.forward_native(
+        positions,
+        rmsnorm(q_ref, q_weight),
+        rmsnorm(k_ref, k_weight),
+    )
+    ops.qk_norm_rope_and_cache(
+        q,
+        k,
+        v,
+        q_weight,
+        k_weight,
+        rope.cos_sin_cache,
+        positions,
+        False,
+        k_cache,
+        v_cache,
+        cache_locs,
+        1e-6,
+    )
+
+    torch.testing.assert_close(q, q_ref, atol=5e-2, rtol=1e-2)
+    torch.testing.assert_close(k, k_ref, atol=5e-2, rtol=1e-2)
+    torch.testing.assert_close(k_cache[cache_locs], k)
+    torch.testing.assert_close(v_cache[cache_locs], v_ref)

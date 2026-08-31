@@ -73,6 +73,19 @@ void apply_rope_pos_ids_cos_sin_cache(
     const std::optional<at::Tensor>& k_buffer,
     const std::optional<at::Tensor>& v_buffer,
     const std::optional<at::Tensor>& kv_cache_loc);
+void qk_norm_rope_and_cache(
+    at::Tensor q,
+    at::Tensor k,
+    at::Tensor v,
+    at::Tensor q_norm_weight,
+    at::Tensor k_norm_weight,
+    at::Tensor cos_sin_cache,
+    at::Tensor pos_ids,
+    bool interleave,
+    at::Tensor k_buffer,
+    at::Tensor v_buffer,
+    at::Tensor kv_cache_loc,
+    double epsilon);
 
 // quantization fp8 ops
 void sgl_per_tensor_quant_fp8(at::Tensor input, at::Tensor output_q, at::Tensor output_s, bool is_static);
