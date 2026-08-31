@@ -18,6 +18,7 @@ class ServerArgs:
     mem_fraction: float = 0.7
     max_context_length: int = 8192
     disable_overlap: bool = False
+    attention_backend: Literal["triton", "fa3"] = "triton"
     # speculative decoding
     speculative_algorithm: Optional[str] = None
     speculative_draft_model_path: Optional[str] = None
@@ -97,6 +98,13 @@ class ServerArgs:
             "--disable-overlap",
             action="store_true",
             help="Disable overlapping of data transfer and computation.",
+        )
+        parser.add_argument(
+            "--attention-backend",
+            type=str.lower,
+            default=ServerArgs.attention_backend,
+            choices=["triton", "fa3"],
+            help="The attention backend to use.",
         )
         parser.add_argument(
             "--tokenizer-mode",

@@ -14,11 +14,43 @@
 """Radix attention."""
 from __future__ import annotations
 
-from sfllm.engine.forward_params import ForwardBatch
-
 import torch
 from torch import nn
+
+from sfllm.engine.forward_params import ForwardBatch
 from sfllm.layers.triton_attention import RaggedAttention
+from sfllm.server_args import get_global_server_args
+
+
+def create_attention_backend(
+    name: str,
+    layer_id: int,
+    *,
+    num_heads: int,
+    num_kv_heads: int,
+    head_dim: int,
+):
+    if name == "triton":
+        backend_cls = RaggedAttention
+    elif name == "fa3":
+        try:
+            from sfllm.layers.fa3_attention import FA3AttentionBackend
+        except ImportError as exc:
+            raise ImportError(
+                "The FA3 attention backend requires the optional sgl_kernel "
+                "package. Install sgl_kernel or use --attention-backend triton."
+            ) from exc
+        backend_cls = FA3AttentionBackend
+    else:
+        raise ValueError(f"Unknown attention backend: {name!r}.")
+
+    return backend_cls(
+        layer_id,
+        num_heads=num_heads,
+        num_kv_heads=num_kv_heads,
+        head_dim=head_dim,
+    )
+
 
 class RadixAttention(nn.Module):
     """
@@ -62,7 +94,13 @@ class RadixAttention(nn.Module):
         self.pos_encoding_mode = pos_encoding_mode
         self.logit_capping_method = logit_capping_method
         self.xai_temperature_len = -1
-        self.attn_backend = RaggedAttention(layer_id, num_heads=num_heads, num_kv_heads=num_kv_heads)
+        self.attn_backend = create_attention_backend(
+            get_global_server_args().attention_backend,
+            layer_id,
+            num_heads=num_heads,
+            num_kv_heads=num_kv_heads,
+            head_dim=head_dim,
+        )
 
     def forward(
         self,

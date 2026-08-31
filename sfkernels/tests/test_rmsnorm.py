@@ -69,3 +69,39 @@ def test_rmsnorm_fused(hidden_size, num_tokens, dtype):
     # Verify residual update
     torch.testing.assert_close(residual_custom, residual_out_ref, atol=1e-2, rtol=1e-2)
 
+
+@pytest.mark.parametrize("with_residual", [False, True])
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+def test_rmsnorm_strided_qkv_view(with_residual, dtype):
+    torch.manual_seed(0)
+    num_tokens, num_heads, head_dim = 7, 32, 128
+    q_size = num_heads * head_dim
+    qkv = torch.randn(
+        num_tokens, q_size + 2048, dtype=dtype, device="cuda"
+    )
+    input_tensor = qkv[:, :q_size].view(num_tokens, num_heads, head_dim)
+    assert not input_tensor.is_contiguous()
+    weight = torch.randn(head_dim, dtype=dtype, device="cuda")
+    output = torch.empty_like(input_tensor)
+    residual = None
+    residual_ref = None
+    if with_residual:
+        residual = torch.randn_like(input_tensor)
+        residual_ref = residual.clone()
+
+    values = input_tensor.float()
+    if residual_ref is not None:
+        values = values + residual_ref.float()
+    expected = (
+        values
+        * torch.rsqrt(values.square().mean(dim=-1, keepdim=True) + 1e-6)
+        * weight.float()
+    ).to(dtype)
+
+    sf_kernel.rmsnorm(output, input_tensor, weight, 1e-6, residual)
+
+    torch.testing.assert_close(output, expected, atol=1e-2, rtol=1e-2)
+    if residual is not None:
+        torch.testing.assert_close(
+            residual, values.to(dtype), atol=1e-2, rtol=1e-2
+        )

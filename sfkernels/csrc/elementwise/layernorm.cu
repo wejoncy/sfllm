@@ -40,13 +40,15 @@ struct alignas(sizeof(T) * N) aligned_vector {
     }
 };
 
-template <int ILP, typename scalar_t>
+template <int ILP, int BLOCK_SIZE, typename scalar_t>
 __global__ void rms_norm_kernel_opt_v2(
     scalar_t* __restrict__ out,           // [..., hidden_size]
     const scalar_t* __restrict__ input,   // [..., hidden_size]
     scalar_t* __restrict__ input_res,   // [..., hidden_size]
     const scalar_t* __restrict__ weight,  // [hidden_size]
-    const float epsilon, const int num_tokens, const int hidden_size) {
+    const float epsilon, const int num_tokens, const int hidden_size,
+    const int rows_per_outer, const int64_t outer_stride,
+    const int64_t row_stride) {
 
     using LoadT = aligned_vector<scalar_t, ILP>;
     scalar_t v[ILP];
@@ -55,7 +57,7 @@ __global__ void rms_norm_kernel_opt_v2(
     LoadT* value_res = reinterpret_cast<LoadT*>(&v_res);
     __shared__ float s_variance;
     extern __shared__ char shared_mem[];
-    using BlockReduce = cub::BlockReduce<float, 1024>;
+    using BlockReduce = cub::BlockReduce<float, BLOCK_SIZE>;
     __shared__ typename BlockReduce::TempStorage reduceStore;
     int shift = ((uint64_t)shared_mem) % ALIGN_BYTES;
     int shift_reverse = shift == 0 ? 0 : ALIGN_BYTES - shift;
@@ -70,18 +72,21 @@ __global__ void rms_norm_kernel_opt_v2(
     }
     __syncthreads();
 
-    int block_work_niter = (num_tokens +  gridDim.x - 1) / gridDim.x;
+    int block_work_niter = (num_tokens + gridDim.x - 1) / gridDim.x;
 
     for(int work_iter=0; work_iter<block_work_niter; work_iter++) {
         int batch_idx = work_iter * gridDim.x + blockIdx.x;
 
         if(batch_idx < num_tokens) {
-
             float variance = 0.0f;
 
-            const scalar_t* input_for_this = input + batch_idx * hidden_size;
-            scalar_t* input_res_for_this = input_res==nullptr? nullptr:input_res + batch_idx * hidden_size;
-            scalar_t* out_for_this = out + batch_idx * hidden_size;
+            const scalar_t* input_for_this = input
+                + static_cast<int64_t>(batch_idx / rows_per_outer) * outer_stride
+                + static_cast<int64_t>(batch_idx % rows_per_outer) * row_stride;
+            scalar_t* input_res_for_this = input_res == nullptr
+                ? nullptr
+                : input_res + static_cast<int64_t>(batch_idx) * hidden_size;
+            scalar_t* out_for_this = out + static_cast<int64_t>(batch_idx) * hidden_size;
             const LoadT* input_for_this_vec = reinterpret_cast<const LoadT*>(input_for_this);
             LoadT* input_res_for_this_vec = input_res_for_this==nullptr? nullptr: reinterpret_cast<LoadT*>(input_res_for_this);
             LoadT* out_for_this_vec = reinterpret_cast<LoadT*>(out_for_this);
@@ -137,33 +142,62 @@ __global__ void rms_norm_kernel_opt_v2(
 
 void rmsnorm(at::Tensor& output, at::Tensor& input, at::Tensor& weight, 
             double eps,at::optional<at::Tensor> input_2=at::nullopt) {
+    TORCH_CHECK(input.dim() > 0, "input must have at least one dimension");
     int hidden_size = input.size(-1);
     int num_tokens = input.numel() / hidden_size;
     
-    CHECK_INPUT(input);
+    CHECK_LAST_DIM_CONTIGUOUS_INPUT(input);
     if (input_2.has_value()) {
         CHECK_INPUT(input_2.value());
     }
     CHECK_INPUT(weight);
     CHECK_INPUT(output);
-    
-    dim3 grid(std::min(num_tokens, 1024));
-    dim3 block(1024);
+    TORCH_CHECK(output.sizes() == input.sizes(), "output shape must match input");
+    TORCH_CHECK(weight.dim() == 1 && weight.numel() == hidden_size,
+                "weight must have shape [", hidden_size, "]");
+    TORCH_CHECK(output.scalar_type() == input.scalar_type(),
+                "output and input must have the same dtype");
+    TORCH_CHECK(weight.scalar_type() == input.scalar_type(),
+                "weight and input must have the same dtype");
+    TORCH_CHECK(output.device() == input.device() && weight.device() == input.device(),
+                "all tensors must be on the same device");
+    if (input_2.has_value()) {
+        TORCH_CHECK(input_2->sizes() == input.sizes(),
+                    "residual shape must match input");
+        TORCH_CHECK(input_2->scalar_type() == input.scalar_type(),
+                    "residual and input must have the same dtype");
+        TORCH_CHECK(input_2->device() == input.device(),
+                    "residual and input must be on the same device");
+    }
+
+    TORCH_CHECK(input.is_contiguous() || input.dim() == 2 || input.dim() == 3,
+                "strided rmsnorm input must be 2D or 3D");
+    const int rows_per_outer = input.dim() == 3 ? input.size(1) : num_tokens;
+    const int64_t outer_stride = input.dim() == 3 ? input.stride(0) : 0;
+    const int64_t row_stride = input.dim() == 3 ? input.stride(1) :
+        (input.dim() == 1 ? hidden_size : input.stride(-2));
     
     DISPATCH_PYTORCH_DTYPE_TO_CTYPE_FP16(input.scalar_type(), scalar_t, [&] {
         int shared_mem_size = hidden_size * sizeof(scalar_t) + ALIGN_BYTES;
         constexpr int ILP = 16 / sizeof(scalar_t); 
         TORCH_CHECK(hidden_size % ILP == 0);
+        TORCH_CHECK(reinterpret_cast<uintptr_t>(input.data_ptr()) % ALIGN_BYTES == 0 &&
+                    outer_stride % ILP == 0 && row_stride % ILP == 0,
+                    "rmsnorm rows must be 16-byte aligned");
 
-        rms_norm_kernel_opt_v2<ILP, scalar_t><<<grid, block, shared_mem_size, at::cuda::getCurrentCUDAStream()>>>(
-            reinterpret_cast<scalar_t*>(output.data_ptr()),
-            reinterpret_cast<scalar_t*>(input.data_ptr()),
-            input_2.has_value() ? reinterpret_cast<scalar_t*>(input_2->data_ptr()) : nullptr,
-            reinterpret_cast<scalar_t*>(weight.data_ptr()),
-            (float)eps,
-            num_tokens,
-            hidden_size
-        );
+        auto* output_ptr = reinterpret_cast<scalar_t*>(output.data_ptr());
+        auto* input_ptr = reinterpret_cast<scalar_t*>(input.data_ptr());
+        auto* residual_ptr = input_2.has_value()
+            ? reinterpret_cast<scalar_t*>(input_2->data_ptr())
+            : nullptr;
+        auto* weight_ptr = reinterpret_cast<scalar_t*>(weight.data_ptr());
+        const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+        dim3 grid(std::min(num_tokens, 1024));
+        rms_norm_kernel_opt_v2<ILP, 256, scalar_t>
+            <<<grid, 256, shared_mem_size, stream>>>(
+                output_ptr, input_ptr, residual_ptr, weight_ptr,
+                static_cast<float>(eps), num_tokens, hidden_size,
+                rows_per_outer, outer_stride, row_stride);
         return true;
     });
 }

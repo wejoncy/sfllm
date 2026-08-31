@@ -63,7 +63,53 @@ __device__ __forceinline__ void save(
 
 }  // namespace kv_buffer_saver
 
+template <bool interleave, uint32_t vec_size, uint32_t bdx, typename DType>
+__device__ __forceinline__ vec_t<float, vec_size> vec_apply_qk_norm_rope(
+    const DType* input,
+    const DType* weight,
+    const vec_t<float, vec_size>& cos,
+    const vec_t<float, vec_size>& sin,
+    float epsilon) {
+  vec_t<float, vec_size> values, weights, output;
+  values.cast_load(input + threadIdx.x * vec_size);
+  weights.cast_load(weight + threadIdx.x * vec_size);
+
+  float variance = 0.0f;
+#pragma unroll
+  for (uint32_t i = 0; i < vec_size; ++i) {
+    variance += values[i] * values[i];
+  }
+  const unsigned int active_mask = __activemask();
+#pragma unroll
+  for (uint32_t offset = bdx / 2; offset > 0; offset >>= 1) {
+    variance += __shfl_down_sync(active_mask, variance, offset, bdx);
+  }
+  const float inv_rms = rsqrtf(
+      __shfl_sync(active_mask, variance, 0, bdx) / (vec_size * bdx) + epsilon);
+#pragma unroll
+  for (uint32_t i = 0; i < vec_size; ++i) {
+    values[i] *= inv_rms * weights[i];
+  }
+
+  if constexpr (interleave) {
+#pragma unroll
+    for (uint32_t i = 0; i < vec_size; ++i) {
+      output[i] = values[i] * cos[i / 2] +
+                  ((i % 2 == 0) ? -values[i ^ 1] : values[i ^ 1]) * sin[i / 2];
+    }
+  } else {
+#pragma unroll
+    for (uint32_t i = 0; i < vec_size; ++i) {
+      const float paired = __shfl_xor_sync(active_mask, values[i], bdx / 2, bdx);
+      output[i] = values[i] * cos[i] +
+                  (threadIdx.x < bdx / 2 ? -paired : paired) * sin[i];
+    }
+  }
+  return output;
+}
+
 template <
+    bool apply_qk_norm,
     bool save_kv_cache,
     bool interleave,
     uint32_t head_dim,
@@ -75,6 +121,9 @@ __global__ void BatchQKApplyRotaryPosIdsCosSinCacheEnhancedHeadParallelismKernel
     DType* q,
     DType* k,
     DType* v,
+    DType* q_norm_weight,
+    DType* k_norm_weight,
+    float qk_norm_epsilon,
     DType* q_rope,
     DType* k_rope,
     DType* k_buffer,
@@ -138,7 +187,10 @@ __global__ void BatchQKApplyRotaryPosIdsCosSinCacheEnhancedHeadParallelismKernel
       DType* q_ptr = q + get_elem_offset_impl(idx, qo_head_idx, 0, q_stride_n, q_stride_h);
       DType* q_rope_ptr = q_rope + get_elem_offset_impl(idx, qo_head_idx, 0, q_rope_stride_n, q_rope_stride_h);
       vec_t<float, vec_size> q_vec;
-      if constexpr (interleave) {
+      if constexpr (apply_qk_norm) {
+        q_vec = vec_apply_qk_norm_rope<interleave, vec_size, bdx>(
+            q_ptr, q_norm_weight, cos, sin, qk_norm_epsilon);
+      } else if constexpr (interleave) {
         q_vec = vec_apply_llama_rope_cos_sin_interleave_reuse_half<vec_size, bdx>(q_ptr, cos, sin, rotary_dim);
       } else {
         q_vec = vec_apply_llama_rope_cos_sin<vec_size, bdx>(q_ptr, cos, sin, rotary_dim);
@@ -158,7 +210,10 @@ __global__ void BatchQKApplyRotaryPosIdsCosSinCacheEnhancedHeadParallelismKernel
       }
 
       vec_t<float, vec_size> k_vec;
-      if constexpr (interleave) {
+      if constexpr (apply_qk_norm) {
+        k_vec = vec_apply_qk_norm_rope<interleave, vec_size, bdx>(
+            k_ptr, k_norm_weight, cos, sin, qk_norm_epsilon);
+      } else if constexpr (interleave) {
         k_vec = vec_apply_llama_rope_cos_sin_interleave_reuse_half<vec_size, bdx>(k_ptr, cos, sin, rotary_dim);
       } else {
         k_vec = vec_apply_llama_rope_cos_sin<vec_size, bdx>(k_ptr, cos, sin, rotary_dim);
@@ -200,6 +255,9 @@ __global__ void BatchQKApplyRotaryPosIdsCosSinCacheEnhancedKernel(
     DType* q,
     DType* k,
     DType* v,
+    DType* q_norm_weight,
+    DType* k_norm_weight,
+    float qk_norm_epsilon,
     DType* q_rope,
     DType* k_rope,
     DType* k_buffer,
@@ -323,11 +381,23 @@ __global__ void BatchQKApplyRotaryPosIdsCosSinCacheEnhancedKernel(
     __VA_ARGS__                                                   \
   }
 
+#define DISPATCH_APPLY_QK_NORM(apply_qk_norm, APPLY_QK_NORM, ...) \
+  if (apply_qk_norm) {                                               \
+    constexpr bool APPLY_QK_NORM = true;                             \
+    __VA_ARGS__                                                      \
+  } else {                                                           \
+    constexpr bool APPLY_QK_NORM = false;                            \
+    __VA_ARGS__                                                      \
+  }
+
 template <typename DType, typename IdType>
 cudaError_t BatchQKApplyRotaryPosIdsCosSinCacheEnhanced(
     DType* q,
     DType* k,
     DType* v,
+    DType* q_norm_weight,
+    DType* k_norm_weight,
+    float qk_norm_epsilon,
     DType* q_rope,
     DType* k_rope,
     DType* k_buffer,
@@ -356,6 +426,7 @@ cudaError_t BatchQKApplyRotaryPosIdsCosSinCacheEnhanced(
     IdType* kv_cache_loc,
     bool interleave,
     bool save_kv_cache,
+    bool apply_qk_norm,
     bool enable_pdl,
     cudaStream_t stream = nullptr) {
   int dev_id = 0;
@@ -382,6 +453,9 @@ cudaError_t BatchQKApplyRotaryPosIdsCosSinCacheEnhanced(
         q,                                                            \
         k,                                                            \
         v,                                                            \
+        q_norm_weight,                                                \
+        k_norm_weight,                                                \
+        qk_norm_epsilon,                                              \
         q_rope,                                                       \
         k_rope,                                                       \
         k_buffer,                                                     \
@@ -409,9 +483,10 @@ cudaError_t BatchQKApplyRotaryPosIdsCosSinCacheEnhanced(
         kv_cache_loc));                                               \
   } while (0)
 
-  DISPATCH_SAVE_KV_CACHE(save_kv_cache, SAVE_KV_CACHE, {
-    DISPATCH_INTERLEAVE(interleave, INTERLEAVE, {
-      DISPATCH_HEAD_DIM(head_dim, HEAD_DIM, {
+  DISPATCH_APPLY_QK_NORM(apply_qk_norm, APPLY_QK_NORM, {
+    DISPATCH_SAVE_KV_CACHE(save_kv_cache, SAVE_KV_CACHE, {
+      DISPATCH_INTERLEAVE(interleave, INTERLEAVE, {
+        DISPATCH_HEAD_DIM(head_dim, HEAD_DIM, {
         // operate on 16 Bytes at a time
         constexpr uint32_t vec_size = std::max(16 / sizeof(DType), HEAD_DIM / 32);
         // how many threads needed per head_dim
@@ -437,7 +512,7 @@ cudaError_t BatchQKApplyRotaryPosIdsCosSinCacheEnhanced(
             &num_blocks_per_sm_0, kernel_0, num_threads, /*smem_size=*/0));
         uint32_t num_ctas_0 = num_blocks_per_sm_0 * num_sms;
 
-        if ((nnz + bdy - 1) / bdy >= num_ctas_0) {
+        if (!APPLY_QK_NORM && (nnz + bdy - 1) / bdy >= num_ctas_0) {
           dim3 nblks(nblks_x);
           dim3 nthrs(bdx, bdy);
           LAUNCH_KERNEL_RAW(kernel_0);
@@ -445,6 +520,7 @@ cudaError_t BatchQKApplyRotaryPosIdsCosSinCacheEnhanced(
           dim3 nblks(nblks_x, num_qo_heads + num_kv_heads);
           dim3 nthrs(bdx, bdy);
           auto kernel_1 = BatchQKApplyRotaryPosIdsCosSinCacheEnhancedHeadParallelismKernel<
+              APPLY_QK_NORM,
               SAVE_KV_CACHE,
               INTERLEAVE,
               HEAD_DIM,
@@ -454,10 +530,12 @@ cudaError_t BatchQKApplyRotaryPosIdsCosSinCacheEnhanced(
               IdType>;
           LAUNCH_KERNEL_RAW(kernel_1);
         }
+        });
       });
     });
   });
 #undef LAUNCH_KERNEL_RAW
+#undef DISPATCH_APPLY_QK_NORM
 
   return cudaSuccess;
 }
