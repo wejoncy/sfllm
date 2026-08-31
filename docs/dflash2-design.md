@@ -59,26 +59,16 @@ DFlash2 fields live under `dflash_config`:
 - `selector_top_k`
 - `target_layer_ids`
 
-The initializer preserves the trained DFlash tensors, initializes each new
-convolution from an identity base plus random dynamic projection, and randomly
-initializes the selector tensors:
-
-```bash
-.venv/bin/python scripts/initialize_dflash2_checkpoint.py \
-  --source z-lab/Qwen3-4B-DFlash-b16 \
-  --output /path/to/dflash2-checkpoint \
-  --selector-rank 256 \
-  --selector-top-k 16 \
-  --seed 0
-```
+The validated checkpoint preserves the trained DFlash tensors, initializes
+each new convolution from an identity base plus random dynamic projection, and
+randomly initializes the selector tensors.
 
 ## Validation
 
-Validation is offline only. `scripts/validate_dflash2_offline.py` checks that
-each request produces exactly its requested token count, all token IDs are in
-the target vocabulary, every decode replay has a captured batch-size graph,
-and target/draft KV usage returns to its pre-request baseline. It also prints
-token/text previews so generation can be inspected directly.
+Validation is offline only. It checks that each request produces exactly its
+requested token count, all token IDs are in the target vocabulary, every
+decode replay has a captured batch-size graph, and target/draft KV usage
+returns to its pre-request baseline.
 
 Node-level CUDA Graph coverage is checked separately with `nsys profile` and
 `--cuda-graph-trace=node`. A valid steady-state profile has one
