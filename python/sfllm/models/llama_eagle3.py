@@ -189,6 +189,7 @@ class LlamaForCausalLMEagle3(LlamaForCausalLM):
         self.model = LlamaModel(
             config, quant_config=quant_config, prefix=add_prefix("model", prefix)
         )
+        self.speculative_hidden_size = self.model.fc.in_features
         # Llama 3.2 1B Instruct set tie_word_embeddings to True
         # Llama 3.1 8B Instruct set tie_word_embeddings to False
         self.load_lm_head_from_target = False

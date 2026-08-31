@@ -52,8 +52,15 @@ class ModelRunner:
         self.dtype = self.model.dtype
         self.server_args = server_args
 
-        expand_scale = (server_args.speculative_num_steps * server_args.speculative_eagle_topk 
-                        if is_draft else server_args.speculative_num_draft_tokens)
+        draft_token_width = max(
+            server_args.speculative_num_steps * server_args.speculative_eagle_topk,
+            server_args.speculative_num_steps + 1,
+        )
+        expand_scale = (
+            draft_token_width
+            if is_draft
+            else server_args.speculative_num_draft_tokens
+        )
         max_batch_size = server_args.cuda_graph_max_bs*expand_scale
         self.input_ids = torch.empty((max_batch_size,), dtype=torch.long, device=self.device_id)
         self.position_ids = torch.empty((max_batch_size,), dtype=torch.long, device=self.device_id)
@@ -110,9 +117,14 @@ class ModelRunner:
         self.capture_batch_size = DEFAULT_CUDA_GRAPH_BATCH_SIZES[:ind]
         self.capture_batch_size = self.capture_batch_size[:ind]
 
-        expand_scale = self.server_args.speculative_num_steps* self.server_args.speculative_eagle_topk if self.is_draft else 1
-        max_batch_size = max(self.capture_batch_size)*expand_scale
-        # for draft extend, out_cache_loc size = batch_size * speculative_num_steps*topk
+        max_capture_batch_size = self.cuda_graph_max_bs
+        metadata_expand_scale = (
+            self.server_args.speculative_num_steps
+            * self.server_args.speculative_eagle_topk
+            if self.is_draft
+            else 1
+        )
+        max_batch_size = max_capture_batch_size * metadata_expand_scale
         self.output_logits = {}
         self.output_logits_target_verify = {}
         self.output_logits_extend = {}
@@ -129,9 +141,13 @@ class ModelRunner:
 
         if self.is_draft:
             self.hidden_states_buffer = torch.empty(
-                (max_batch_size*(self.server_args.speculative_num_steps+1), self.get_config().hidden_size*3),
+                (
+                    max_capture_batch_size
+                    * (self.server_args.speculative_num_steps + 1),
+                    self.model.speculative_hidden_size,
+                ),
                 dtype=self.dtype,
-                device=self.device_id
+                device=self.device_id,
             )
 
     def init_capture_cudagraph(self, forward_mode: ForwardMode = ForwardMode.DECODE):

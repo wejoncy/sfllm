@@ -62,7 +62,7 @@ python python/sfllm/serving/app.py \
 ```bash
 python python/sfllm/serving/app.py \
   --model /path/to/your/model \
-  --draft-model-path /path/to/eagle3/draft/model \
+  --speculative-draft-model-path /path/to/eagle3/draft/model \
   --speculative-algorithm eagle3 \
   --speculative-num-steps 4 \
   --port 8081 \
@@ -114,8 +114,8 @@ curl http://localhost:8081/health
 | `--max-context-length` | Maximum context length | 4096 |
 | `--cuda-graph-max-bs` | Max CUDA graph batch size | 32 |
 | `--disable-cuda-graph` | Disable CUDA graphs | False |
-| `--speculative-algorithm` | Speculative decoding algorithm (eagle3) | None |
-| `--draft-model-path` | Path to Eagle3 draft model | None |
+| `--speculative-algorithm` | Speculative decoding algorithm (`eagle3` or `dflash2`) | None |
+| `--speculative-draft-model-path` | Path to the speculative draft model | None |
 | `--speculative-num-steps` | Number of speculative steps | 4 |
 | `--disable-overlap` | Disable overlap scheduling | False |
 

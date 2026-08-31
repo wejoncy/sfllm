@@ -76,6 +76,7 @@ class Scheduler:
     def swap_req_to_waiting(self, sequence: RequestSequence):
         self.free_sequence_resources(sequence)
         sequence.out_cache_loc = []
+        sequence.out_cache_loc_spec = []
         sequence.status = "WAITING"
         sequence.new_tokens = sequence.tokens.copy()
         self.waiting_queue.put(sequence)
@@ -193,10 +194,11 @@ class Scheduler:
         if sequence.sequence_id in self.abort_requests:
             self.abort_requests.remove(sequence.sequence_id)
 
-        if not len(sequence.out_cache_loc):
-            return
-        self.mem_pool.free_block(sequence.out_cache_loc)
-        self.scheduler_policy.release_req(sequence)
+        if sequence.out_cache_loc:
+            self.mem_pool.free_block(sequence.out_cache_loc)
+            self.scheduler_policy.release_req(sequence)
+        if sequence.out_cache_loc_spec:
+            self.draft_memory_pool.free_block(sequence.out_cache_loc_spec)
 
     def is_done(self) -> bool:
         return self.waiting_queue.empty() and self.running_queue.empty()
