@@ -17,8 +17,12 @@ class ServerArgs:
     # Resource management
     mem_fraction: float = 0.7
     max_context_length: int = 8192
+    max_running_requests: Optional[int] = None
     disable_overlap: bool = False
     attention_backend: Literal["triton", "fa3"] = "triton"
+    linear_attn_backend: Literal["triton", "flashinfer"] = "flashinfer"
+    linear_attn_prefill_backend: Optional[Literal["triton", "flashinfer"]] = None
+    linear_attn_decode_backend: Optional[Literal["triton", "flashinfer"]] = None
     # speculative decoding
     speculative_algorithm: Optional[str] = None
     speculative_draft_model_path: Optional[str] = None
@@ -100,11 +104,38 @@ class ServerArgs:
             help="Disable overlapping of data transfer and computation.",
         )
         parser.add_argument(
+            "--max-running-requests",
+            type=int,
+            default=ServerArgs.max_running_requests,
+            help="Maximum number of requests admitted to a running batch.",
+        )
+        parser.add_argument(
             "--attention-backend",
             type=str.lower,
             default=ServerArgs.attention_backend,
             choices=["triton", "fa3"],
             help="The attention backend to use.",
+        )
+        parser.add_argument(
+            "--linear-attn-backend",
+            type=str.lower,
+            default=ServerArgs.linear_attn_backend,
+            choices=["triton", "flashinfer"],
+            help="Default GDN linear-attention backend.",
+        )
+        parser.add_argument(
+            "--linear-attn-prefill-backend",
+            type=str.lower,
+            default=ServerArgs.linear_attn_prefill_backend,
+            choices=["triton", "flashinfer"],
+            help="GDN prefill backend; inherits --linear-attn-backend when unset.",
+        )
+        parser.add_argument(
+            "--linear-attn-decode-backend",
+            type=str.lower,
+            default=ServerArgs.linear_attn_decode_backend,
+            choices=["triton", "flashinfer"],
+            help="GDN decode backend; inherits --linear-attn-backend when unset.",
         )
         parser.add_argument(
             "--tokenizer-mode",
@@ -185,6 +216,13 @@ class ServerArgs:
         return cls(**{attr: getattr(args, attr) for attr in attrs})
 
     def __post_init__(self):
+        if self.max_running_requests is None:
+            self.max_running_requests = self.cuda_graph_max_bs
+        if self.max_running_requests <= 0:
+            raise ValueError("max_running_requests must be positive")
+        self.cuda_graph_max_bs = min(
+            self.cuda_graph_max_bs, self.max_running_requests
+        )
         import platform
         if platform.system() == "Windows":
             self.mem_fraction = min(self.mem_fraction, 0.56)

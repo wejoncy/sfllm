@@ -11,6 +11,17 @@ from transformers import PretrainedConfig
 import transformers
 
 
+def get_pool_index_layers(config: PretrainedConfig) -> List[int]:
+    """Return KV-bearing text-model layer IDs in execution order."""
+    layer_types = vars(config).get("layer_types")
+    if layer_types is None:
+        return list(range(config.num_hidden_layers))
+    return [
+        i for i, layer_type in enumerate(layer_types)
+        if layer_type in ("full_attention", "sliding_attention")
+    ]
+
+
 class ModelConfig:
     def __init__(
         self,
@@ -30,11 +41,9 @@ class ModelConfig:
         self.is_draft_model = is_draft_model
         self.hf_config = transformers.AutoConfig.from_pretrained(model_path)
 
-        conf_dtype = getattr(self.hf_config, "dtype", None)
-        if conf_dtype is None:
-            conf_dtype = getattr(self.hf_config, "torch_dtype", None)
-            assert conf_dtype is not None, "config dtype is None"
-        conf_dtype = getattr(torch, conf_dtype) if isinstance(conf_dtype, str) else conf_dtype
-        self.dtype = conf_dtype if dtype == "auto" else getattr(torch, dtype)
+        conf_dtype = self.hf_config.dtype or self.hf_config.get_text_config().dtype
+        assert conf_dtype is not None, "config dtype is None"
+        dtypes = {"half": torch.float16, "float16": torch.float16, "bfloat16": torch.bfloat16, "float32": torch.float32}
+        conf_dtype = dtypes[conf_dtype] if isinstance(conf_dtype, str) else conf_dtype
+        self.dtype = conf_dtype if dtype == "auto" else dtypes[dtype]
         self.hf_config.dtype = self.dtype
-

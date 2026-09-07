@@ -18,6 +18,7 @@ from typing import Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
+import sf_kernel
 
 try:
     import flashinfer.norm as _flashinfer_norm
@@ -119,8 +120,6 @@ class RMSNorm(CustomOp):
             )
             return x, residual
 
-        import sf_kernel
-
         out = torch.empty_like(x)
         sf_kernel.rmsnorm(
             out,
@@ -139,7 +138,7 @@ class GemmaRMSNorm(CustomOp):
         eps: float = 1e-6,
     ) -> None:
         super().__init__()
-        self.weight = nn.Parameter(torch.zeros(hidden_size))
+        self.weight = nn.Parameter(torch.zeros(hidden_size), requires_grad=False)
         self.variance_epsilon = eps
 
     def forward_native(
@@ -158,6 +157,29 @@ class GemmaRMSNorm(CustomOp):
         x = x * (1.0 + self.weight.float())
         x = x.to(orig_dtype)
         return x if residual is None else (x, residual)
+
+    def forward_cuda(
+        self,
+        x: torch.Tensor,
+        residual: Optional[torch.Tensor] = None,
+    ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
+        # Both CUDA paths keep normalization and (1 + weight) in FP32.
+        # Residual addition is fused into the same kernel.
+        if _flashinfer_norm is None:
+            out = torch.empty_like(x)
+            sf_kernel.rmsnorm(
+                out, x, self.weight, self.variance_epsilon, residual,
+                gemma_style=True,
+            )
+            return out if residual is None else (out, residual)
+        if residual is None:
+            return _flashinfer_norm.gemma_rmsnorm(
+                x, self.weight, self.variance_epsilon
+            )
+        _flashinfer_norm.gemma_fused_add_rmsnorm(
+            x, residual, self.weight, self.variance_epsilon
+        )
+        return x, residual
 
 class Gemma3RMSNorm(CustomOp):
     def __init__(self, dim: int, eps: float = 1e-6):

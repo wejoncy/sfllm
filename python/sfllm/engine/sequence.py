@@ -78,6 +78,7 @@ class RequestSequence(RawSequence):
         self.out_cache_loc_spec = []
         self.out_cache_loc_lazy = None # tensor on cuda
         self.marked = False # marked for draft token handling, fill with -1 for the future accepted tokens
+        self.request_index = -1
         if input_ids is not None:
             self.tokens = input_ids
             self.prompt_token_len = len(input_ids)
