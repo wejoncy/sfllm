@@ -99,7 +99,7 @@ def fa3_attention_fwd(
         max_seqlen_q=metadata.max_query_len,
         softmax_scale=softmax_scale,
         causal=causal,
-        num_splits=1,
+        num_splits=0,
         scheduler_metadata=metadata.scheduler_metadata,
         out=out,
     )
