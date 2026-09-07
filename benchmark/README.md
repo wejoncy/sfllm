@@ -4,7 +4,7 @@ Reproduce the Qwen3.5-4B benchmark with 1000 prompts, server concurrency 32, and
 
 ## Recorded environment and workload
 
-The configuration below is being used for the standalone PR 1 benchmark. Its 1000-prompt result will be added after the run completes.
+Run Qwen3.5-4B with the following environment and workload.
 
 | Setting | Value |
 | --- | --- |
@@ -49,7 +49,7 @@ Run in the first terminal. These are the recorded server arguments:
 cd /workspace/sfllm
 export PYTHONDONTWRITEBYTECODE=1
 export PYTHONPATH=/workspace/sfllm/python:/workspace/sfllm/sfkernels/python
-/workspace/sglang/.venv/bin/python -m sfllm.serving.app \
+/workspace/sglang/.venv/bin/python python/sfllm/serving/app.py \
   --model-path /mnt/data/jicwen/work/Qwen3.5-4B \
   --port 8081 \
   --dtype bfloat16 \

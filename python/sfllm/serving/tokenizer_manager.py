@@ -6,6 +6,7 @@ from sfllm.engine.sequence import AbortSequence, DecodeSequence, RequestSequence
 from sfllm.engine.sampling_params import SamplingParams
 from sfllm.serving.req_protocol import GenerateReqInput
 from sfllm.engine.inference_engine import InferenceEngine
+from sfllm.server_args import set_global_server_args_for_scheduler
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +35,9 @@ class TokenizerManager:
 
     @staticmethod
     def inferengine_event_run_loop(self):
+        # ``spawn`` starts a fresh interpreter, so module globals set by
+        # ServerArgs.__post_init__ in the HTTP parent are not inherited.
+        set_global_server_args_for_scheduler(self.server_args)
         self.inference_engine = InferenceEngine(self.server_args)
         self.ready_flag.value = True
         import queue
