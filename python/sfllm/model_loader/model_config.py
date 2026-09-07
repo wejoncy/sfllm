@@ -39,7 +39,21 @@ class ModelConfig:
         self.revision = revision
         self.quantization = quantization
         self.is_draft_model = is_draft_model
-        self.hf_config = transformers.AutoConfig.from_pretrained(model_path)
+        raw_config, _ = PretrainedConfig.get_config_dict(model_path)
+        if raw_config.get("speculators_model_type") == "dflash2":
+            # Speculators counts hidden states from the embedding output (0).
+            dflash_config = dict(raw_config)
+            dflash_config["target_layer_ids"] = [
+                layer_id - 1 for layer_id in raw_config["aux_hidden_state_layer_ids"]
+            ]
+            self.hf_config = transformers.AutoConfig.for_model(
+                **raw_config["transformer_layer_config"],
+                architectures=raw_config["architectures"],
+                dtype=raw_config["dtype"],
+                dflash_config=dflash_config,
+            )
+        else:
+            self.hf_config = transformers.AutoConfig.from_pretrained(model_path)
 
         conf_dtype = self.hf_config.dtype or self.hf_config.get_text_config().dtype
         assert conf_dtype is not None, "config dtype is None"

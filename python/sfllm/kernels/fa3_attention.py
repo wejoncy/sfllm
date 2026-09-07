@@ -15,10 +15,13 @@ def _build_page_table_kernel(
     page_table_stride: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
     APPEND_QUERY: tl.constexpr,
+    PREFIX_WINDOW: tl.constexpr,
 ):
     batch_idx = tl.program_id(0)
     prefix_start = tl.load(kv_indptr + batch_idx).to(tl.int64)
     prefix_end = tl.load(kv_indptr + batch_idx + 1).to(tl.int64)
+    if PREFIX_WINDOW > 0:
+        prefix_start = tl.maximum(prefix_start, prefix_end - PREFIX_WINDOW)
     prefix_len = prefix_end - prefix_start
     if APPEND_QUERY:
         query_start = tl.load(qo_indptr + batch_idx).to(tl.int64)
@@ -65,6 +68,7 @@ def build_page_table(
     cache_seqlens: torch.Tensor,
     *,
     append_query: bool,
+    prefix_window: int = -1,
 ) -> None:
     _build_page_table_kernel[(page_table.shape[0],)](
         kv_indices,
@@ -76,6 +80,7 @@ def build_page_table(
         page_table.stride(0),
         BLOCK_SIZE=256,
         APPEND_QUERY=append_query,
+        PREFIX_WINDOW=prefix_window,
         num_warps=4,
     )
 
