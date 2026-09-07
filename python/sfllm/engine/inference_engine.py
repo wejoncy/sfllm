@@ -8,6 +8,7 @@ export HSA_ENABLE_DEBUG=1 is useful for ROCm error tracing
 import logging
 import torch
 import queue
+from tokenizers.decoders import DecodeStream
 from typing import Dict, Any, List, Tuple, Generator, Union
 
 from sfllm.engine.model_worker import ModelWorker
@@ -41,6 +42,7 @@ class InferenceEngine:
         self.running = False
         self.scheduler = Scheduler(server_args, self.model_worker)
         self.output_batch_queue = queue.Queue()
+        self.decode_states = {}
         self.model_worker.init_capture_cudagraph()
         self.enable_overlap = not server_args.disable_overlap
 
@@ -378,7 +380,10 @@ class InferenceEngine:
                 if self.is_spec_algo:
                     self.model_worker.spec_postprocess(last_batch, model_output, async_overlap=True)
                 valid_ids = self.post_forward(last_batch, model_output, failed_sequences)
-                self.output_batch_queue.put([last_batch[i] for i in valid_ids])
+                # Snapshot before the producer advances these live requests.
+                self.output_batch_queue.put(
+                    [last_batch[i].export_raw_sequence() for i in valid_ids]
+                )
 
             last_batch = cur_batch
 
@@ -386,16 +391,36 @@ class InferenceEngine:
         logger.info("Inference engine event loop exited.")
 
     def response(self, new_batch: ScheduleBatch, stream: bool) -> Generator[Dict[str, Any], Any, Any]:
-        seq_outputs = {}
         for sequence in new_batch:
             if stream:
-                if sequence.status == SequenceStatus.RUNNING:
-                    new_token = sequence.generated_tokens
-                    generated_text = self.model_worker.detokenize(
-                        new_token,
-                    )
-                    seq_outputs[sequence.sequence_id] = {"prompt": sequence.prompt, "text": generated_text}
-                    yield seq_outputs
+                if sequence.status in (SequenceStatus.RUNNING, SequenceStatus.COMPLETED):
+                    if sequence.sequence_id not in self.decode_states:
+                        self.decode_states[sequence.sequence_id] = (
+                            DecodeStream(skip_special_tokens=True), 0
+                        )
+                    decoder, text_offset = self.decode_states[sequence.sequence_id]
+                    finished = not sequence.status.is_active()
+                    if finished:
+                        generated_text = self.model_worker.detokenize(
+                            sequence.tokens[sequence.prompt_token_len : sequence.last_generated_token_pos]
+                        )[text_offset :]
+                        self.decode_states.pop(sequence.sequence_id)
+                    else:
+                        generated_text = decoder.step(
+                            self.model_worker.tokenizer.backend_tokenizer,
+                            sequence.generated_tokens,
+                        ) or ""
+                        self.decode_states[sequence.sequence_id] = (
+                            decoder, text_offset + len(generated_text)
+                        )
+                    yield {
+                        sequence.sequence_id: {
+                            "prompt": sequence.prompt,
+                            "text": generated_text,
+                        }
+                    }
+                elif not sequence.status.is_active():
+                    self.decode_states.pop(sequence.sequence_id, None)
             elif not sequence.status.is_active():
                 sequence.generated_text = self.model_worker.detokenize(
                     sequence.tokens[sequence.prompt_token_len : sequence.last_generated_token_pos],
@@ -437,8 +462,6 @@ class InferenceEngine:
             while not self.output_batch_queue.empty():
                 new_batch = self.output_batch_queue.get()
                 yield from self.response(new_batch, stream=stream)
-                # all state for a same sequence will share the same sequence object
-                self.output_batch_queue.queue.clear()
             return
 
         import threading
