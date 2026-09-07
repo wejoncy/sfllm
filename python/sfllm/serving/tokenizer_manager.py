@@ -1,15 +1,14 @@
-import asyncio
-import time
 import logging
 from tokenizers.decoders import DecodeStream
 import torch.multiprocessing as multiprocessing
 from sfllm.engine.sequence import AbortSequence, DecodeSequence, RequestSequence
 from sfllm.engine.sampling_params import SamplingParams
 from sfllm.serving.req_protocol import GenerateReqInput
-from sfllm.engine.inference_engine import InferenceEngine
+from sfllm.engine.inference_engine import InferenceEngine, OVERLAP_IDLE_WAIT_SECONDS
 from sfllm.server_args import set_global_server_args_for_scheduler
 
 logger = logging.getLogger(__name__)
+
 
 class TokenizerManager:
     def __init__(self, server_args):
@@ -56,32 +55,30 @@ class TokenizerManager:
         thread = None
         if not self.server_args.disable_overlap:
             th_event = threading.Event()
-            thread = threading.Thread(target=self.inference_engine.event_loop_overlap, args=(th_event,))
+            thread = threading.Thread(
+                target=self.inference_engine.event_loop_overlap,
+                args=(th_event, self.inferengine_input_queue),
+            )
             thread.start()
         while True:
             if not self.running or (thread is not None and not thread.is_alive()):
                 logger.error("Inference engine event loop stopped unexpectedly.")
                 break
-            try:
-                for i in range(10):
-                    req_sequence = self.inferengine_input_queue.get_nowait()
-                    self.inference_engine.add_request(req_sequence)
-            except queue.Empty:  # noqa: E722
-                pass
-            
             if not self.server_args.disable_overlap:
-                seq_group = self.inference_engine.step_overlap(timeout=0.1)
+                seq_group = self.inference_engine.step_overlap(
+                    timeout=OVERLAP_IDLE_WAIT_SECONDS
+                )
             else:
+                try:
+                    for _ in range(self.server_args.max_running_requests):
+                        self.inference_engine.add_request(self.inferengine_input_queue.get_nowait())
+                except queue.Empty:
+                    pass
                 seq_group = self.inference_engine.step()
             if len(seq_group) == 0:
-                time.sleep(0.1)
                 continue
 
-            seq_outputs = []
-            for sequence in seq_group:
-                decode_seq = DecodeSequence(sequence)
-                seq_outputs.append(decode_seq)
-            self.tokenizer_input_queue.put(seq_outputs)
+            self.tokenizer_input_queue.put(seq_group)
         if not self.server_args.disable_overlap:
             th_event.set()
             thread.join()
@@ -100,7 +97,16 @@ class TokenizerManager:
                     self.decode_states.pop(out_sequence.sequence_id, None)
                     self.inferengine_input_queue.put(out_sequence)
                 elif isinstance(out_sequence, RequestSequence):
-                    out_sequence.init(self.tokenizer)
+                    if out_sequence.messages is None:
+                        out_sequence.init(self.tokenizer)
+                    else:
+                        input_ids = self.tokenizer.apply_chat_template(
+                            out_sequence.messages,
+                            tokenize=True,
+                            add_generation_prompt=True,
+                            return_dict=False,
+                        )
+                        out_sequence.init(input_ids)
                     out_sequence.sampling_params.stop_token_ids |= self.eos_token_ids
                     stop_token_sequences = []
                     for stop in out_sequence.sampling_params.stop:
@@ -141,6 +147,7 @@ class TokenizerManager:
                         seq_outputs[seq.sequence_id] = {
                             "text": generated_text,
                             "output_ids": seq.tokens,
+                            "prompt_length": seq.prompt_token_len,
                             "completion_tokens": seq.completion_tokens,
                             "status": seq.status,
                         }

@@ -1,4 +1,5 @@
 import logging
+from array import array
 from typing import Callable
 
 import torch
@@ -144,6 +145,14 @@ class SpeculativeWorker:
         spec_info.verified_id = result.verified_id
         spec_info.hidden_states = verify_input.hidden_states[result.accepted_indices]
         spec_info.accept_length = result.accept_length
+        if not self.server_args.disable_overlap:
+            width = self.server_args.speculative_num_draft_tokens
+            for sequence in scheduled_batch:
+                # This result owns the proposals; the request keeps its root.
+                root = len(sequence.out_cache_loc) - width
+                sequence.out_cache_loc[root + 1:] = (
+                    array("q", [-1]) * self.server_args.speculative_num_steps
+                )
         return BatchResult(
             next_token_ids=result.verified_id,
             next_token_logits=next_token_logits,
@@ -177,11 +186,11 @@ class SpeculativeWorker:
 
         if spec_info.out_cache_loc is not None:
             accepted_cache_locs = spec_info.out_cache_loc.cpu()
-            accepted_cache_locs = accepted_cache_locs[
-                accepted_cache_locs != -1
-            ].tolist()
+            accepted_cache_locs = [
+                loc for loc in memoryview(accepted_cache_locs.numpy()) if loc != -1
+            ]
             rejected_cache_locs = list(
-                set(out_cache_loc_cpu.tolist()) - set(accepted_cache_locs)
+                set(memoryview(out_cache_loc_cpu.numpy())) - set(accepted_cache_locs)
             )
             assert len(rejected_cache_locs) + len(accepted_cache_locs) == len(
                 out_cache_loc_cpu
@@ -195,7 +204,7 @@ class SpeculativeWorker:
                     sequence.out_cache_loc.extend(accepted_cache_locs[:accept_len])
                     accepted_cache_locs = accepted_cache_locs[accept_len:]
             else:
-                num_steps = self.server_args.speculative_num_steps
+                width = self.server_args.speculative_num_steps + 1
                 for idx, sequence in enumerate(scheduled_batch):
                     accept_len = accept_length_cpu[idx].item()
                     sequence_cache_locs = accepted_cache_locs[: 1 + accept_len]
@@ -205,13 +214,10 @@ class SpeculativeWorker:
                         # the accepted proposal slots that follow it.
                         self.main_mem_pool.free_block(sequence_cache_locs[1:])
                         continue
-                    start = draft_token_num + num_steps
-                    sequence.out_cache_loc[-start : -start + accept_len] = (
-                        sequence_cache_locs[1:]
-                    )
-                    sequence.out_cache_loc[
-                        -start + accept_len : -start + num_steps
-                    ] = []
+                    has_next = len(sequence.tokens) - sequence.last_generated_token_pos > width
+                    start = sequence.last_generated_token_pos - 1
+                    end = len(sequence.out_cache_loc) - (width if has_next else 0)
+                    sequence.out_cache_loc[start:end] = array("q", sequence_cache_locs)
 
         if async_overlap:
             num_steps = self.server_args.speculative_num_steps
@@ -219,20 +225,15 @@ class SpeculativeWorker:
                 if not sequence.status.is_active():
                     continue
                 accept_len = batch_output.spec_info.accept_length_cpu[idx].item()
+                sequence.accept_length_cpu = accept_length_cpu[idx:idx + 1]
+                if len(sequence.tokens) - sequence.last_generated_token_pos <= num_steps + 1:
+                    continue
                 offset = len(sequence.out_cache_loc_spec) - (num_steps - accept_len)
                 sequence.out_cache_loc_spec, extra_locs = (
                     sequence.out_cache_loc_spec[:offset],
                     sequence.out_cache_loc_spec[offset:],
                 )
                 self.draft_mem_pool.free_block(extra_locs)
-
-                offset = len(sequence.out_cache_loc) - (draft_token_num - 1)
-                sequence.out_cache_loc, sequence.out_cache_loc_lazy_cpu = (
-                    sequence.out_cache_loc[:offset],
-                    sequence.out_cache_loc[offset:],
-                )
-                sequence.out_cache_loc.extend([-1] * num_steps)
-                sequence.marked = True
 
         if not async_overlap:
             for idx, sequence in enumerate(scheduled_batch):

@@ -71,6 +71,10 @@ class FA3AttentionWorkspace:
             page_table,
             cache_seqlens,
             append_query=not is_decode,
+            prefix_window=(
+                layer.sliding_window_size
+                if forward_batch.forward_mode == ForwardMode.DRAFT_EXTEND else -1
+            ),
         )
         scheduler_metadata = get_scheduler_metadata(
             batch_size=batch_size,

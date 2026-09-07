@@ -1,4 +1,3 @@
-import time
 import queue
 import logging
 from collections import deque
@@ -78,7 +77,7 @@ class Scheduler:
 
     def swap_req_to_waiting(self, sequence: RequestSequence):
         self.free_sequence_resources(sequence)
-        sequence.out_cache_loc = []
+        del sequence.out_cache_loc[:]
         sequence.out_cache_loc_spec = []
         sequence.status = "WAITING"
         sequence.new_tokens = sequence.tokens.copy()
@@ -90,6 +89,9 @@ class Scheduler:
     def get_next_batch(self, last_batch: ScheduleBatch=None) -> Tuple[ScheduleBatch, List[RequestSequence]]:
         running_sequences = []
         failed_sequences = []
+        if self.enable_overlap:
+            self.flying_batch.merge(last_batch)
+            self.flying_batch.filter()
         # schedule prefill first
         prefill_tokens = 0
 
@@ -101,6 +103,16 @@ class Scheduler:
                 self.free_sequence_resources(sequence)
                 continue
             tokens = self.waiting_queue.queue[0].tokens
+            if len(tokens) > self.max_prefill_tokens:
+                sequence = self.waiting_queue.get()
+                logger.warning(
+                    f"Request has {len(tokens)} prompt tokens, exceeding "
+                    f"the {self.max_prefill_tokens} token prefill limit."
+                )
+                sequence.status = SequenceStatus.FAILED
+                sequence.generated_tokens.clear()
+                failed_sequences.append(sequence)
+                continue
             if not self.scheduler_policy.can_add_prefill_req(self.waiting_queue.queue[0]):
                 break
             if prefill_tokens + len(tokens) > self.max_prefill_tokens:
@@ -119,9 +131,6 @@ class Scheduler:
 
         running_batch = ScheduleBatch(running_sequences, self.mem_pool, self.draft_memory_pool)
         if self.enable_overlap:
-            # remove finished sequences from flying batch
-            self.flying_batch.merge(last_batch)
-            self.flying_batch.filter()
             if len(running_sequences) == 0:
                 # if there is no prefill request, schedule decode requests
                 for seq in self.flying_batch.sequences:
@@ -136,7 +145,11 @@ class Scheduler:
                         # we will only reserver a few of them, the rest will be free after verification
                         seq.out_cache_loc.extend(self.mem_pool.alloc_block(target_verify_len))
                         # for draft model
-                        total_draft_len = best_decode_len # we don't know how much token is accepted at this moment
+                        total_draft_len = (
+                            best_decode_len
+                            if len(seq.tokens) > seq.last_generated_token_pos
+                            else int(seq.accept_length_cpu[0]) + 1
+                        )
                         assert self.draft_memory_pool.can_alloc(total_draft_len)
                         seq.out_cache_loc_spec.extend(self.draft_memory_pool.alloc_block(total_draft_len))
                     else:
@@ -182,12 +195,6 @@ class Scheduler:
             if not self.running_queue.empty():
                 logger.warning("swapping one running req to waiting for free memory.")
                 self.swap_req_to_waiting(self.running_queue.get())
-            elif not self.waiting_queue.empty() and not self.enable_overlap:
-                sequence = self.waiting_queue.get()
-                logger.warning(f"the request's token is too long. has tokens: {len(sequence.tokens)}, max context length: {self.max_context_length}. Marking as FAILED.")
-                sequence.status = "FAILED"
-                failed_sequences.append(sequence)
-                self.free_sequence_resources(sequence)
 
         return running_batch, failed_sequences
 
