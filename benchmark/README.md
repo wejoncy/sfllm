@@ -4,7 +4,7 @@ Reproduce the Qwen3.5-4B benchmark with 1000 prompts, server concurrency 32, and
 
 ## Recorded environment and workload
 
-Reference run: 2026-09-07, Qwen3.5-4B, on the complete source before the two-PR split (source tree `bbdcb27d22f4f9a369952dd1943281abe5033f9f`). This includes both the model-support and engine/scheduling changes. The result is not a standalone measurement of PR 1 or a measured speedup from PR 1 to PR 2.
+The configuration below is being used for the standalone PR 1 benchmark. Its 1000-prompt result will be added after the run completes.
 
 | Setting | Value |
 | --- | --- |
@@ -73,7 +73,7 @@ export PYTHONPATH=/workspace/sfllm/python:/workspace/sfllm/sfkernels/python
 until curl --fail --silent --max-time 2 http://127.0.0.1:8081/health >/dev/null; do
   sleep 1
 done
-mkdir -p /tmp/sfllm-postfix-sharegpt.xhzhtkti
+mkdir -p /tmp/sfllm-pr1-sharegpt.0tfmxqsv
 /workspace/sglang/.venv/bin/python -m sfllm.serving.sgl_bench_seving \
   --backend sglang-native \
   --host 127.0.0.1 \
@@ -88,29 +88,10 @@ mkdir -p /tmp/sfllm-postfix-sharegpt.xhzhtkti
   --seed 1 \
   --warmup-requests 1 \
   --output-details \
-  --output-file /tmp/sfllm-postfix-sharegpt.xhzhtkti/results.jsonl \
+  --output-file /tmp/sfllm-pr1-sharegpt.0tfmxqsv/results.jsonl \
   --sharegpt-output-len 1024 \
   --disable-ignore-eos
 ```
 
 The client completes one warmup request before timing the 1000 measured requests. Wait for its final benchmark summary and successful exit. `--output-details` keeps per-request results in the JSONL output.
 
-## 1000-prompt result
-
-| Metric | Recorded value |
-| --- | ---: |
-| Successful requests | 1000 / 1000 |
-| Benchmark duration | 208.822081 s |
-| Input tokens | 318819 |
-| Output tokens (server reported) | 907163 |
-| Output throughput | **4344.190972 tok/s** |
-| Input throughput | 1526.749461 tok/s |
-| Request throughput | 4.788766 req/s |
-| Mean / P99 end-to-end latency | 4954.320379 / 5749.094537 ms |
-| Mean / P99 time to first token | 36.902708 / 228.935116 ms |
-| Mean / P99 time per output token | 5.431799 / 5.850073 ms |
-| Mean / median / P99 inter-token latency | 5.438638 / 5.094174 / 18.360982 ms |
-
-Output throughput is server-reported output tokens divided by measured duration. Retokenized output was 904851 tokens and is not used for the reported throughput.
-
-Original local artifacts: `/tmp/sfllm-postfix-sharegpt.xhzhtkti/{run.json,client-command.json,client.log,results.jsonl}`. Server log: `/tmp/sfllm-fixed-nsys.267_3r7s/restored-server.log`. The recorded throughput run had no profiler or diagnostic workload.
