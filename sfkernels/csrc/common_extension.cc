@@ -27,8 +27,11 @@ TORCH_LIBRARY_FRAGMENT(sfkernels, m) {
      /*
    * From csrc/elementwise
    */
-  m.def("rmsnorm(Tensor! output, Tensor input, Tensor weight, float eps, Tensor? input_2=None) -> ()");
+  m.def("rmsnorm(Tensor! output, Tensor input, Tensor weight, float eps, Tensor!? input_2=None, bool gemma_style=False) -> ()");
   m.impl("rmsnorm", torch::kCUDA, &rmsnorm);
+
+  m.def("gated_rmsnorm(Tensor! output, Tensor input, Tensor gate, Tensor weight, float eps) -> ()");
+  m.impl("gated_rmsnorm", torch::kCUDA, &gated_rmsnorm);
 
   // m.def("fused_add_rmsnorm(Tensor! input, Tensor! residual, Tensor weight, float eps, bool enable_pdl) -> ()");
   // m.impl("fused_add_rmsnorm", torch::kCUDA, &sgl_fused_add_rmsnorm);
@@ -53,6 +56,15 @@ TORCH_LIBRARY_FRAGMENT(sfkernels, m) {
       "Tensor k_norm_weight, Tensor cos_sin_cache, Tensor pos_ids, bool interleave, "
       "Tensor! k_buffer, Tensor! v_buffer, Tensor kv_cache_loc, float epsilon) -> ()");
   m.impl("qk_norm_rope_and_cache", torch::kCUDA, &qk_norm_rope_and_cache);
+
+  m.def(
+      "gemma_qk_norm_rope(Tensor q, Tensor k, Tensor v, Tensor! q_rope, Tensor! k_rope, "
+      "Tensor q_norm_weight, Tensor k_norm_weight, Tensor cos_sin_cache, Tensor pos_ids, "
+      "Tensor!? k_buffer, Tensor!? v_buffer, Tensor? kv_cache_loc, float epsilon) -> ()");
+  m.impl("gemma_qk_norm_rope", torch::kCUDA, &gemma_qk_norm_rope);
+
+  m.def("fused_sigmoid_mul(Tensor! output, Tensor gate) -> ()");
+  m.impl("fused_sigmoid_mul", torch::kCUDA, &fused_sigmoid_mul);
 
   // quantization fp8 ops
   m.def("sgl_per_tensor_quant_fp8(Tensor input, Tensor output_q, Tensor output_s, bool is_static) -> ()");

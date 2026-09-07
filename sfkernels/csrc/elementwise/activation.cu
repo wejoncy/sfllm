@@ -28,58 +28,93 @@
 #include "hip/hip_act_and_mul.cuh"
 #endif
 
+#include "cast.cuh"
+
 // Adapted from flashinfer activation
 // https://github.com/flashinfer-ai/flashinfer/blob/4e8eb1879f9c3ba6d75511e5893183bf8f289a62/csrc/activation.cu#L44
 
-namespace detail {
-
-template <typename T>
-__device__ __forceinline__ float to_f32(const T& x) {
-#if USE_ROCM
-  return castToFloat(x);
-#else
-  return static_cast<float>(x);
-#endif
-}
-
-template <typename T>
-__device__ __forceinline__ T from_f32(float f32) {
-#if USE_ROCM
-  return castFromFloat<T>(f32);
-#else
-  return static_cast<T>(f32);
-#endif
-}
-
-}  // namespace detail
-
 template <typename T>
 __device__ __forceinline__ T silu(const T& x) {
-  float f32_val = detail::to_f32(x);
-  return detail::from_f32<T>(f32_val / (1.0f + expf(-f32_val)));
+  float f32_val = to_float(x);
+  return from_float<T>(f32_val / (1.0f + expf(-f32_val)));
 }
+
+#ifndef USE_ROCM
+// Flatten vectors across tokens so small decode batches launch enough blocks.
+template <typename T>
+__global__ void silu_and_mul_flat_kernel(
+    T* __restrict__ out,
+    const T* __restrict__ input,
+    const uint32_t d,
+    const uint32_t num_tokens) {
+  constexpr uint32_t vec_size = 16 / sizeof(T);
+  const uint32_t vecs_per_token = d / vec_size;
+  const uint32_t index = blockIdx.x * blockDim.x + threadIdx.x;
+  if (index >= num_tokens * vecs_per_token) {
+    return;
+  }
+
+  const uint32_t token = index / vecs_per_token;
+  const uint32_t column = (index % vecs_per_token) * vec_size;
+  const uint32_t input_offset = token * 2 * d + column;
+  flashinfer::vec_t<float, vec_size> gate, up, output;
+  gate.cast_load(input + input_offset);
+  up.cast_load(input + input_offset + d);
+#pragma unroll
+  for (uint32_t i = 0; i < vec_size; ++i) {
+    output[i] = silu(gate[i]) * up[i];
+  }
+  output.cast_store(out + token * d + column);
+}
+
+template <typename T>
+__global__ void fused_sigmoid_mul_kernel(
+    T* __restrict__ output,
+    const T* __restrict__ gate,
+    const uint64_t num_rows,
+    const uint32_t num_heads,
+    const uint32_t head_dim,
+    const int64_t gate_token_stride,
+    const int64_t gate_head_stride) {
+  const uint64_t row = static_cast<uint64_t>(blockIdx.x) * blockDim.y + threadIdx.y;
+  if (row >= num_rows) {
+    return;
+  }
+  const uint64_t token = row / num_heads;
+  const uint32_t head = row % num_heads;
+  const int64_t gate_offset = token * gate_token_stride +
+      head * gate_head_stride;
+  for (uint32_t column = threadIdx.x; column < head_dim; column += blockDim.x) {
+    const uint64_t index = row * head_dim + column;
+    const float value = to_float(output[index]);
+    const float gate_value = to_float(gate[gate_offset + column]);
+    output[index] = from_float<T>(
+        value * __fdividef(1.0f, 1.0f + __expf(-gate_value)));
+  }
+}
+#endif
 
 template <typename T>
 __device__ __forceinline__ T gelu(const T& x) {
   constexpr float kAlpha = M_SQRT1_2;
-  float f32_val = detail::to_f32(x);
-  return detail::from_f32<T>(f32_val * (0.5f * (1.0f + erf(f32_val * kAlpha))));
+  float f32_val = to_float(x);
+  return from_float<T>(f32_val * (0.5f * (1.0f + erf(f32_val * kAlpha))));
 }
 
 // gelu_quick(x) = x * torch.sigmoid(1.702 * x)
 template <typename T>
 __device__ __forceinline__ T gelu_quick_act(const T& x) {
-  float f32_val = detail::to_f32(x);
-  return detail::from_f32<T>(f32_val / (1.0f + expf(-f32_val * 1.702f)));
+  float f32_val = to_float(x);
+  return from_float<T>(f32_val / (1.0f + expf(-f32_val * 1.702f)));
 }
 
 template <typename T>
 __device__ __forceinline__ T gelu_tanh(const T& x) {
   constexpr float kAlpha = 0.044715f;
   constexpr float kBeta = 0.7978845608028654f;
-  float f32_val = detail::to_f32(x);
+  float f32_val = to_float(x);
   const float cdf = 0.5f * (1.0f + tanhf((kBeta * (f32_val + kAlpha * f32_val * f32_val * f32_val))));
-  return detail::from_f32<T>(f32_val * cdf);
+  return from_float<T>(f32_val * cdf);
 }
 
 // Helpers to avoid #if inside macro arguments
@@ -119,16 +154,75 @@ void launch_gelu_tanh_kernel(at::Tensor& out, at::Tensor& input, int d, dim3 gri
 void silu_and_mul(at::Tensor& out, at::Tensor& input) {
   int d = input.size(-1) / 2;
   int64_t num_tokens = input.numel() / input.size(-1);
-  dim3 grid(num_tokens);
 
   const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
   const at::cuda::OptionalCUDAGuard device_guard(device_of(input));
 
   DISPATCH_PYTORCH_DTYPE_TO_CTYPE_FLOAT_FP16(input.scalar_type(), c_type, [&] {
     uint32_t vec_size = 16 / sizeof(c_type);
+#ifndef USE_ROCM
+    if (d % vec_size == 0) {
+      constexpr uint32_t block_size = 256;
+      uint32_t num_vectors = num_tokens * d / vec_size;
+      dim3 grid((num_vectors + block_size - 1) / block_size);
+      silu_and_mul_flat_kernel<c_type>
+          <<<grid, block_size, 0, stream>>>(
+              static_cast<c_type*>(out.data_ptr()),
+              static_cast<c_type*>(input.data_ptr()),
+              d,
+              num_tokens);
+      return true;
+    }
+#endif
+    dim3 grid(num_tokens);
     dim3 block(std::min(d / vec_size, 1024U));
     launch_silu_kernel<c_type>(out, input, d, grid, block, stream);
     return true;
+  });
+}
+
+void fused_sigmoid_mul(at::Tensor& output, const at::Tensor& gate) {
+  CHECK_INPUT(output);
+  TORCH_CHECK(output.dim() == 2 && (gate.dim() == 2 || gate.dim() == 3),
+              "output must be 2D and gate must be 2D or 3D");
+  TORCH_CHECK(gate.is_cuda() && gate.stride(-1) == 1,
+              "gate must be a CUDA tensor contiguous in its last dimension");
+  TORCH_CHECK(output.device() == gate.device(), "output and gate must be on the same device");
+  TORCH_CHECK(output.scalar_type() == gate.scalar_type(), "output and gate must have the same dtype");
+
+  const uint32_t num_heads = gate.dim() == 3 ? gate.size(1) : 1;
+  const uint32_t head_dim = gate.size(-1);
+  TORCH_CHECK(output.size(0) == gate.size(0) &&
+              output.size(1) == static_cast<int64_t>(num_heads) * head_dim,
+              "output and gate shapes do not match");
+
+  const uint64_t num_elements = output.numel();
+  if (num_elements == 0) {
+    return;
+  }
+
+  const int64_t gate_token_stride = gate.stride(0);
+  const int64_t gate_head_stride = gate.dim() == 3 ? gate.stride(1) : 0;
+  const at::cuda::OptionalCUDAGuard device_guard(device_of(output));
+  const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+  DISPATCH_PYTORCH_DTYPE_TO_CTYPE_FLOAT_FP16(output.scalar_type(), c_type, [&] {
+#ifndef USE_ROCM
+    const uint64_t num_rows = num_elements / head_dim;
+    const dim3 block(32, 4);
+    const dim3 grid((num_rows + block.y - 1) / block.y);
+    fused_sigmoid_mul_kernel<c_type>
+        <<<grid, block, 0, stream>>>(
+            static_cast<c_type*>(output.data_ptr()),
+            static_cast<const c_type*>(gate.data_ptr()),
+            num_rows,
+            num_heads,
+            head_dim,
+            gate_token_stride,
+            gate_head_stride);
+    return true;
+#else
+    TORCH_CHECK(false, "fused_sigmoid_mul is only available on CUDA");
+#endif
   });
 }
 

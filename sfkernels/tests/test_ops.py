@@ -1,5 +1,6 @@
 import torch
 import pytest
+import math
 from sfllm.layers.activations import SiluAndMul, GeluAndMul
 from sfllm.layers.rotary_embedding import RotaryEmbedding
 
@@ -198,3 +199,24 @@ def test_qk_norm_rope_and_cache(dtype):
     torch.testing.assert_close(k, k_ref, atol=5e-2, rtol=1e-2)
     torch.testing.assert_close(k_cache[cache_locs], k)
     torch.testing.assert_close(v_cache[cache_locs], v_ref)
+
+
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16, torch.float32])
+@pytest.mark.parametrize("shape", [
+    (24, 16, 256), (3, 128, 128), (3, 7, 127), (1, 1, 1),
+    (17, 3, 1025), (0, 7, 128), (3, 0, 128),
+    (3, 1), (3, 127), (3, 16384),
+])
+def test_sigmoid_mul_strided_gate(shape, dtype):
+    torch.manual_seed(0)
+    storage = torch.randn(*shape[:-1], 2 * shape[-1] + 1, device="cuda", dtype=dtype)
+    gate = storage[..., 1:shape[-1] + 1]
+    output = torch.randn(shape[0], math.prod(shape[1:]), device="cuda", dtype=dtype)
+    expected = (output.float() * gate.float().reshape_as(output).sigmoid()).to(dtype)
+
+    sf_kernel.fused_sigmoid_mul(output, gate)
+
+    torch.testing.assert_close(
+        output, expected, atol=1e-5,
+        rtol=1e-5 if dtype == torch.float32 else 1e-2,
+    )

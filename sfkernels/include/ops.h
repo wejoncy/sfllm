@@ -55,7 +55,13 @@ void build_tree_kernel_efficient(
 /*
  * From csrc/elementwise
  */
-void rmsnorm(at::Tensor& output, at::Tensor& input, at::Tensor& weight, double eps, at::optional<at::Tensor> input_2=at::nullopt);
+void rmsnorm(at::Tensor& output, at::Tensor& input, at::Tensor& weight, double eps, at::optional<at::Tensor> input_2=at::nullopt, bool gemma_style=false);
+void gated_rmsnorm(
+    at::Tensor& output,
+    const at::Tensor& input,
+    const at::Tensor& gate,
+    const at::Tensor& weight,
+    double eps);
 // void sgl_fused_add_rmsnorm(torch::Tensor input, torch::Tensor residual, torch::Tensor weight, double eps, bool enable_pdl);
 void silu_and_mul(at::Tensor& out, at::Tensor& input);
 void gelu_tanh_and_mul(at::Tensor& out, at::Tensor& input);
@@ -86,6 +92,21 @@ void qk_norm_rope_and_cache(
     at::Tensor v_buffer,
     at::Tensor kv_cache_loc,
     double epsilon);
+void gemma_qk_norm_rope(
+    at::Tensor q,
+    at::Tensor k,
+    at::Tensor v,
+    at::Tensor q_rope,
+    at::Tensor k_rope,
+    at::Tensor q_norm_weight,
+    at::Tensor k_norm_weight,
+    at::Tensor cos_sin_cache,
+    at::Tensor pos_ids,
+    const std::optional<at::Tensor>& k_buffer,
+    const std::optional<at::Tensor>& v_buffer,
+    const std::optional<at::Tensor>& kv_cache_loc,
+    double epsilon);
+void fused_sigmoid_mul(at::Tensor& output, const at::Tensor& gate);
 
 // quantization fp8 ops
 void sgl_per_tensor_quant_fp8(at::Tensor input, at::Tensor output_q, at::Tensor output_s, bool is_static);

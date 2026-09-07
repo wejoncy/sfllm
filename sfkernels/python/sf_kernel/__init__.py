@@ -46,7 +46,17 @@ try:
     build_tree_kernel_efficient = torch.ops.sfkernels.build_tree_kernel_efficient
     verify_tree_greedy = torch.ops.sfkernels.verify_tree_greedy
     rmsnorm = torch.ops.sfkernels.rmsnorm
-    __all__ = ["build_tree_kernel_efficient", "verify_tree_greedy", "rmsnorm"]
+    gated_rmsnorm = torch.ops.sfkernels.gated_rmsnorm
+    gemma_qk_norm_rope = torch.ops.sfkernels.gemma_qk_norm_rope
+    fused_sigmoid_mul = torch.ops.sfkernels.fused_sigmoid_mul
+    __all__ = [
+        "build_tree_kernel_efficient",
+        "verify_tree_greedy",
+        "rmsnorm",
+        "gated_rmsnorm",
+        "gemma_qk_norm_rope",
+        "fused_sigmoid_mul",
+    ]
 except AttributeError:
     print("Warning: CUDA kernels not available. Functions may not be registered properly.")
     __all__ = []

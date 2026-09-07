@@ -1,5 +1,6 @@
 #include <torch/extension.h>
 #include <ATen/cuda/CUDAContext.h>
+#include <c10/cuda/CUDAGuard.h>
 #include <cub/cub.cuh>
 #include "utils.h"
 #include "cast.cuh"
@@ -11,6 +12,104 @@ struct SumOp {
         return a + b;
     }
 };
+
+constexpr int kGatedRmsNormThreads = 128;
+
+template <typename scalar_t>
+__global__ void gated_rms_norm_kernel(
+    scalar_t* __restrict__ output,
+    const scalar_t* __restrict__ input,
+    const scalar_t* __restrict__ gate,
+    const float* __restrict__ weight,
+    const float epsilon,
+    const int num_heads,
+    const int hidden_size,
+    const int64_t input_token_stride,
+    const int64_t input_head_stride,
+    const int64_t gate_token_stride,
+    const int64_t gate_head_stride) {
+    using BlockReduce = cub::BlockReduce<float, kGatedRmsNormThreads>;
+    __shared__ typename BlockReduce::TempStorage reduce_storage;
+    __shared__ float inverse_rms;
+
+    const int64_t row = blockIdx.x;
+    const int64_t token = row / num_heads;
+    const int head = row % num_heads;
+    const int64_t input_offset =
+        token * input_token_stride + head * input_head_stride;
+    float sum = 0.0f;
+    for (int column = threadIdx.x; column < hidden_size; column += blockDim.x) {
+        const float value = to_float(input[input_offset + column]);
+        sum += value * value;
+    }
+    const float square_sum = BlockReduce(reduce_storage).Reduce(
+        sum, SumOp{});
+    if (threadIdx.x == 0) {
+        inverse_rms = rsqrtf(square_sum / hidden_size + epsilon);
+    }
+    __syncthreads();
+
+    for (int column = threadIdx.x; column < hidden_size; column += blockDim.x) {
+        const float value = to_float(input[input_offset + column]);
+        const int64_t gate_offset =
+            token * gate_token_stride + head * gate_head_stride + column;
+        const float gate_value = to_float(gate[gate_offset]);
+        const float gated = gate_value / (1.0f + expf(-gate_value));
+        output[row * hidden_size + column] = from_float<scalar_t>(
+            value * inverse_rms * weight[column] * gated);
+    }
+}
+
+void gated_rmsnorm(
+    at::Tensor& output,
+    const at::Tensor& input,
+    const at::Tensor& gate,
+    const at::Tensor& weight,
+    double eps) {
+    CHECK_LAST_DIM_CONTIGUOUS_INPUT(input);
+    CHECK_LAST_DIM_CONTIGUOUS_INPUT(gate);
+    CHECK_INPUT(weight);
+    CHECK_INPUT(output);
+    TORCH_CHECK(input.dim() == 3, "input must have shape [tokens, heads, dim]");
+    TORCH_CHECK(gate.sizes() == input.sizes(), "gate shape must match input");
+    TORCH_CHECK(output.sizes() == input.sizes(), "output shape must match input");
+    TORCH_CHECK(gate.scalar_type() == input.scalar_type(),
+                "gate and input must have the same dtype");
+    TORCH_CHECK(output.scalar_type() == input.scalar_type(),
+                "output and input must have the same dtype");
+    TORCH_CHECK(input.device() == gate.device() && input.device() == output.device() &&
+                input.device() == weight.device(), "all tensors must be on the same device");
+    TORCH_CHECK(weight.scalar_type() == at::ScalarType::Float,
+                "weight must have float32 dtype");
+    const int num_heads = input.size(1);
+    const int hidden_size = input.size(2);
+    TORCH_CHECK(weight.dim() == 1 && weight.numel() == hidden_size,
+                "weight must have shape [", hidden_size, "]");
+    TORCH_CHECK(hidden_size > 0, "hidden size must be positive");
+
+    const int64_t num_rows = input.size(0) * num_heads;
+    if (num_rows == 0) {
+        return;
+    }
+    const at::cuda::OptionalCUDAGuard device_guard(device_of(input));
+    const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+    DISPATCH_PYTORCH_DTYPE_TO_CTYPE_FP16(input.scalar_type(), scalar_t, [&] {
+        gated_rms_norm_kernel<scalar_t>
+            <<<static_cast<uint32_t>(num_rows), kGatedRmsNormThreads, 0, stream>>>(
+                reinterpret_cast<scalar_t*>(output.data_ptr()),
+                reinterpret_cast<const scalar_t*>(input.data_ptr()),
+                reinterpret_cast<const scalar_t*>(gate.data_ptr()),
+                weight.data_ptr<float>(),
+                static_cast<float>(eps),
+                num_heads,
+                hidden_size,
+                input.stride(0),
+                input.stride(1),
+                gate.stride(0),
+                gate.stride(1));
+        return true;
+    });
+}
 
 template<typename T>
 __device__ __forceinline__ T mul(T a, T b) {
@@ -48,7 +147,7 @@ __global__ void rms_norm_kernel_opt_v2(
     const scalar_t* __restrict__ weight,  // [hidden_size]
     const float epsilon, const int num_tokens, const int hidden_size,
     const int rows_per_outer, const int64_t outer_stride,
-    const int64_t row_stride) {
+    const int64_t row_stride, const bool gemma_style) {
 
     using LoadT = aligned_vector<scalar_t, ILP>;
     scalar_t v[ILP];
@@ -119,12 +218,14 @@ __global__ void rms_norm_kernel_opt_v2(
                 if (input_res_for_this_vec != nullptr) {
                     *value_res = input_res_for_this_vec[idx];
                 }
+                const LoadT weights = weight_cache_vec[idx];
                 for(int j = 0; j < ILP; j++) {
                     float x = to_float(v[j]);
                     if (input_res_for_this_vec != nullptr) {
                         x += to_float(v_res[j]);
                     }
-                    float w = to_float(weight_cache[idx * ILP + j]);
+                    float w = to_float(weights[j])
+                        + static_cast<float>(gemma_style);
                     v[j] = from_float<scalar_t>(x * s_variance * w);
                     if (input_res_for_this_vec != nullptr) {
                         v_res[j] = from_float<scalar_t>(x);
@@ -141,7 +242,8 @@ __global__ void rms_norm_kernel_opt_v2(
 }
 
 void rmsnorm(at::Tensor& output, at::Tensor& input, at::Tensor& weight, 
-            double eps,at::optional<at::Tensor> input_2=at::nullopt) {
+            double eps,at::optional<at::Tensor> input_2=at::nullopt,
+            bool gemma_style=false) {
     TORCH_CHECK(input.dim() > 0, "input must have at least one dimension");
     int hidden_size = input.size(-1);
     int num_tokens = input.numel() / hidden_size;
@@ -177,6 +279,9 @@ void rmsnorm(at::Tensor& output, at::Tensor& input, at::Tensor& weight,
     const int64_t row_stride = input.dim() == 3 ? input.stride(1) :
         (input.dim() == 1 ? hidden_size : input.stride(-2));
     
+    if (num_tokens == 0) {
+        return;
+    }
     DISPATCH_PYTORCH_DTYPE_TO_CTYPE_FP16(input.scalar_type(), scalar_t, [&] {
         int shared_mem_size = hidden_size * sizeof(scalar_t) + ALIGN_BYTES;
         constexpr int ILP = 16 / sizeof(scalar_t); 
@@ -197,7 +302,7 @@ void rmsnorm(at::Tensor& output, at::Tensor& input, at::Tensor& weight,
             <<<grid, 256, shared_mem_size, stream>>>(
                 output_ptr, input_ptr, residual_ptr, weight_ptr,
                 static_cast<float>(eps), num_tokens, hidden_size,
-                rows_per_outer, outer_stride, row_stride);
+                rows_per_outer, outer_stride, row_stride, gemma_style);
         return true;
     });
 }
