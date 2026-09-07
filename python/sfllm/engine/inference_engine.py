@@ -378,7 +378,10 @@ class InferenceEngine:
                 if self.is_spec_algo:
                     self.model_worker.spec_postprocess(last_batch, model_output, async_overlap=True)
                 valid_ids = self.post_forward(last_batch, model_output, failed_sequences)
-                self.output_batch_queue.put([last_batch[i] for i in valid_ids])
+                # Snapshot before the producer advances these live requests.
+                self.output_batch_queue.put(
+                    [last_batch[i].export_raw_sequence() for i in valid_ids]
+                )
 
             last_batch = cur_batch
 
@@ -389,7 +392,7 @@ class InferenceEngine:
         seq_outputs = {}
         for sequence in new_batch:
             if stream:
-                if sequence.status == SequenceStatus.RUNNING:
+                if sequence.status in (SequenceStatus.RUNNING, SequenceStatus.COMPLETED):
                     new_token = sequence.generated_tokens
                     generated_text = self.model_worker.detokenize(
                         new_token,
@@ -437,8 +440,6 @@ class InferenceEngine:
             while not self.output_batch_queue.empty():
                 new_batch = self.output_batch_queue.get()
                 yield from self.response(new_batch, stream=stream)
-                # all state for a same sequence will share the same sequence object
-                self.output_batch_queue.queue.clear()
             return
 
         import threading
