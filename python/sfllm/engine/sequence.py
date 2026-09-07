@@ -41,11 +41,12 @@ class AbortSequence:
 class DecodeSequence:
     def __init__(self, request_sequence: 'RequestSequence'):
         self.sequence_id = request_sequence.sequence_id
-        self.tokens = request_sequence.generated_tokens
+        self.tokens = request_sequence.generated_tokens.copy()
         self.text = ""
         self.status = request_sequence.status
         self.completion_tokens = (
-            len(request_sequence.tokens) - request_sequence.prompt_token_len
+            request_sequence.last_generated_token_pos
+            - request_sequence.prompt_token_len
         )
 
 

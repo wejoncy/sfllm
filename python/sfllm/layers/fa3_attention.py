@@ -84,7 +84,7 @@ class FA3AttentionWorkspace:
             cu_seqlens_q=qo_indptr,
             page_size=1,
             causal=layer.is_causal,
-            num_splits=1,
+            num_splits=0,
         )
         return FA3AttentionMetadata(
             page_table,

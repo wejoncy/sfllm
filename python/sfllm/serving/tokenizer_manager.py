@@ -1,6 +1,7 @@
 import asyncio
 import time
 import logging
+from tokenizers.decoders import DecodeStream
 import torch.multiprocessing as multiprocessing
 from sfllm.engine.sequence import AbortSequence, DecodeSequence, RequestSequence
 from sfllm.engine.sampling_params import SamplingParams
@@ -21,6 +22,7 @@ class TokenizerManager:
         self.tokenizer_input_queue = None
         self.tokenizer_output_queue = None
         self.ready_flag = multiprocessing.Value("b", False)
+        self.decode_states = {}
 
     def set_tokenizer_queues(self, input_queue, output_queue):
         self.tokenizer_input_queue = input_queue
@@ -95,6 +97,7 @@ class TokenizerManager:
             try:
                 out_sequence = self.tokenizer_input_queue.get()
                 if isinstance(out_sequence, AbortSequence):
+                    self.decode_states.pop(out_sequence.sequence_id, None)
                     self.inferengine_input_queue.put(out_sequence)
                 elif isinstance(out_sequence, RequestSequence):
                     out_sequence.init(self.tokenizer)
@@ -109,21 +112,40 @@ class TokenizerManager:
                     out_sequence.sampling_params.stop_token_sequences = tuple(
                         stop_token_sequences
                     )
+                    self.decode_states[out_sequence.sequence_id] = (
+                        DecodeStream(skip_special_tokens=True), [], 0
+                    )
                     self.inferengine_input_queue.put(out_sequence)
                 elif isinstance(out_sequence, list):
                     assert isinstance(out_sequence[0], DecodeSequence)
                     seq_outputs = {}
                     for seq in out_sequence:
-                        generated_text = self.tokenizer.decode(
-                            seq.tokens, skip_special_tokens=True
-                        )
+                        state = self.decode_states.get(seq.sequence_id)
+                        if state is None:
+                            continue  # Output already in flight when aborted.
+                        decoder, token_ids, text_offset = state
+                        token_ids.extend(seq.tokens)
+                        finished = not seq.status.is_active()
+                        if finished:
+                            generated_text = self.tokenizer.decode(
+                                token_ids, skip_special_tokens=True
+                            )[text_offset :]
+                            self.decode_states.pop(seq.sequence_id)
+                        else:
+                            generated_text = decoder.step(
+                                self.tokenizer.backend_tokenizer, seq.tokens
+                            ) or ""
+                            self.decode_states[seq.sequence_id] = (
+                                decoder, token_ids, text_offset + len(generated_text)
+                            )
                         seq_outputs[seq.sequence_id] = {
                             "text": generated_text,
                             "output_ids": seq.tokens,
                             "completion_tokens": seq.completion_tokens,
                             "status": seq.status,
                         }
-                    self.tokenizer_output_queue.put(seq_outputs)
+                    if seq_outputs:
+                        self.tokenizer_output_queue.put(seq_outputs)
                 else:
                     raise ValueError("Unknown sequence type received in tokenizer_event_run_loop.")
             except Exception as e:
