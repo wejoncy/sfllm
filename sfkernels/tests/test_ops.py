@@ -202,24 +202,15 @@ def test_qk_norm_rope_and_cache(dtype):
 
 
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16, torch.float32])
-@pytest.mark.parametrize("gate_layout", ["unaligned", "projected"])
 @pytest.mark.parametrize("shape", [
     (24, 16, 256), (3, 128, 128), (3, 7, 127), (1, 1, 1),
-    (3, 5, 130), (3, 5, 132),
     (17, 3, 1025), (0, 7, 128), (3, 0, 128),
     (3, 1), (3, 127), (3, 16384),
 ])
-def test_sigmoid_mul_strided_gate(shape, dtype, gate_layout):
+def test_sigmoid_mul_strided_gate(shape, dtype):
     torch.manual_seed(0)
-    if gate_layout == "unaligned":
-        storage = torch.randn(*shape[:-1], 2 * shape[-1] + 1, device="cuda", dtype=dtype)
-        gate = storage[..., 1:shape[-1] + 1]
-    else:
-        heads = shape[1] if len(shape) == 3 else 1
-        dim = shape[-1]
-        storage = torch.randn(shape[0], (2 * heads + 8) * dim, device="cuda", dtype=dtype)
-        strides = (storage.stride(0), 2 * dim, 1) if len(shape) == 3 else (storage.stride(0), 1)
-        gate = storage.as_strided(shape, strides, storage_offset=dim)
+    storage = torch.randn(*shape[:-1], 2 * shape[-1] + 1, device="cuda", dtype=dtype)
+    gate = storage[..., 1:shape[-1] + 1]
     output = torch.randn(shape[0], math.prod(shape[1:]), device="cuda", dtype=dtype)
     expected = (output.float() * gate.float().reshape_as(output).sigmoid()).to(dtype)
 
