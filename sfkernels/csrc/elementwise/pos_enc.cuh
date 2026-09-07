@@ -18,6 +18,8 @@
 
 #include <flashinfer/pos_enc.cuh>  // upstream
 
+#include "cast.cuh"
+
 namespace flashinfer {
 
 namespace kv_buffer_saver {
@@ -69,7 +71,9 @@ __device__ __forceinline__ vec_t<float, vec_size> vec_apply_qk_norm_rope(
     const DType* weight,
     const vec_t<float, vec_size>& cos,
     const vec_t<float, vec_size>& sin,
-    float epsilon) {
+    float epsilon,
+    uint32_t rotary_dim,
+    float weight_bias) {
   vec_t<float, vec_size> values, weights, output;
   values.cast_load(input + threadIdx.x * vec_size);
   weights.cast_load(weight + threadIdx.x * vec_size);
@@ -88,7 +92,16 @@ __device__ __forceinline__ vec_t<float, vec_size> vec_apply_qk_norm_rope(
       __shfl_sync(active_mask, variance, 0, bdx) / (vec_size * bdx) + epsilon);
 #pragma unroll
   for (uint32_t i = 0; i < vec_size; ++i) {
-    values[i] *= inv_rms * weights[i];
+    values[i] = to_float(from_float<DType>(
+        values[i] * inv_rms * (weights[i] + weight_bias)));
+    output[i] = values[i];
+  }
+
+  const uint32_t rotary_threads = rotary_dim / vec_size;
+  const bool apply_rotary = threadIdx.x < rotary_threads;
+  const unsigned int rotary_mask = __ballot_sync(active_mask, apply_rotary);
+  if (!apply_rotary) {
+    return output;
   }
 
   if constexpr (interleave) {
@@ -100,9 +113,10 @@ __device__ __forceinline__ vec_t<float, vec_size> vec_apply_qk_norm_rope(
   } else {
 #pragma unroll
     for (uint32_t i = 0; i < vec_size; ++i) {
-      const float paired = __shfl_xor_sync(active_mask, values[i], bdx / 2, bdx);
+      const float paired = __shfl_xor_sync(
+          rotary_mask, values[i], rotary_threads / 2, bdx);
       output[i] = values[i] * cos[i] +
-                  (threadIdx.x < bdx / 2 ? -paired : paired) * sin[i];
+                  (threadIdx.x < rotary_threads / 2 ? -paired : paired) * sin[i];
     }
   }
   return output;
@@ -124,6 +138,7 @@ __global__ void BatchQKApplyRotaryPosIdsCosSinCacheEnhancedHeadParallelismKernel
     DType* q_norm_weight,
     DType* k_norm_weight,
     float qk_norm_epsilon,
+    float qk_norm_weight_bias,
     DType* q_rope,
     DType* k_rope,
     DType* k_buffer,
@@ -189,7 +204,8 @@ __global__ void BatchQKApplyRotaryPosIdsCosSinCacheEnhancedHeadParallelismKernel
       vec_t<float, vec_size> q_vec;
       if constexpr (apply_qk_norm) {
         q_vec = vec_apply_qk_norm_rope<interleave, vec_size, bdx>(
-            q_ptr, q_norm_weight, cos, sin, qk_norm_epsilon);
+            q_ptr, q_norm_weight, cos, sin, qk_norm_epsilon,
+            rotary_dim, qk_norm_weight_bias);
       } else if constexpr (interleave) {
         q_vec = vec_apply_llama_rope_cos_sin_interleave_reuse_half<vec_size, bdx>(q_ptr, cos, sin, rotary_dim);
       } else {
@@ -212,7 +228,8 @@ __global__ void BatchQKApplyRotaryPosIdsCosSinCacheEnhancedHeadParallelismKernel
       vec_t<float, vec_size> k_vec;
       if constexpr (apply_qk_norm) {
         k_vec = vec_apply_qk_norm_rope<interleave, vec_size, bdx>(
-            k_ptr, k_norm_weight, cos, sin, qk_norm_epsilon);
+            k_ptr, k_norm_weight, cos, sin, qk_norm_epsilon,
+            rotary_dim, qk_norm_weight_bias);
       } else if constexpr (interleave) {
         k_vec = vec_apply_llama_rope_cos_sin_interleave_reuse_half<vec_size, bdx>(k_ptr, cos, sin, rotary_dim);
       } else {
@@ -258,6 +275,7 @@ __global__ void BatchQKApplyRotaryPosIdsCosSinCacheEnhancedKernel(
     DType* q_norm_weight,
     DType* k_norm_weight,
     float qk_norm_epsilon,
+    float qk_norm_weight_bias,
     DType* q_rope,
     DType* k_rope,
     DType* k_buffer,
@@ -398,6 +416,7 @@ cudaError_t BatchQKApplyRotaryPosIdsCosSinCacheEnhanced(
     DType* q_norm_weight,
     DType* k_norm_weight,
     float qk_norm_epsilon,
+    float qk_norm_weight_bias,
     DType* q_rope,
     DType* k_rope,
     DType* k_buffer,
@@ -431,8 +450,10 @@ cudaError_t BatchQKApplyRotaryPosIdsCosSinCacheEnhanced(
     cudaStream_t stream = nullptr) {
   int dev_id = 0;
   int num_sms = 0;
-  FLASHINFER_CUDA_CALL(cudaGetDevice(&dev_id));
-  FLASHINFER_CUDA_CALL(cudaDeviceGetAttribute(&num_sms, cudaDevAttrMultiProcessorCount, dev_id));
+  if (!apply_qk_norm) {
+    FLASHINFER_CUDA_CALL(cudaGetDevice(&dev_id));
+    FLASHINFER_CUDA_CALL(cudaDeviceGetAttribute(&num_sms, cudaDevAttrMultiProcessorCount, dev_id));
+  }
 
 #define LAUNCH_KERNEL_RAW(kernel_name)                                \
   do {                                                                \
@@ -456,6 +477,7 @@ cudaError_t BatchQKApplyRotaryPosIdsCosSinCacheEnhanced(
         q_norm_weight,                                                \
         k_norm_weight,                                                \
         qk_norm_epsilon,                                              \
+        qk_norm_weight_bias,                                          \
         q_rope,                                                       \
         k_rope,                                                       \
         k_buffer,                                                     \
@@ -507,15 +529,29 @@ cudaError_t BatchQKApplyRotaryPosIdsCosSinCacheEnhanced(
             DType,
             IdType>;
 
-        int num_blocks_per_sm_0 = 0;
-        FLASHINFER_CUDA_CALL(cudaOccupancyMaxActiveBlocksPerMultiprocessor(
-            &num_blocks_per_sm_0, kernel_0, num_threads, /*smem_size=*/0));
-        uint32_t num_ctas_0 = num_blocks_per_sm_0 * num_sms;
-
-        if (!APPLY_QK_NORM && (nnz + bdy - 1) / bdy >= num_ctas_0) {
-          dim3 nblks(nblks_x);
-          dim3 nthrs(bdx, bdy);
-          LAUNCH_KERNEL_RAW(kernel_0);
+        if constexpr (!APPLY_QK_NORM) {
+          int num_blocks_per_sm_0 = 0;
+          FLASHINFER_CUDA_CALL(cudaOccupancyMaxActiveBlocksPerMultiprocessor(
+              &num_blocks_per_sm_0, kernel_0, num_threads, /*smem_size=*/0));
+          uint32_t num_ctas_0 = num_blocks_per_sm_0 * num_sms;
+          if ((nnz + bdy - 1) / bdy >= num_ctas_0) {
+            dim3 nblks(nblks_x);
+            dim3 nthrs(bdx, bdy);
+            LAUNCH_KERNEL_RAW(kernel_0);
+          } else {
+            dim3 nblks(nblks_x, num_qo_heads + num_kv_heads);
+            dim3 nthrs(bdx, bdy);
+            auto kernel_1 = BatchQKApplyRotaryPosIdsCosSinCacheEnhancedHeadParallelismKernel<
+                APPLY_QK_NORM,
+                SAVE_KV_CACHE,
+                INTERLEAVE,
+                HEAD_DIM,
+                vec_size,
+                bdx,
+                DType,
+                IdType>;
+            LAUNCH_KERNEL_RAW(kernel_1);
+          }
         } else {
           dim3 nblks(nblks_x, num_qo_heads + num_kv_heads);
           dim3 nthrs(bdx, bdy);

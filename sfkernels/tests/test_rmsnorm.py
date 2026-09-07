@@ -1,7 +1,8 @@
 import torch
 import pytest
 import sf_kernel
-from sfllm.layers.layernorm import RMSNorm
+from sfllm.layers.layernorm import GemmaRMSNorm, RMSNorm
+import sfllm.layers.layernorm as layernorm
 
 # Skip all tests in this module if CUDA is not available
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
@@ -70,9 +71,10 @@ def test_rmsnorm_fused(hidden_size, num_tokens, dtype):
     torch.testing.assert_close(residual_custom, residual_out_ref, atol=1e-2, rtol=1e-2)
 
 
+@pytest.mark.parametrize("gemma_style", [False, True])
 @pytest.mark.parametrize("with_residual", [False, True])
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
-def test_rmsnorm_strided_qkv_view(with_residual, dtype):
+def test_rmsnorm_strided_qkv_view(with_residual, dtype, gemma_style):
     torch.manual_seed(0)
     num_tokens, num_heads, head_dim = 7, 32, 128
     q_size = num_heads * head_dim
@@ -95,13 +97,35 @@ def test_rmsnorm_strided_qkv_view(with_residual, dtype):
     expected = (
         values
         * torch.rsqrt(values.square().mean(dim=-1, keepdim=True) + 1e-6)
-        * weight.float()
+        * (weight.float() + float(gemma_style))
     ).to(dtype)
 
-    sf_kernel.rmsnorm(output, input_tensor, weight, 1e-6, residual)
+    sf_kernel.rmsnorm(output, input_tensor, weight, 1e-6, residual, gemma_style=gemma_style)
 
     torch.testing.assert_close(output, expected, atol=1e-2, rtol=1e-2)
     if residual is not None:
         torch.testing.assert_close(
             residual, values.to(dtype), atol=1e-2, rtol=1e-2
         )
+
+
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+@pytest.mark.parametrize("shape", [
+    (24, 32, 128), (1, 1, 1), (3, 7, 127), (3, 3, 129),
+    (3, 3, 1024), (3, 3, 1025), (3, 2, 4096),
+    (0, 3, 128), (3, 0, 128),
+])
+def test_gated_rmsnorm_strided(shape, dtype):
+    torch.manual_seed(0)
+    storage = torch.randn(*shape[:-1], 2 * shape[-1] + 1, device="cuda", dtype=dtype)
+    values = storage[..., 1:shape[-1] + 1]
+    gate = torch.randn_like(storage)[..., 1:shape[-1] + 1]
+    weight = torch.randn(shape[-1], device="cuda", dtype=torch.float32)
+    output = torch.empty(shape, device="cuda", dtype=dtype)
+    x, z = values.float(), gate.float()
+    expected = (x * torch.rsqrt(x.square().mean(-1, keepdim=True) + 1e-6)
+                * weight * z * z.sigmoid()).to(dtype)
+
+    sf_kernel.gated_rmsnorm(output, values, gate, weight, 1e-6)
+
+    torch.testing.assert_close(output, expected, atol=1e-3, rtol=1e-2)
