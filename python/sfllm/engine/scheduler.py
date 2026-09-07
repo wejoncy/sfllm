@@ -1,6 +1,7 @@
 import time
 import queue
 import logging
+from collections import deque
 from typing import List, Tuple
 
 
@@ -53,7 +54,9 @@ class Scheduler:
         
         self.max_context_length = server_args.max_context_length
         self.max_prefill_tokens = min(self.max_context_length, 8192)
-        self.max_running_req = server_args.cuda_graph_max_bs
+        self.max_running_req = server_args.max_running_requests
+        # Stable slots are shared by overlap token handoff and model-owned state.
+        self.free_request_indices = deque(range(self.max_running_req))
         self.abort_requests = set()
 
         self.server_args = server_args
@@ -90,8 +93,7 @@ class Scheduler:
         # schedule prefill first
         prefill_tokens = 0
 
-        overlap_running_size = self.max_running_req
-        while not self.waiting_queue.empty():
+        while not self.waiting_queue.empty() and self.free_request_indices:
             # check abort requests first
             if self.waiting_queue.queue[0].sequence_id in self.abort_requests:
                 sequence = self.waiting_queue.get()
@@ -105,6 +107,8 @@ class Scheduler:
                 break
             assert self.mem_pool.can_alloc(len(tokens))
             sequence = self.waiting_queue.get()
+            assert sequence.request_index == -1
+            sequence.request_index = self.free_request_indices.popleft()
             sequence.status = SequenceStatus.RUNNING
             self.scheduler_policy.add_prefill_req(sequence)
             running_sequences.append(sequence)
@@ -142,7 +146,7 @@ class Scheduler:
                 self.flying_batch = ScheduleBatch([], self.mem_pool)
         # if there is no prefill request, schedule decode requests
         elif len(running_sequences) == 0: # no overlap
-            while not self.running_queue.empty() and len(running_sequences) < overlap_running_size:
+            while not self.running_queue.empty() and len(running_sequences) < self.max_running_req:
                 if self.running_queue.queue[0].sequence_id in self.abort_requests:
                     sequence = self.running_queue.get()
                     self.free_sequence_resources(sequence)
@@ -199,6 +203,9 @@ class Scheduler:
             self.scheduler_policy.release_req(sequence)
         if sequence.out_cache_loc_spec:
             self.draft_memory_pool.free_block(sequence.out_cache_loc_spec)
+        if sequence.request_index >= 0:
+            self.free_request_indices.append(sequence.request_index)
+            sequence.request_index = -1
 
     def is_done(self) -> bool:
         return self.waiting_queue.empty() and self.running_queue.empty()

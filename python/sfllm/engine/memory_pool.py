@@ -4,6 +4,7 @@ import logging
 import itertools
 import torch
 from typing import List
+from sfllm.model_loader.model_config import get_pool_index_layers
 from sfllm.server_args import ServerArgs
 
 logger = logging.getLogger(__name__)
@@ -39,7 +40,7 @@ class BlockMemoryManager:
             dtype if server_args.dtype == "auto" else getattr(torch, server_args.dtype)
         )
         self.config = model_config
-
+        self.pool_index_layers = get_pool_index_layers(model_config)
         self.num_blocks = num_blocks
         self.num_blocks, self.block_shape = self.get_num_blocks(server_args)
         self.blocks = [BlockMemory(i) for i in range(self.num_blocks)]
@@ -47,7 +48,7 @@ class BlockMemoryManager:
         self.release_block_ids = []
         self.used_block_ids = set([])
         self.kv_buffers = []
-        self.create_physical_memory_pool(server_args)
+        self.create_physical_memory_pool()
 
     def get_num_blocks(self, server_args) -> int:
         config = self.config
@@ -61,7 +62,7 @@ class BlockMemoryManager:
         max_length = (
             int(free * server_args.mem_fraction)
             // one_token_size
-            // config.num_hidden_layers
+            // len(self.pool_index_layers)
         )
         if self.num_blocks is not None:
             max_length = min(max_length, self.num_blocks)
@@ -71,22 +72,15 @@ class BlockMemoryManager:
         )
         return max_length, (n_heads, dim)
 
-    def create_physical_memory_pool(self, server_args):
-        config = self.config
+    def create_physical_memory_pool(self):
+        num_pool_layers = len(self.pool_index_layers)
         kv_buffers = (
-                torch.zeros((config.num_hidden_layers,
-                    self.num_blocks, *self.block_shape), dtype=self.dtype, device="cuda"
-                ),
-                torch.zeros((config.num_hidden_layers,
-                    self.num_blocks, *self.block_shape), dtype=self.dtype, device="cuda"),
+            torch.zeros((num_pool_layers, self.num_blocks, *self.block_shape),
+                dtype=self.dtype, device="cuda"),
+            torch.zeros((num_pool_layers, self.num_blocks, *self.block_shape),
+                dtype=self.dtype, device="cuda"),
         )
-        for _ in range(config.num_hidden_layers):
-            self.kv_buffers.append(
-                (
-                    kv_buffers[0][_],
-                    kv_buffers[1][_],
-                )
-            )
+        self.kv_buffers.extend(zip(kv_buffers[0], kv_buffers[1]))
 
     def _alloc_block_by_id(self, block_id: int, token_id: int, hashv: int) -> BlockMemory:
         """Allocate a block of memory by block ID."""

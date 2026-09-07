@@ -67,29 +67,34 @@ __global__ void silu_and_mul_flat_kernel(
   output.cast_store(out + token * d + column);
 }
 
-template <typename T>
+template <typename T, uint32_t vec_size>
 __global__ void fused_sigmoid_mul_kernel(
     T* __restrict__ output,
     const T* __restrict__ gate,
-    const uint64_t num_rows,
     const uint32_t num_heads,
     const uint32_t head_dim,
     const int64_t gate_token_stride,
     const int64_t gate_head_stride) {
-  const uint64_t row = static_cast<uint64_t>(blockIdx.x) * blockDim.y + threadIdx.y;
-  if (row >= num_rows) {
+  const uint32_t token = blockIdx.x;
+  const uint32_t head = blockIdx.y * blockDim.y + threadIdx.y;
+  if (head >= num_heads) {
     return;
   }
-  const uint64_t token = row / num_heads;
-  const uint32_t head = row % num_heads;
+  const uint64_t row = static_cast<uint64_t>(token) * num_heads + head;
   const int64_t gate_offset = token * gate_token_stride +
       head * gate_head_stride;
-  for (uint32_t column = threadIdx.x; column < head_dim; column += blockDim.x) {
+  for (uint32_t column = threadIdx.x * vec_size; column < head_dim;
+       column += blockDim.x * vec_size) {
     const uint64_t index = row * head_dim + column;
-    const float value = to_float(output[index]);
-    const float gate_value = to_float(gate[gate_offset + column]);
-    output[index] = from_float<T>(
-        value * __fdividef(1.0f, 1.0f + __expf(-gate_value)));
+    flashinfer::vec_t<float, vec_size> values, gates;
+    // vec_t converts FP16/BF16 pairs with __half22float2/__bfloat1622float2.
+    values.cast_load(output + index);
+    gates.cast_load(gate + gate_offset + column);
+#pragma unroll
+    for (uint32_t i = 0; i < vec_size; ++i) {
+      values[i] *= __fdividef(1.0f, 1.0f + __expf(-gates[i]));
+    }
+    values.cast_store(output + index);
   }
 }
 #endif
@@ -207,18 +212,36 @@ void fused_sigmoid_mul(at::Tensor& output, const at::Tensor& gate) {
   const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
   DISPATCH_PYTORCH_DTYPE_TO_CTYPE_FLOAT_FP16(output.scalar_type(), c_type, [&] {
 #ifndef USE_ROCM
-    const uint64_t num_rows = num_elements / head_dim;
-    const dim3 block(32, 4);
-    const dim3 grid((num_rows + block.y - 1) / block.y);
-    fused_sigmoid_mul_kernel<c_type>
-        <<<grid, block, 0, stream>>>(
-            static_cast<c_type*>(output.data_ptr()),
-            static_cast<const c_type*>(gate.data_ptr()),
-            num_rows,
-            num_heads,
-            head_dim,
-            gate_token_stride,
-            gate_head_stride);
+    auto launch = [&](auto vector_size) {
+      constexpr uint32_t vec_size = decltype(vector_size)::value;
+      const uint32_t vectors_per_head = head_dim / vec_size;
+      const uint32_t threads_x = std::min(vectors_per_head, 1024U);
+      const dim3 block(threads_x, std::min(num_heads, 1024U / threads_x));
+      const dim3 grid(output.size(0), (num_heads + block.y - 1) / block.y);
+      fused_sigmoid_mul_kernel<c_type, vec_size>
+          <<<grid, block, 0, stream>>>(
+              static_cast<c_type*>(output.data_ptr()),
+              static_cast<const c_type*>(gate.data_ptr()),
+              num_heads,
+              head_dim,
+              gate_token_stride,
+              gate_head_stride);
+    };
+    // Use the widest safe vector for both pointers and every row/head start.
+    const uintptr_t alignment = reinterpret_cast<uintptr_t>(output.data_ptr()) |
+        reinterpret_cast<uintptr_t>(gate.data_ptr()) |
+        (head_dim * sizeof(c_type)) |
+        (gate_token_stride * sizeof(c_type)) |
+        (gate_head_stride * sizeof(c_type));
+    if (alignment % 16 == 0) {
+      launch(std::integral_constant<uint32_t, 16 / sizeof(c_type)>{});
+    } else if (alignment % 8 == 0) {
+      launch(std::integral_constant<uint32_t, 8 / sizeof(c_type)>{});
+    } else if (alignment % 4 == 0) {
+      launch(std::integral_constant<uint32_t, 4 / sizeof(c_type)>{});
+    } else {
+      launch(std::integral_constant<uint32_t, 1>{});
+    }
     return true;
 #else
     TORCH_CHECK(false, "fused_sigmoid_mul is only available on CUDA");

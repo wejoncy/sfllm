@@ -27,8 +27,14 @@ class EngineServer:
         """Submit a new inference request and return the request ID."""
         import uuid
         request_id = str(uuid.uuid4().hex) + "_" + str(time.time())
+        params = request.sampling_params or {}
         sampling_params = SamplingParams(
-            top_p=request.sampling_params.get("top_p", 1.0), max_new_tokens=request.sampling_params.get("max_new_tokens", 1024)
+            max_new_tokens=params.get("max_new_tokens", 1024),
+            temperature=params.get("temperature", 0.8),
+            top_p=params.get("top_p", 1.0),
+            top_k=params.get("top_k", 1073741824),
+            stop_token_ids=params.get("stop_token_ids"),
+            stop=params.get("stop"),
         )
         sequence = RequestSequence(
             request.text,
