@@ -1,6 +1,7 @@
 import logging
 from sfllm.engine.schedule_batch import ScheduleBatch,BatchResult
 from sfllm.engine.model_runner import ModelRunner
+from sfllm.models.interfaces import HasBatchState
 from sfllm.server_args import ServerArgs
 
 logger = logging.getLogger(__name__)
@@ -25,4 +26,7 @@ class ModelWorker:
         self.model_runner.init_capture_cudagraph()
 
     def forward(self, scheduled_batch: ScheduleBatch) -> BatchResult:
+        model = self.model_runner.model
+        if isinstance(model, HasBatchState):
+            model.prepare_batch_state(scheduled_batch)
         return self.model_runner.forward(scheduled_batch)

@@ -78,6 +78,7 @@ class RequestSequence(RawSequence):
         self.out_cache_loc_spec = []
         self.out_cache_loc_lazy = None # tensor on cuda
         self.marked = False # marked for draft token handling, fill with -1 for the future accepted tokens
+        self.request_index = -1
         if input_ids is not None:
             self.tokens = input_ids
             self.prompt_token_len = len(input_ids)
@@ -102,11 +103,22 @@ class RequestSequence(RawSequence):
         self.last_generated_token_pos = self.prompt_token_len
     
     def is_done(self) -> bool:
-        return (
+        generated_count = self.last_generated_token_pos - self.prompt_token_len
+        if (
             not self.status.is_active()
-            or self.last_generated_token_pos - self.prompt_token_len
-            >= self.sampling_params.max_new_tokens
-        )
+            or generated_count >= self.sampling_params.max_new_tokens
+            or not self.sampling_params.stop_token_ids.isdisjoint(
+                self.generated_tokens
+            )
+        ):
+            return True
+        for stop in self.sampling_params.stop_token_sequences:
+            if len(stop) > generated_count:
+                continue
+            start = self.last_generated_token_pos - len(stop)
+            if tuple(self.tokens[start : self.last_generated_token_pos]) == stop:
+                return True
+        return False
 
     def export_raw_sequence(self) -> RawSequence:
         return RawSequence(
