@@ -1,7 +1,6 @@
-from pydantic import BaseModel, RootModel
+from pydantic import AliasChoices, BaseModel, Field, RootModel
 from typing import List, Optional, Dict, Union, Literal
 from dataclasses import dataclass
-from message_formatter import format_chat_messages
 
 # OpenAI compatible request models
 class ContentItem(BaseModel):
@@ -22,21 +21,28 @@ class ChatRequest(BaseModel):
     messages: List[Message]
     temperature: Optional[float] = 0.7
     top_p: Optional[float] = 1.0
-    max_new_tokens: Optional[int] = 1024
+    max_new_tokens: Optional[int] = Field(
+        1024, validation_alias=AliasChoices("max_tokens", "max_new_tokens")
+    )
     stream: Optional[bool] = False
+    stop: Optional[Union[str, List[str]]] = None
 
 class CompletionRequest(BaseModel):
     model: str
     prompt: str
     temperature: Optional[float] = 0.7
     top_p: Optional[float] = 1.0
-    max_new_tokens: Optional[int] = 1024
+    max_new_tokens: Optional[int] = Field(
+        1024, validation_alias=AliasChoices("max_tokens", "max_new_tokens")
+    )
     stream: Optional[bool] = False
+    stop: Optional[Union[str, List[str]]] = None
 
 @dataclass
 class GenerateReqInput:
     # The input prompt. It can be a single prompt or a batch of prompts.
     text: Optional[Union[List[str], str]] = None
+    messages: Optional[List[Dict]] = None
     # The token ids for text; one can specify either text or input_ids
     input_ids: Optional[Union[List[List[int]], List[int]]] = None
     # The embeddings for input_ids; one can specify either text or input_ids or input_embeds.
@@ -96,10 +102,15 @@ class GenerateReqInput:
             "temperature": base_model.temperature,
             "top_p": base_model.top_p,
             "max_new_tokens": base_model.max_new_tokens,
+            "stop": base_model.stop,
         }
         obj.stream = base_model.stream
         if isinstance(base_model, ChatRequest):
-            obj.text = format_chat_messages(base_model.messages)
+            obj.text = ""
+            obj.messages = [
+                message.model_dump(exclude_none=True)
+                for message in base_model.messages
+            ]
         elif isinstance(base_model, CompletionRequest):
             obj.text = base_model.prompt
         return obj

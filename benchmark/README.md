@@ -4,9 +4,9 @@ Hardware: **NVIDIA H100 NVL, BF16**. ShareGPT, server concurrency 32, client con
 
 | Successful requests | Input tokens | Output tokens | Duration | Output throughput |
 | ---: | ---: | ---: | ---: | ---: |
-| 1000/1000 | 318819 | 914531 | 218.924 s | **4177.39 tok/s** |
+| 1000/1000 | 318819 | 907163 | 208.822 s | **4344.19 tok/s** |
 
-Measured on `54300bc`, 2026-09-07. Mean TTFT: 108.224 ms; mean TPOT: 5.542 ms.
+Measured 2026-09-07. Mean TTFT: 36.903 ms; mean TPOT: 5.432 ms.
 
 Set the model and dataset paths in both terminals, from the repository root. Use a Python environment with sfllm and its CUDA kernels installed.
 

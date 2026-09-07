@@ -1,7 +1,6 @@
 
 from collections import deque
 import logging
-import itertools
 import torch
 from typing import List
 from sfllm.model_loader.model_config import get_pool_index_layers
@@ -120,9 +119,14 @@ class BlockMemoryManager:
 
     def alloc_block(self, token_nums: int) -> List[int]:
         """Allocate a block of memory."""
+        if not self.can_alloc(token_nums):
+            raise RuntimeError(
+                f"Cannot allocate {token_nums} blocks; "
+                f"only {self.num_available_blocks()} are available."
+            )
         block_ids = [
             self.free_block_ids.popleft()
-            for _ in range(min(token_nums, len(self.free_block_ids)))
+            for _ in range(token_nums)
         ]
         self.used_block_ids.update(block_ids)
         return block_ids

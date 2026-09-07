@@ -1,4 +1,5 @@
 import dataclasses
+import numpy as np
 import torch
 import itertools
 import bisect
@@ -12,16 +13,16 @@ from sfllm.layers.sampler import SamplingBatchInfo
 from sfllm.server_args import get_global_server_args
 from sfllm.spec_decoding.spec_common import SpecInput
 
+
 class ScheduleBatch:
     def __init__(self, sequences, mem_pool, draft_mem_pool=None):
         self.sequences:RequestSequence = sequences
         self.device = torch.device("cuda:0")
         self.forward_batch = ForwardBatch(mem_pool)
         self.forward_batch_spec = ForwardBatch(draft_mem_pool) if draft_mem_pool is not None else None
-        self.fake_ids:torch.Tensor = None
         self.input_ids:torch.Tensor = None
         self.position_ids:torch.Tensor = None
-        self.copy_done:torch.Event = None
+        self.copy_done: Optional[torch.cuda.Event] = None
         self.next_token_ids:torch.Tensor = None
         self.spec_info: SpecInput = None
         ###
@@ -60,23 +61,21 @@ class ScheduleBatch:
         # output_ids = self.next_token_ids[indices_]
         # self.input_ids = output_ids
 
-    def add_placeholder_token(self, future_limit: int, future_token_stride: int = 1):
+    def add_placeholder_token(self, future_token_stride: int = 1):
         for seq in self.sequences:
-            place_id = -((seq.sequence_id*future_token_stride) % future_limit)
+            place_id = -((seq.request_index + 1) * future_token_stride)
             seq.new_tokens = list(reversed(range(place_id, place_id+future_token_stride))) # use negative id as placeholder for future token position
             seq.tokens.extend(seq.new_tokens)
 
-    def fake_tokenid_indices(self, future_limit: int, future_token_stride: int = 1):
-        starts = torch.tensor(
-            [(seq.sequence_id * future_token_stride) % future_limit for seq in self.sequences],
-            dtype=torch.int64, pin_memory=True, device="cpu").to("cuda", non_blocking=True)
-        offsets = torch.arange(-(future_token_stride - 1), 1, dtype=torch.int64, device="cuda")
-        result = (starts[:, None] + offsets).view(-1)
-
-        # fake_ids = [range((seq.sequence_id*future_token_stride) % future_limit) for seq in self.sequences]
-        # fake_ids = torch.tensor(fake_ids, dtype=torch.int64, pin_memory=True).to(self.device, non_blocking=True)
-        self.fake_ids = result
-        return self.fake_ids
+    def fake_tokenid_indices(self, future_token_stride: int = 1):
+        return torch.tensor(
+            [
+                seq.request_index * future_token_stride + offset
+                for seq in self.sequences
+                for offset in range(1, future_token_stride + 1)
+            ],
+            dtype=torch.int64, pin_memory=True, device="cpu",
+        ).to(self.device, non_blocking=True)
 
     @contextmanager
     def switch_spec_forward_batch(self):
@@ -126,7 +125,9 @@ class ScheduleBatch:
             from sfllm.kernels.triton_utils import copy_tensors_to_buffer,move_neg1_to_tail
             self.spec_info = self.spec_info.raw_new()
             self.spec_info.hash = g_hash
-            self.spec_info.verified_id = move_neg1_to_tail(torch.cat([seq.verified_id for seq in self.sequences], dim=-1))
+            self.spec_info.verified_id = move_neg1_to_tail(torch.cat([
+                seq.verified_id[:len(seq.new_tokens)] for seq in self.sequences
+            ], dim=-1))
             self.spec_info.verified_id = torch.where(self.spec_info.verified_id < 0,torch.zeros_like(self.spec_info.verified_id),
                                                   self.spec_info.verified_id)
             self.spec_info.accept_length = torch.cat([seq.accept_length for seq in self.sequences], dim=-1)
@@ -141,10 +142,16 @@ class ScheduleBatch:
                 self.spec_info.hidden_states = self.spec_info.hidden_states[:len(src_hd_list)*draft_steps]
             else:
                 self.spec_info.hidden_states = torch.cat([seq.hidden_states for seq in self.sequences], dim=0)
-            if self.sequences[0].out_cache_loc_lazy is not None:
-                self.spec_info.out_cache_loc = torch.cat([seq.out_cache_loc_lazy for seq in self.sequences])
+            cache_sources = [seq.out_cache_loc_lazy for seq in self.sequences
+                             if seq.out_cache_loc_lazy is not None]
+            if cache_sources:
+                self.spec_info.out_cache_loc = copy_tensors_to_buffer(
+                    [source[0] for source in cache_sources],
+                    torch.stack([source[1] for source in cache_sources]),
+                    cache_sources[0][0].new_empty((self.spec_info.verified_id.numel(), 1)),
+                ).view(-1)
             # self.spec_info.logits = torch.cat([seq.logits for seq in self.sequences])
-    def prepare_decode_for_draft(self, position_ids_list: List[int], is_overlap:bool=False, compute_stream:torch.cuda.Stream=None):
+    def prepare_decode_for_draft(self, position_ids_list: List[int], is_overlap:bool=False):
         # prepare position_ids for draft model extend for last verified tokens
         positions_outs = []
         batch_size = len(self.sequences)
@@ -158,18 +165,17 @@ class ScheduleBatch:
 
         spec_out_cache_loc_list = []
         spec_kv_indices_list = []
-        spec_kv_indices_mtd_list = []
+        spec_kv_indptr_list = [0]
         device = self.device
         for sequence in self.sequences:
             total_draft_len = len(sequence.new_tokens)
-            spec_out_cache_loc_list.extend(sequence.out_cache_loc_spec[-total_draft_len:])
-            total_draft_len_past = -len(sequence.out_cache_loc_spec)
-            # the first decode step, accept_length_cpu is -1
-            # spec_kv_indices_list.extend(sequence.out_cache_loc_spec[:-total_draft_len]) # this is correct, right?
-            spec_kv_indices_list.extend(sequence.out_cache_loc_spec[:-total_draft_len_past]) # actually, it's for extend. it's weird here.
-            # extend attention use the current qk and past kv cache, so need to include the last verified token indeed
-            # no!!!, self attention use the current qk and and all kv cache(including current qk)
-            spec_kv_indices_mtd_list.extend(sequence.out_cache_loc_spec)
+            if (len(sequence.tokens) == sequence.last_generated_token_pos
+                    and sequence.accept_length_cpu[0].item() < 0):
+                spec_out_cache_loc_list.append(0)
+            else:
+                spec_out_cache_loc_list.extend(sequence.out_cache_loc_spec[-total_draft_len:])
+            spec_kv_indptr_list.append(spec_kv_indptr_list[-1] + len(sequence.out_cache_loc_spec))
+            spec_kv_indices_list.extend(sequence.out_cache_loc_spec)
 
         padded_token = self.forward_batch.padded_token
         if padded_token > 0:
@@ -177,19 +183,21 @@ class ScheduleBatch:
             spec_kv_indices_list.extend([0] * padded_token)
         out_cache_loc_spec = torch.tensor(spec_out_cache_loc_list, dtype=torch.int64, pin_memory=True).to(device, non_blocking=True)
         kv_indices_spec = torch.tensor(spec_kv_indices_list, dtype=torch.int64, pin_memory=True).to(device, non_blocking=True)
-        kv_indices_mtd_spec = torch.tensor(spec_kv_indices_mtd_list, dtype=torch.int64, pin_memory=True).to(device, non_blocking=True)
 
         #kv_indptr would be used in two place, extend forward for the latest accepted token,, the other is multi-step draft decode path
-        minux_const = torch.arange(1, len(self.sequences)+1, dtype=torch.int32, pin_memory=True)
-        # sglang dropped the first token
-        # leading zero
-        self.forward_batch_spec.kv_indptr = self.forward_batch.kv_indptr.clone()
-        self.forward_batch_spec.kv_indptr[1:].sub_(minux_const.to(self.device, non_blocking=True))
+        self.forward_batch_spec.kv_indptr = torch.tensor(
+            spec_kv_indptr_list, dtype=torch.int32, pin_memory=True,
+        ).to(device, non_blocking=True)
         self.forward_batch_spec.kv_indices = kv_indices_spec
-        self.forward_batch_spec.kv_indices_mtd = kv_indices_mtd_spec
+        self.forward_batch_spec.kv_indices_mtd = kv_indices_spec[:spec_kv_indptr_list[-1]]
         self.forward_batch_spec.padded_token = padded_token
         self.forward_batch_spec.out_cache_loc = out_cache_loc_spec
-        self.forward_batch_spec.max_extend_len = max([len(seq.new_tokens) for seq in self.sequences])
+        extend_lens = [len(seq.new_tokens) for seq in self.sequences]
+        self.forward_batch_spec.max_extend_len = max(extend_lens)
+        # Overlap resolves these reserved rows to accepted rows before forward.
+        self.forward_batch_spec.qo_indptr = torch.tensor(
+            [0, *itertools.accumulate(extend_lens)], dtype=torch.int32, pin_memory=True,
+        ).to(device, non_blocking=True)
         self.forward_batch_spec.position_ids_extend = torch.tensor(
             position_ids_list, dtype=torch.long, pin_memory=True).to(self.device, non_blocking=True)
 
@@ -212,21 +220,15 @@ class ScheduleBatch:
             hidden_states_buffer,compute_stream = self.overlap_affiliated
             with torch.cuda.stream(compute_stream):
                 self.update_spec_info_if_needed(hidden_states_buffer=hidden_states_buffer)
-                self.forward_batch_spec.qo_indptr = torch.zeros_like(self.forward_batch.kv_indptr)
-                accept_length = self.spec_info.accept_length.clamp(min=0) + 1
-                self.forward_batch_spec.qo_indptr[1:batch_size + 1] = (accept_length).cumsum(dim=0, dtype=torch.int32)
         else:
             self.update_spec_info_if_needed(None)
-            self.forward_batch_spec.qo_indptr = self.forward_batch.kv_indptr.clone()
-            accept_length = self.spec_info.accept_length.clamp(min=0) + 1
-            self.forward_batch_spec.qo_indptr[1:batch_size + 1] = (accept_length).cumsum(dim=0, dtype=torch.int32)
 
     def prepare_inputs(self, is_overlap:bool=False):
         cur_seq_lens_list = [0]
         input_ids_list = []
         position_ids_list = []
         out_cache_loc_list = []
-        kv_indices_list = []
+        kv_indices_parts = []
         prefix_lens_list = [0]
         device = self.device
 
@@ -235,14 +237,17 @@ class ScheduleBatch:
             self.forward_batch.forward_mode = ForwardMode.EXTEND
         else:
             self.forward_batch.forward_mode = ForwardMode.DECODE
-
-        padded_batch_size = batch_size
         padded_token = 0
-        if (self.forward_batch.forward_mode == ForwardMode.DECODE and self.forward_batch_spec is None):
-            padded_batch_size = DEFAULT_CUDA_GRAPH_BATCH_SIZES[
+        if (
+            self.forward_batch.is_decode()
+            and self.forward_batch_spec is None
+            and batch_size <= DEFAULT_CUDA_GRAPH_BATCH_SIZES[-1]
+        ):
+            graph_batch_size = DEFAULT_CUDA_GRAPH_BATCH_SIZES[
                 bisect.bisect_left(DEFAULT_CUDA_GRAPH_BATCH_SIZES, batch_size)
             ]
-            padded_token = padded_batch_size - batch_size
+            if graph_batch_size <= get_global_server_args().cuda_graph_max_bs:
+                padded_token = graph_batch_size - batch_size
 
         for sequence in self.sequences:
             if self.forward_batch.forward_mode == ForwardMode.DECODE:
@@ -256,31 +261,40 @@ class ScheduleBatch:
                 start_pos = len(sequence.tokens) - len(sequence.new_tokens)
             position_ids_list.extend(list(range(start_pos, start_pos+cur_seq_lens_list[-1])))
             prefix_lens_list.append(start_pos)
+            # Local views are copied into the batch-owned pinned buffer below.
+            cache_locs = torch.from_numpy(np.frombuffer(sequence.out_cache_loc, dtype=np.int64))
             if self.forward_batch_spec is not None and self.forward_batch.forward_mode == ForwardMode.DECODE:
-                if is_overlap and sequence.marked is False:
-                    true_lens = len(sequence.tokens) - len(sequence.new_tokens)
-                else:
-                    true_lens = len(sequence.tokens) - 1
+                true_lens = len(sequence.out_cache_loc) - get_global_server_args().speculative_num_draft_tokens
+                prefix_lens_list[-1] = true_lens
                 # target model used for verify, speculative_num_draft_tokens cache loc, different from normal decode
                 out_cache_loc_list.extend(sequence.out_cache_loc[true_lens:])
-                kv_indices_list.extend(sequence.out_cache_loc[:true_lens])
+                kv_indices_parts.append(cache_locs[:true_lens])
             else:
                 out_cache_loc_list.extend(sequence.out_cache_loc[-len(sequence.new_tokens):])
-                kv_indices_list.extend(sequence.out_cache_loc)
+                kv_indices_parts.append(cache_locs)
 
         if padded_token > 0:
             input_ids_list.extend([0]*padded_token)
             position_ids_list.extend([0]*padded_token)
             cur_seq_lens_list.extend([1]*padded_token)
             out_cache_loc_list.extend([0]*padded_token)
-            kv_indices_list.extend([0]*padded_token)
             prefix_lens_list.extend([0]*padded_token)
     
         input_ids = torch.tensor(input_ids_list, dtype=torch.long, pin_memory=True).to(device, non_blocking=True)
         position_ids = torch.tensor(position_ids_list, dtype=torch.long, pin_memory=True).to(device, non_blocking=True)
         cur_seq_lens = torch.tensor(cur_seq_lens_list, dtype=torch.int32, pin_memory=True).to(device, non_blocking=True)
         out_cache_loc = torch.tensor(out_cache_loc_list, dtype=torch.int64, pin_memory=True).to(device, non_blocking=True)
-        kv_indices = torch.tensor(kv_indices_list, dtype=torch.int64, pin_memory=True).to(device, non_blocking=True)
+        num_kv_indices = sum(part.shape[0] for part in kv_indices_parts)
+        kv_indices_cpu = torch.empty(
+            num_kv_indices + padded_token,
+            dtype=torch.int64,
+            device="cpu",
+            pin_memory=True,
+        )
+        torch.cat(kv_indices_parts, out=kv_indices_cpu[:num_kv_indices])
+        if padded_token:
+            kv_indices_cpu[num_kv_indices:].zero_()
+        kv_indices = kv_indices_cpu.to(device, non_blocking=True)
 
         prefix_lens = torch.tensor(prefix_lens_list, dtype=torch.int32, pin_memory=True).to(device, non_blocking=True)
 
@@ -309,15 +323,30 @@ class ScheduleBatch:
                 self.prepare_decode_for_draft(position_ids_list, is_overlap=is_overlap)
 
     def prepare_sample(self):
+        is_all_greedy = all(
+            seq.sampling_params.is_greedy for seq in self.sequences
+        )
+        if is_all_greedy:
+            self.forward_batch.sampling_batch_info = SamplingBatchInfo(
+                temperatures=None,
+                top_ps=None,
+                top_ks=None,
+                min_ps=None,
+                is_all_greedy=True,
+            )
+            return
+
         temperatures = []
         top_ps = []
         top_ks = []
         device = self.device
 
         for seq in self.sequences:
-            temperatures.append(seq.sampling_params.temperature)
+            temperatures.append(
+                1.0 if seq.sampling_params.is_greedy else seq.sampling_params.temperature
+            )
             top_ps.append(seq.sampling_params.top_p)
-            top_ks.append(seq.sampling_params.top_k)
+            top_ks.append(1 if seq.sampling_params.is_greedy else seq.sampling_params.top_k)
         temperatures = torch.tensor(temperatures, dtype=torch.float32, pin_memory=True).to(device, non_blocking=True)
         top_ks = torch.tensor(top_ks, dtype=torch.int32, pin_memory=True).to(device, non_blocking=True)
         top_ps = torch.tensor(top_ps, dtype=torch.float32, pin_memory=True).to(device, non_blocking=True)
@@ -326,7 +355,7 @@ class ScheduleBatch:
             top_ps=top_ps,
             top_ks=top_ks,
             min_ps=torch.zeros_like(top_ps),
-            is_all_greedy=all(seq.sampling_params.is_greedy for seq in self.sequences),
+            is_all_greedy=False,
         )
 
 @dataclasses.dataclass

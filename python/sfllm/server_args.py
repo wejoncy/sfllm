@@ -9,6 +9,7 @@ class ServerArgs:
     tokenizer_path: Optional[str] = None
     tokenizer_mode: str = "auto"
     tokenizer_worker_num: int = 1
+    request_timeout_seconds: float = 3600
 
     #dtype and quantization
     dtype: Literal["float16", "bfloat16", "float32", "auto"] = "auto"
@@ -40,9 +41,6 @@ class ServerArgs:
 
     # Logging
     log_level: str = "info"
-    enable_debug: bool = False
-
-    # debug options
     enable_debug: bool = False
 
     @staticmethod
@@ -80,6 +78,12 @@ class ServerArgs:
             type=int,
             default=ServerArgs.tokenizer_worker_num,
             help="The worker num of the tokenizer manager.",
+        )
+        parser.add_argument(
+            "--request-timeout-seconds",
+            type=float,
+            default=ServerArgs.request_timeout_seconds,
+            help="Abort a request if no generation result arrives within this interval.",
         )
         parser.add_argument(
             "--cuda-graph-max-bs",

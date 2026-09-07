@@ -169,6 +169,21 @@ def create_app(server_args):
         }
         return result
 
+    @app.get("/v1/models")
+    async def list_models():
+        """Minimal OpenAI-compatible model discovery endpoint."""
+        return {
+            "object": "list",
+            "data": [
+                {
+                    "id": server_args.model_path,
+                    "object": "model",
+                    "owned_by": "sfllm",
+                }
+            ],
+        }
+
+    @app.get("/server_info")
     @app.get("/get_server_info")
     async def get_server_info():
         # Returns interna states per DP.
@@ -176,6 +191,7 @@ def create_app(server_args):
         return {
             "internal_states": internal_states,
             "version": __version__,
+            "max_running_requests": server_args.max_running_requests,
         }
 
     return app
