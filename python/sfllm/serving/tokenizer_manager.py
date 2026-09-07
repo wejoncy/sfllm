@@ -27,11 +27,20 @@ class TokenizerManager:
         self.tokenizer_output_queue = output_queue
 
     def load_tokenizer(self):
-        from transformers import AutoTokenizer
+        from transformers import AutoConfig, AutoTokenizer
 
         self.tokenizer = AutoTokenizer.from_pretrained(self.server_args.model_path, trust_remote_code=True,)
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
+        model_config = AutoConfig.from_pretrained(self.server_args.model_path)
+        config_values = vars(model_config)
+        text_config = config_values.get("text_config") or model_config
+        model_eos = vars(text_config).get("eos_token_id")
+        if isinstance(model_eos, int):
+            model_eos = (model_eos,)
+        self.eos_token_ids = frozenset(model_eos or ())
+        if self.tokenizer.eos_token_id is not None:
+            self.eos_token_ids |= {self.tokenizer.eos_token_id}
 
     @staticmethod
     def inferengine_event_run_loop(self):
@@ -89,6 +98,17 @@ class TokenizerManager:
                     self.inferengine_input_queue.put(out_sequence)
                 elif isinstance(out_sequence, RequestSequence):
                     out_sequence.init(self.tokenizer)
+                    out_sequence.sampling_params.stop_token_ids |= self.eos_token_ids
+                    stop_token_sequences = []
+                    for stop in out_sequence.sampling_params.stop:
+                        token_ids = tuple(
+                            self.tokenizer.encode(stop, add_special_tokens=False)
+                        )
+                        if token_ids:
+                            stop_token_sequences.append(token_ids)
+                    out_sequence.sampling_params.stop_token_sequences = tuple(
+                        stop_token_sequences
+                    )
                     self.inferengine_input_queue.put(out_sequence)
                 elif isinstance(out_sequence, list):
                     assert isinstance(out_sequence[0], DecodeSequence)
