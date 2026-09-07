@@ -1,7 +1,6 @@
 """DFlash2 proposal logic on SFLLM's shared speculative protocol."""
 
 import torch
-from transformers import PretrainedConfig
 
 from sfllm.engine.forward_params import ForwardBatch, ForwardMode
 from sfllm.engine.schedule_batch import BatchResult, ScheduleBatch
@@ -10,6 +9,7 @@ from sfllm.kernels.dflash2 import (
     prepare_dflash2_block,
 )
 from sfllm.models.dflash2 import DFlash2Config
+from sfllm.model_loader.model_config import ModelConfig
 from sfllm.server_args import ServerArgs
 from sfllm.spec_decoding.spec_utils import EagleSpecInput, EagleVerifyInput
 from sfllm.spec_decoding.spec_worker import SpeculativeWorker
@@ -55,10 +55,15 @@ class DFlash2Worker(SpeculativeWorker):
                 "The initial DFlash2 backend supports dense target/draft weights only."
             )
 
-        draft_config_dict, _ = PretrainedConfig.get_config_dict(
+        draft_config = ModelConfig(
             server_args.speculative_draft_model_path
-        )
-        checkpoint_config = DFlash2Config.from_hf_config(draft_config_dict)
+        ).hf_config
+        checkpoint_config = DFlash2Config.from_hf_config(draft_config)
+        if (
+            "sliding_attention" in draft_config.layer_types
+            and server_args.attention_backend != "fa3"
+        ):
+            raise ValueError("DFlash2 sliding attention requires --attention-backend fa3.")
 
         # A DFlash block maps directly to the shared Eagle protocol width.
         server_args.speculative_eagle_topk = 1

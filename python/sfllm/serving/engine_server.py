@@ -2,6 +2,7 @@ import torch.multiprocessing as multiprocessing
 import logging
 import asyncio
 import time
+import queue
 from typing import Dict, Any
 from sfllm.engine.sampling_params import SamplingParams
 from sfllm.engine.sequence import RequestSequence, AbortSequence,SequenceStatus
@@ -23,7 +24,7 @@ class EngineServer:
             self.tokenizer_input_queue, self.tokenizer_output_queue
         )
 
-    async def submit_request(self, request: GenerateReqInput) -> str:
+    async def submit_request(self, request: GenerateReqInput) -> int:
         """Submit a new inference request and return the request ID."""
         import uuid
         request_id = str(uuid.uuid4().hex) + "_" + str(time.time())
@@ -40,6 +41,8 @@ class EngineServer:
             request.text,
             sampling_params,
             input_ids=request.input_ids,
+            stream=request.stream,
+            messages=request.messages,
         )
         self.req_to_state[sequence.sequence_id] = {
             "response": asyncio.Queue(),
@@ -58,9 +61,17 @@ class EngineServer:
         self.tokenizer_input_queue.put(sequence)
         return sequence.sequence_id
 
-    async def get_response(self, sequence_id: int, timeout: int = 40, streaming: bool = False) -> Any:
+    async def get_response(
+        self,
+        sequence_id: int,
+        timeout: float | None = None,
+        streaming: bool = False,
+    ) -> Any:
         """Get the response for a submitted inference request."""
         state = self.req_to_state[sequence_id]
+        if timeout is None:
+            timeout = self.server_args.request_timeout_seconds
+        last_response = None
         while state["status"].is_active():
             try:
                 response = await asyncio.wait_for(state["response"].get(), timeout=timeout)
@@ -71,9 +82,14 @@ class EngineServer:
                 )
             if streaming:
                 yield response
+            else:
+                last_response = response
         while state["response"].empty() is False:
-            response = state["response"].get_nowait()
-            yield response
+            last_response = state["response"].get_nowait()
+            if streaming:
+                yield last_response
+        if not streaming and last_response is not None:
+            yield last_response
         self.req_to_state.pop(sequence_id)
 
     async def auto_clean_resource_loop(self):
@@ -102,9 +118,13 @@ class EngineServer:
                 self.worker_threads[-1].join()
                 break
             try:
-                response = self.tokenizer_output_queue.get(block=False)
-            except:  # noqa: E722
-                await asyncio.sleep(0.1)
+                # A fixed async sleep adds up to 100 ms to every streamed
+                # token.  Wait in a helper thread so the event loop remains
+                # responsive and wake immediately when inference publishes.
+                response = await asyncio.to_thread(
+                    self.tokenizer_output_queue.get, True, 0.1
+                )
+            except queue.Empty:
                 continue
             import copy
             for sequence_id, output in response.items():
@@ -112,6 +132,8 @@ class EngineServer:
                     self.req_to_state[sequence_id]["response_template"]["text"] += output["text"]
                     new_response = copy.deepcopy(self.req_to_state[sequence_id]["response_template"])
                     new_response["output_ids"] = output["output_ids"]
+                    new_response["status"] = output["status"].name
+                    new_response["meta_info"]["prompt_length"] = output["prompt_length"]
                     new_response["meta_info"]["completion_tokens"] = output["completion_tokens"]
 
                     self.req_to_state[sequence_id]["status"] = output["status"]

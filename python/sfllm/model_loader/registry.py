@@ -121,3 +121,4 @@ def import_model_classes(package_name: str):
 
 ModelRegistry = _ModelRegistry()
 ModelRegistry.register("sfllm.models")
+ModelRegistry.models["Eagle3LlamaForCausalLM"] = ModelRegistry.models["LlamaForCausalLMEagle3"]

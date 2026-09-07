@@ -96,11 +96,14 @@ class DFlash2Config:
             or len(layer_types) != num_hidden_layers
         ):
             raise ValueError("DFlash2 requires one layer_types entry per draft layer.")
-        if any(layer_type != "full_attention" for layer_type in layer_types):
+        if len(set(layer_types)) != 1 or layer_types[0] not in (
+            "full_attention", "sliding_attention"
+        ):
             raise ValueError(
-                "The Qwen3 DFlash2 backend currently supports "
-                "full-attention drafts only."
+                "DFlash2 requires uniformly full or sliding attention layers."
             )
+        if layer_types[0] == "sliding_attention" and int(raw.get("sliding_window") or 0) <= 0:
+            raise ValueError("DFlash2 sliding attention requires a positive window.")
         return parsed
 
 
@@ -124,6 +127,11 @@ class DFlash2Attention(Qwen3Attention):
             alt_stream=None,
         )
         self.attn.is_causal = False
+        if config.layer_types[layer_id] == "sliding_attention":
+            self.attn.sliding_window_size = int(config.sliding_window)
+            self.attn.is_causal = not config.dflash_config.get(
+                "sliding_window_non_causal", False
+            )
 
     def materialize_kv(
         self,

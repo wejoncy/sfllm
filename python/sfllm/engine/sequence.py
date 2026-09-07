@@ -4,6 +4,7 @@ from enum import IntEnum, auto
 import threading
 from typing import List, Callable, Optional
 from dataclasses import dataclass, field
+from array import array
 
 
 class SequenceStatus(IntEnum):
@@ -41,7 +42,16 @@ class AbortSequence:
 class DecodeSequence:
     def __init__(self, request_sequence: 'RequestSequence'):
         self.sequence_id = request_sequence.sequence_id
-        self.tokens = request_sequence.generated_tokens.copy()
+        self.prompt = request_sequence.prompt
+        self.stream = request_sequence.stream
+        self.tokens = (
+            request_sequence.generated_tokens.copy()
+            if request_sequence.stream
+            else request_sequence.tokens[
+                request_sequence.prompt_token_len : request_sequence.last_generated_token_pos
+            ]
+        )
+        self.prompt_token_len = request_sequence.prompt_token_len
         self.text = ""
         self.status = request_sequence.status
         self.completion_tokens = (
@@ -71,22 +81,25 @@ class RequestSequence(RawSequence):
         prompt: str,
         sampling_params: Optional[SamplingParams] = None,
         input_ids: List[int] = None,
+        stream: bool = False,
+        messages: Optional[List[dict]] = None,
     ):
         if sampling_params is None:
             sampling_params = SamplingParams()
         super().__init__(prompt=prompt, sampling_params=sampling_params)
-        self.out_cache_loc = []
+        self.out_cache_loc = array("q")
         self.out_cache_loc_spec = []
-        self.out_cache_loc_lazy = None # tensor on cuda
-        self.marked = False # marked for draft token handling, fill with -1 for the future accepted tokens
+        self.out_cache_loc_lazy = None  # (CUDA source tensor, CUDA [start, end) row range)
         self.request_index = -1
+        self.stream = stream
+        self.messages = messages
         if input_ids is not None:
             self.tokens = input_ids
             self.prompt_token_len = len(input_ids)
             self.last_generated_token_pos = self.prompt_token_len
             self.new_tokens = input_ids.copy()
             self.max_possible_length = sampling_params.max_new_tokens + self.prompt_token_len
-    
+
     def init(self, tokenizer_or_ids: Callable | list):
         if isinstance(tokenizer_or_ids, list):
             self.tokens = tokenizer_or_ids

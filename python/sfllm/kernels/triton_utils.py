@@ -11,6 +11,47 @@ import triton
 import triton.language as tl
 from typing import List, Optional
 
+@triton.jit(
+    do_not_specialize=["num_tokens"],
+    do_not_specialize_on_alignment=["num_tokens"],
+)
+def _resolve_future_token_ids_kernel(
+    input_ids,
+    future_token_ids,
+    num_tokens,
+    block: tl.constexpr,
+):
+    offsets = tl.program_id(0) * block + tl.arange(0, block)
+    mask = offsets < num_tokens
+    token_ids = tl.load(input_ids + offsets, mask=mask, other=0)
+    is_future = mask & (token_ids < 0)
+    resolved = tl.load(
+        future_token_ids - token_ids,
+        mask=is_future,
+        other=0,
+    )
+    tl.store(
+        input_ids + offsets,
+        tl.where(is_future, resolved, token_ids),
+        mask=mask,
+    )
+
+
+def resolve_future_token_ids(
+    input_ids: torch.Tensor,
+    future_token_ids: torch.Tensor,
+) -> None:
+    """Resolve negative overlap placeholders in place with one GPU launch."""
+    block = 256
+    _resolve_future_token_ids_kernel[(triton.cdiv(input_ids.numel(), block),)](
+        input_ids,
+        future_token_ids,
+        input_ids.numel(),
+        block=block,
+        num_warps=4,
+    )
+
+
 @triton.jit  
 def split_lastdim_kernel(
     next_token_ids_ptr,
