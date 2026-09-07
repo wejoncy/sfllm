@@ -94,8 +94,18 @@ class InferenceEngine:
                     0,
                 )
                 committed_tokens = committed_tokens[:remaining_tokens]
+                stop_sequences = sequence.sampling_params.stop_token_sequences
+                tail_len = max((len(stop) - 1 for stop in stop_sequences), default=0)
+                recent_tokens = sequence.tokens[
+                    max(sequence.prompt_token_len, sequence.last_generated_token_pos - tail_len)
+                    : sequence.last_generated_token_pos
+                ]
                 for token_idx, token_id in enumerate(committed_tokens):
-                    if token_id in sequence.sampling_params.stop_token_ids:
+                    recent_tokens.append(token_id)
+                    if token_id in sequence.sampling_params.stop_token_ids or any(
+                        tuple(recent_tokens[-len(stop):]) == stop
+                        for stop in stop_sequences
+                    ):
                         committed_tokens = committed_tokens[:token_idx + 1]
                         break
             else:
