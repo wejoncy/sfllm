@@ -16,6 +16,7 @@ from sfllm.spec_decoding.eagle_worker import EagleWorker
 from sfllm.engine.scheduler import Scheduler
 from sfllm.engine.sampling_params import SamplingParams
 from sfllm.engine.sequence import RequestSequence, SequenceStatus, AbortSequence
+from sfllm.engine.tokenizer import IncrementalDetokenizer
 from sfllm.engine.schedule_batch import ScheduleBatch, BatchResult
 from sfllm.server_args import ServerArgs
 from sfllm.utils.nutils import configure_logger,resolve_future_token_ids
@@ -41,6 +42,7 @@ class InferenceEngine:
         self.running = False
         self.scheduler = Scheduler(server_args, self.model_worker)
         self.output_batch_queue = queue.Queue()
+        self.decode_states = {}
         self.model_worker.init_capture_cudagraph()
         self.enable_overlap = not server_args.disable_overlap
 
@@ -389,16 +391,27 @@ class InferenceEngine:
         logger.info("Inference engine event loop exited.")
 
     def response(self, new_batch: ScheduleBatch, stream: bool) -> Generator[Dict[str, Any], Any, Any]:
-        seq_outputs = {}
         for sequence in new_batch:
             if stream:
                 if sequence.status in (SequenceStatus.RUNNING, SequenceStatus.COMPLETED):
-                    new_token = sequence.generated_tokens
-                    generated_text = self.model_worker.detokenize(
-                        new_token,
+                    state = self.decode_states.get(sequence.sequence_id)
+                    if state is None:
+                        state = IncrementalDetokenizer(self.model_worker.tokenizer)
+                        self.decode_states[sequence.sequence_id] = state
+                    finished = not sequence.status.is_active()
+                    generated_text = state.append(
+                        sequence.generated_tokens, finished
                     )
-                    seq_outputs[sequence.sequence_id] = {"prompt": sequence.prompt, "text": generated_text}
-                    yield seq_outputs
+                    if finished:
+                        self.decode_states.pop(sequence.sequence_id)
+                    yield {
+                        sequence.sequence_id: {
+                            "prompt": sequence.prompt,
+                            "text": generated_text,
+                        }
+                    }
+                elif not sequence.status.is_active():
+                    self.decode_states.pop(sequence.sequence_id, None)
             elif not sequence.status.is_active():
                 sequence.generated_text = self.model_worker.detokenize(
                     sequence.tokens[sequence.prompt_token_len : sequence.last_generated_token_pos],
