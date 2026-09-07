@@ -8,6 +8,7 @@ export HSA_ENABLE_DEBUG=1 is useful for ROCm error tracing
 import logging
 import torch
 import queue
+from tokenizers.decoders import DecodeStream
 from typing import Dict, Any, List, Tuple, Generator, Union
 
 from sfllm.engine.model_worker import ModelWorker
@@ -16,7 +17,6 @@ from sfllm.spec_decoding.eagle_worker import EagleWorker
 from sfllm.engine.scheduler import Scheduler
 from sfllm.engine.sampling_params import SamplingParams
 from sfllm.engine.sequence import RequestSequence, SequenceStatus, AbortSequence
-from sfllm.engine.tokenizer import IncrementalDetokenizer
 from sfllm.engine.schedule_batch import ScheduleBatch, BatchResult
 from sfllm.server_args import ServerArgs
 from sfllm.utils.nutils import configure_logger,resolve_future_token_ids
@@ -394,16 +394,25 @@ class InferenceEngine:
         for sequence in new_batch:
             if stream:
                 if sequence.status in (SequenceStatus.RUNNING, SequenceStatus.COMPLETED):
-                    state = self.decode_states.get(sequence.sequence_id)
-                    if state is None:
-                        state = IncrementalDetokenizer(self.model_worker.tokenizer)
-                        self.decode_states[sequence.sequence_id] = state
+                    if sequence.sequence_id not in self.decode_states:
+                        self.decode_states[sequence.sequence_id] = (
+                            DecodeStream(skip_special_tokens=True), 0
+                        )
+                    decoder, text_offset = self.decode_states[sequence.sequence_id]
                     finished = not sequence.status.is_active()
-                    generated_text = state.append(
-                        sequence.generated_tokens, finished
-                    )
                     if finished:
+                        generated_text = self.model_worker.detokenize(
+                            sequence.tokens[sequence.prompt_token_len : sequence.last_generated_token_pos]
+                        )[text_offset :]
                         self.decode_states.pop(sequence.sequence_id)
+                    else:
+                        generated_text = decoder.step(
+                            self.model_worker.tokenizer.backend_tokenizer,
+                            sequence.generated_tokens,
+                        ) or ""
+                        self.decode_states[sequence.sequence_id] = (
+                            decoder, text_offset + len(generated_text)
+                        )
                     yield {
                         sequence.sequence_id: {
                             "prompt": sequence.prompt,

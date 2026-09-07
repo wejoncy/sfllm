@@ -1,12 +1,12 @@
 import asyncio
 import time
 import logging
+from tokenizers.decoders import DecodeStream
 import torch.multiprocessing as multiprocessing
 from sfllm.engine.sequence import AbortSequence, DecodeSequence, RequestSequence
 from sfllm.engine.sampling_params import SamplingParams
 from sfllm.serving.req_protocol import GenerateReqInput
 from sfllm.engine.inference_engine import InferenceEngine
-from sfllm.engine.tokenizer import IncrementalDetokenizer
 from sfllm.server_args import set_global_server_args_for_scheduler
 
 logger = logging.getLogger(__name__)
@@ -113,7 +113,7 @@ class TokenizerManager:
                         stop_token_sequences
                     )
                     self.decode_states[out_sequence.sequence_id] = (
-                        IncrementalDetokenizer(self.tokenizer)
+                        DecodeStream(skip_special_tokens=True), [], 0
                     )
                     self.inferengine_input_queue.put(out_sequence)
                 elif isinstance(out_sequence, list):
@@ -123,10 +123,21 @@ class TokenizerManager:
                         state = self.decode_states.get(seq.sequence_id)
                         if state is None:
                             continue  # Output already in flight when aborted.
+                        decoder, token_ids, text_offset = state
+                        token_ids.extend(seq.tokens)
                         finished = not seq.status.is_active()
-                        generated_text = state.append(seq.tokens, finished)
                         if finished:
+                            generated_text = self.tokenizer.decode(
+                                token_ids, skip_special_tokens=True
+                            )[text_offset :]
                             self.decode_states.pop(seq.sequence_id)
+                        else:
+                            generated_text = decoder.step(
+                                self.tokenizer.backend_tokenizer, seq.tokens
+                            ) or ""
+                            self.decode_states[seq.sequence_id] = (
+                                decoder, token_ids, text_offset + len(generated_text)
+                            )
                         seq_outputs[seq.sequence_id] = {
                             "text": generated_text,
                             "output_ids": seq.tokens,

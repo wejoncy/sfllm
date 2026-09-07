@@ -4,29 +4,6 @@ It handles the tokenization of prompts and messages for the model.
 """
 import torch
 from transformers import AutoTokenizer
-from tokenizers.decoders import DecodeStream
-
-
-class IncrementalDetokenizer:
-    """Decode generated token deltas without splitting UTF-8 characters."""
-
-    def __init__(self, tokenizer):
-        self.tokenizer = tokenizer
-        self.stream = DecodeStream(skip_special_tokens=True)
-        self.token_ids = []
-        self.text_offset = 0
-
-    def append(self, token_ids, finished=False):
-        self.token_ids.extend(token_ids)
-        if finished:
-            # Decode once in full to flush any bytes left at the token limit.
-            return self.tokenizer.decode(
-                self.token_ids, skip_special_tokens=True
-            )[self.text_offset :]
-        delta = self.stream.step(self.tokenizer.backend_tokenizer, token_ids) or ""
-        self.text_offset += len(delta)
-        return delta
-
 
 class Tokenizer:
     def __init__(self, model_name: str):
