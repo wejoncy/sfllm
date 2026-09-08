@@ -1,5 +1,6 @@
 import logging
 from tokenizers.decoders import DecodeStream
+from transformers import AutoConfig, AutoTokenizer, GenerationConfig
 import torch.multiprocessing as multiprocessing
 from sfllm.engine.sequence import AbortSequence, DecodeSequence, RequestSequence
 from sfllm.engine.sampling_params import SamplingParams
@@ -28,8 +29,6 @@ class TokenizerManager:
         self.tokenizer_output_queue = output_queue
 
     def load_tokenizer(self):
-        from transformers import AutoConfig, AutoTokenizer
-
         self.tokenizer = AutoTokenizer.from_pretrained(self.server_args.model_path, trust_remote_code=True,)
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
@@ -42,6 +41,15 @@ class TokenizerManager:
         self.eos_token_ids = frozenset(model_eos or ())
         if self.tokenizer.eos_token_id is not None:
             self.eos_token_ids |= {self.tokenizer.eos_token_id}
+        try:
+            generation_eos = GenerationConfig.from_pretrained(
+                self.server_args.model_path
+            ).eos_token_id
+        except OSError:
+            generation_eos = None
+        if isinstance(generation_eos, int):
+            generation_eos = (generation_eos,)
+        self.eos_token_ids |= frozenset(generation_eos or ())
 
     @staticmethod
     def inferengine_event_run_loop(self):
