@@ -5,6 +5,7 @@ from sgl_kernel.flash_attn import get_scheduler_metadata
 
 from sfllm.engine.forward_params import ForwardBatch, ForwardMode
 from sfllm.kernels.fa3_attention import build_page_table, fa3_attention_fwd
+from sfllm.layers.verify_attention import verify_attention
 from sfllm.server_args import get_global_server_args
 
 
@@ -37,8 +38,10 @@ class FA3AttentionWorkspace:
         q: torch.Tensor,
         layer,
     ) -> FA3AttentionMetadata:
-        if forward_batch.custom_mask is not None:
-            raise NotImplementedError("FA3 does not support custom attention masks.")
+        is_tree_verify = (
+            forward_batch.forward_mode == ForwardMode.TARGET_VERIFY
+            and forward_batch.custom_mask is not None
+        )
 
         batch_size = forward_batch.kv_indptr.shape[0] - 1
         if batch_size > self.page_table.shape[0]:
@@ -70,7 +73,7 @@ class FA3AttentionWorkspace:
             qo_indptr,
             page_table,
             cache_seqlens,
-            append_query=not is_decode,
+            append_query=not is_decode and not is_tree_verify,
             prefix_window=(
                 layer.sliding_window_size
                 if forward_batch.forward_mode == ForwardMode.DRAFT_EXTEND else -1
@@ -87,7 +90,7 @@ class FA3AttentionWorkspace:
             qkv_dtype=q.dtype,
             cu_seqlens_q=qo_indptr,
             page_size=1,
-            causal=layer.is_causal,
+            causal=layer.is_causal and not is_tree_verify,
             num_splits=0,
         )
         return FA3AttentionMetadata(
@@ -112,8 +115,11 @@ class FA3AttentionBackend:
         self.workspace = None
         if layer_idx == 0:
             server_args = get_global_server_args()
+            max_batch_size = int(server_args.max_running_requests)
+            if server_args.speculative_algorithm == "eagle3":
+                max_batch_size *= server_args.speculative_eagle_topk
             self.workspace = FA3AttentionWorkspace(
-                int(server_args.cuda_graph_max_bs),
+                max_batch_size,
                 server_args.max_context_length
                 + server_args.speculative_num_draft_tokens,
                 torch.device("cuda"),
@@ -133,8 +139,16 @@ class FA3AttentionBackend:
             raise NotImplementedError(
                 f"FA3 does not support attention options: {sorted(kwargs)}."
             )
+        if forward_batch.forward_mode == ForwardMode.TARGET_VERIFY:
+            output = verify_attention(
+                q, k, v, layer, forward_batch, save_kv_cache, workspace=self.workspace
+            )
+            if output is not None:
+                return output
         if forward_batch.past_key_values is None:
             return torch.zeros_like(q)
+        if forward_batch.custom_mask is not None:
+            raise NotImplementedError("FA3 does not support custom attention masks.")
         if save_kv_cache:
             forward_batch.update(k, v, layer.layer_id)
 

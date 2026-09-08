@@ -93,8 +93,10 @@ def fa3_attention_fwd(
     metadata,
     softmax_scale: float,
     causal: bool,
+    *,
+    return_softmax_lse: bool = False,
 ) -> torch.Tensor:
-    flash_attn_with_kvcache(
+    result = flash_attn_with_kvcache(
         q,
         k_buffer.view(k_buffer.shape[0], 1, k_buffer.shape[1], k_buffer.shape[2]),
         v_buffer.view(v_buffer.shape[0], 1, v_buffer.shape[1], v_buffer.shape[2]),
@@ -106,6 +108,9 @@ def fa3_attention_fwd(
         causal=causal,
         num_splits=0,
         scheduler_metadata=metadata.scheduler_metadata,
+        return_softmax_lse=return_softmax_lse,
         out=out,
     )
+    if return_softmax_lse:
+        return result
     return out.view(out.shape[0], -1)

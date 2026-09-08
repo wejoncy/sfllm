@@ -40,7 +40,7 @@ Wait for `Application startup complete` and a successful health check, then run 
 
 ```bash
 curl --fail http://127.0.0.1:8081/health
-python -m sfllm.serving.sgl_bench_seving \
+python benchmark/bench_serving.py \
   --backend sglang-native --host 127.0.0.1 --port 8081 \
   --model "$BENCH_MODEL" --tokenizer "$BENCH_MODEL" \
   --dataset-name sharegpt --dataset-path "$BENCH_DATASET" \

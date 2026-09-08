@@ -416,8 +416,12 @@ def extend_attention_fwd(
         num_warps = 4
 
     else:
+        num_warps = 4 if Lk <= 64 else 8
         if _is_cuda and CUDA_CAPABILITY[0] >= 9:
-            if Lq <= 256:
+            if Lq == Lk == Lv == 128 and custom_mask is not None and max_len_extend <= 16:
+                BLOCK_M, BLOCK_N = (16, 64)
+                num_warps = 4
+            elif Lq <= 256:
                 BLOCK_M, BLOCK_N = (128, 64)
             else:
                 BLOCK_M, BLOCK_N = (32, 64)
@@ -439,8 +443,6 @@ def extend_attention_fwd(
                     BLOCK_M, BLOCK_N = (32, 64)
         else:
             BLOCK_M, BLOCK_N = (64, 64) if Lq <= 128 else (32, 32)
-
-        num_warps = 4 if Lk <= 64 else 8
 
     sm_scale = sm_scale or 1.0 / (Lq**0.5)
     batch_size, head_num = qo_indptr.shape[0] - 1, q_extend.shape[1]
