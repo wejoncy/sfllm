@@ -30,6 +30,7 @@ logger = logging.getLogger(__name__)
 
 WEIGHT_LOADER_V2_SUPPORTED = [
     "UnquantizedLinearMethod",
+    "Fp8LinearMethod",
     "CompressedTensorsLinearMethod",
 ]
 

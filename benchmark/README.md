@@ -51,3 +51,18 @@ python benchmark/bench_serving.py \
 ```
 
 The client uses streaming and temperature 0, respects EOS, and excludes the warmup request from timing. Wait for the final summary; detailed results are saved in the JSONL file.
+
+## Qwen3.5-4B per-tensor FP8
+
+Measured 2026-09-08 on H100 NVL, server 32 / client 24, 1000 successful ShareGPT requests in each run. Both use FA3, FlashInfer GDN prefill/decode, and BF16 activations outside the quantized linear layers.
+
+| Weights | Input tokens | Output tokens | Duration | Output tok/s | GSM8K (5-shot, max 512) |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| BF16 | 318819 | 909944 | 209.882 s | 4335.50 | 1151/1319 (87.26%) |
+| ModelOpt FP8 | 318819 | 913127 | 184.061 s | 4960.99 | 1100/1319 (83.40%) |
+
+FP8 improves measured output throughput by 14.43%, with a 3.87 percentage-point GSM8K loss for this checkpoint. Output lengths range from 2 to 1024; 238 BF16 requests and 233 FP8 requests finish below the cap.
+
+The same FP8 checkpoint scores **1095/1319 (83.02%)** on SGLang (`b5c9b68`), using identical GSM8K prompts and generation limits, FA3, FlashInfer GDN, and FP32 recurrent state. The accuracy loss is also present in this reference run.
+
+Quantization: ModelOpt 0.46.0, `FP8_DEFAULT_CFG`, 128 ShareGPT calibration samples truncated to 512 tokens. Use the server/client commands above. For FP8, point `BENCH_MODEL` to the ModelOpt export; quantization is detected from its config.

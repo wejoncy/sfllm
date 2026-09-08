@@ -1,4 +1,5 @@
 from contextlib import ContextDecorator
+import json
 import torch
 import logging
 import transformers
@@ -15,6 +16,7 @@ from typing import (
 )
 from sfllm.model_loader.model_config import ModelConfig
 from sfllm.layers.quantization import QuantizationConfig, get_quantization_config
+from sfllm.model_loader.weight_utils import _get_resolved_base_dir
 logger = logging.getLogger(__name__)
 
 
@@ -54,33 +56,36 @@ def get_quant_config(
     model_config,
     packed_modules_mapping: Dict[str, List[str]],
     remap_prefix: Dict[str, str] | None = None,
-) -> QuantizationConfig:
-    quant_cls = get_quantization_config(model_config.quantization)
-    possible_config_filenames = quant_cls.get_config_filenames()
-    # If the quantization config is not found, use the default config.
-    if not possible_config_filenames:
-        return quant_cls()
-    return quant_cls.from_config(
-        {
-            "model_config": model_config,
-            "packed_modules_mapping": packed_modules_mapping,
-            "remap_prefix": remap_prefix,
-        }
-    )
-
-
-def _get_quantization_config(
-    model_config,
-    packed_modules_mapping: Dict[str, List[str]],
-    remap_prefix: Dict[str, str] | None = None,
 ) -> Optional[QuantizationConfig]:
-    """Get the quantization config."""
-    if model_config.quantization is not None:
-        quant_config = get_quant_config(
-            model_config, packed_modules_mapping, remap_prefix
-        )
-        return quant_config
-    return None
+    config = getattr(model_config.hf_config, "quantization_config", None)
+    if config is None:
+        config = getattr(model_config.hf_config.get_text_config(), "quantization_config", None)
+    if config is None:
+        config_path = _get_resolved_base_dir(model_config.model_path, "hf_quant_config.json")
+        if config_path is not None:
+            with open(config_path) as f:
+                config = json.load(f)
+
+    checkpoint_method = None
+    if config is not None:
+        checkpoint_method = config.get("quant_method")
+        if checkpoint_method == "modelopt" or "quantization" in config or "quant_algo" in config:
+            checkpoint_method = "fp8"
+    method = model_config.quantization
+    if method is not None and checkpoint_method is not None and method != checkpoint_method:
+        raise ValueError(f"Requested {method} quantization, but checkpoint uses {checkpoint_method}")
+    method = method or checkpoint_method
+    if method is None:
+        return None
+    quant_cls = get_quantization_config(method)
+    quant_config = quant_cls.from_config(config) if config is not None else quant_cls()
+    quant_config.packed_modules_mapping = packed_modules_mapping
+    for source, target in (remap_prefix or {}).items():
+        quant_config.ignored_layers = [
+            name.replace(source, target, 1) for name in quant_config.ignored_layers
+        ]
+    return quant_config
+
 
 def initialize_model(model_name:str, dtype:str="auto", quantization:Optional[str]=None):
     """
@@ -124,7 +129,7 @@ def load_model(model_config: ModelConfig):
     model_class, _ = get_model_architecture(model_config.hf_config)
     packed_modules_mapping = getattr(model_class, "packed_modules_mapping", {})
     remap_prefix = getattr(model_class, "remap_prefix", None)
-    quant_config = _get_quantization_config(model_config, packed_modules_mapping, remap_prefix)
+    quant_config = get_quant_config(model_config, packed_modules_mapping, remap_prefix)
     with TorchDefaultReset(model_config.dtype, device="cuda"):
         model = model_class(model_config.hf_config, quant_config=quant_config)
         weight_iterator = _load_check_point(model_config.model_path)

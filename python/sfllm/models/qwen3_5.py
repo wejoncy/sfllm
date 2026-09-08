@@ -23,7 +23,7 @@ from sfllm.layers.linear import (
     RowParallelLinear,
 )
 from sfllm.layers.logits_processor import LogitsProcessor
-from sfllm.layers.quantization import QuantizationConfig
+from sfllm.layers.quantization import Fp8Config, QuantizationConfig
 from sfllm.layers.radix_attention import RadixAttention
 from sfllm.layers.rotary_embedding import get_rope
 from sfllm.model_loader.model_config import get_pool_index_layers
@@ -57,21 +57,25 @@ class Qwen3_5GatedDeltaNet(nn.Module):
         self.conv_states = conv_states
         self.ssm_states = ssm_states
         self.state_indices = state_indices
+        self.quant_config = quant_config
 
-        self.in_proj_qkvzba = MergedColumnParallelLinear(
-            self.hidden_size,
-            [
-                self.key_dim,
-                self.key_dim,
-                self.value_dim,
-                self.value_dim,
-                self.num_v_heads,
-                self.num_v_heads,
-            ],
-            bias=False,
-            quant_config=quant_config,
-            prefix=add_prefix("in_proj_qkvzba", prefix),
-        )
+        qkvz_sizes = [self.key_dim, self.key_dim, self.value_dim, self.value_dim]
+        ba_sizes = [self.num_v_heads, self.num_v_heads]
+        if quant_config is None:
+            self.in_proj_qkvzba = MergedColumnParallelLinear(
+                self.hidden_size, qkvz_sizes + ba_sizes, bias=False,
+                prefix=add_prefix("in_proj_qkvzba", prefix),
+            )
+        else:
+            # ModelOpt keeps the recurrent gates in BF16 by default.
+            self.in_proj_qkvz = MergedColumnParallelLinear(
+                self.hidden_size, qkvz_sizes, bias=False, quant_config=quant_config,
+                prefix=add_prefix("in_proj_qkvz", prefix),
+            )
+            self.in_proj_ba = MergedColumnParallelLinear(
+                self.hidden_size, ba_sizes, bias=False, quant_config=quant_config,
+                prefix=add_prefix("in_proj_ba", prefix),
+            )
         self.conv_weight = nn.Parameter(
             torch.empty(self.conv_dim, 1, self.conv_kernel_size), requires_grad=False
         )
@@ -117,10 +121,14 @@ class Qwen3_5GatedDeltaNet(nn.Module):
         )
         state_indices = self.state_indices[:num_sequences]
 
-        projected, _ = self.in_proj_qkvzba(hidden_states)
-        projected_qkvz, projected_ba = projected.split(
-            (self.conv_dim + self.value_dim, self.num_v_heads * 2), dim=-1
-        )
+        if self.quant_config is None:
+            projected, _ = self.in_proj_qkvzba(hidden_states)
+            projected_qkvz, projected_ba = projected.split(
+                (self.conv_dim + self.value_dim, self.num_v_heads * 2), dim=-1
+            )
+        else:
+            projected_qkvz, _ = self.in_proj_qkvz(hidden_states)
+            projected_ba, _ = self.in_proj_ba(hidden_states)
 
         common = dict(
             conv_weight=self.conv_weight.view(self.conv_dim, self.conv_kernel_size),
@@ -479,9 +487,12 @@ class Qwen3_5Model(nn.Module):
 class Qwen3_5ForConditionalGeneration(nn.Module, HasBatchState):
     """Text-only serving view of a dense Qwen3.5 multimodal checkpoint."""
 
+    remap_prefix = {"model.language_model.": "model."}
     packed_modules_mapping = {
         "qkv_proj": ["q_proj", "k_proj", "v_proj"],
         "gate_up_proj": ["gate_proj", "up_proj"],
+        "in_proj_qkvz": ["in_proj_qkv", "in_proj_z"],
+        "in_proj_ba": ["in_proj_b", "in_proj_a"],
         "in_proj_qkvzba": [
             "in_proj_qkv",
             "in_proj_z",
@@ -497,10 +508,13 @@ class Qwen3_5ForConditionalGeneration(nn.Module, HasBatchState):
         prefix: str = "",
     ) -> None:
         super().__init__()
-        if quant_config is not None:
-            raise ValueError("Initial Qwen3.5 support is BF16-only")
+        if quant_config is not None and (
+            not isinstance(quant_config, Fp8Config) or quant_config.weight_block_size is not None
+        ):
+            raise ValueError("Qwen3.5 only supports per-tensor FP8 quantization")
         text_config = config.text_config
         self.config = text_config
+        self.quant_config = quant_config
         self.model = Qwen3_5Model(text_config, quant_config, add_prefix("model", prefix))
         self.lm_head = self.model.embed_tokens if text_config.tie_word_embeddings else ReplicatedLinear(
             text_config.hidden_size, text_config.vocab_size, bias=False
@@ -529,6 +543,9 @@ class Qwen3_5ForConditionalGeneration(nn.Module, HasBatchState):
     def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]):
         params = dict(self.named_parameters())
         loaded = set()
+        qkvz_proj = "in_proj_qkvz" if self.quant_config is not None else "in_proj_qkvzba"
+        ba_proj = "in_proj_ba" if self.quant_config is not None else "in_proj_qkvzba"
+        ba_offset = 0 if self.quant_config is not None else 4
 
         for checkpoint_name, loaded_weight in weights:
             if checkpoint_name.startswith("model.visual.") or checkpoint_name.startswith("mtp."):
@@ -542,7 +559,7 @@ class Qwen3_5ForConditionalGeneration(nn.Module, HasBatchState):
                 name = name.replace(".linear_attn.conv1d.weight", ".linear_attn.conv_weight")
 
             mappings = []
-            if ".linear_attn.in_proj_qkv.weight" in name:
+            if ".linear_attn.in_proj_qkv." in name:
                 chunks = loaded_weight.split(
                     [
                         self.config.linear_num_key_heads * self.config.linear_key_head_dim,
@@ -550,15 +567,15 @@ class Qwen3_5ForConditionalGeneration(nn.Module, HasBatchState):
                         self.config.linear_num_value_heads * self.config.linear_value_head_dim,
                     ],
                     dim=0,
-                )
-                target = name.replace("in_proj_qkv", "in_proj_qkvzba")
+                ) if name.endswith(".weight") else [loaded_weight] * 3
+                target = name.replace("in_proj_qkv", qkvz_proj)
                 mappings = [(target, chunk, idx) for idx, chunk in enumerate(chunks)]
-            elif ".linear_attn.in_proj_z.weight" in name:
-                mappings = [(name.replace("in_proj_z", "in_proj_qkvzba"), loaded_weight, 3)]
-            elif ".linear_attn.in_proj_b.weight" in name:
-                mappings = [(name.replace("in_proj_b", "in_proj_qkvzba"), loaded_weight, 4)]
-            elif ".linear_attn.in_proj_a.weight" in name:
-                mappings = [(name.replace("in_proj_a", "in_proj_qkvzba"), loaded_weight, 5)]
+            elif ".linear_attn.in_proj_z." in name:
+                mappings = [(name.replace("in_proj_z", qkvz_proj), loaded_weight, 3)]
+            elif ".linear_attn.in_proj_b." in name:
+                mappings = [(name.replace("in_proj_b", ba_proj), loaded_weight, ba_offset)]
+            elif ".linear_attn.in_proj_a." in name:
+                mappings = [(name.replace("in_proj_a", ba_proj), loaded_weight, ba_offset + 1)]
             else:
                 stacked = [
                     ("qkv_proj", "q_proj", "q"),
