@@ -69,6 +69,22 @@ python python/sfllm/serving/app.py \
   --dtype float16
 ```
 
+**Qwen3.5 per-tensor FP8:**
+
+Export a calibrated Hugging Face checkpoint with NVIDIA ModelOpt's
+`FP8_DEFAULT_CFG` and `export_hf_checkpoint`, then serve it with:
+
+```bash
+python python/sfllm/serving/app.py \
+  --model /path/to/Qwen3.5-4B-FP8 --dtype bfloat16 --quantization fp8 \
+  --max-running-requests 32 --cuda-graph-max-bs 32 --port 8081
+```
+
+The exported quantization config is detected automatically, so `--quantization fp8`
+is optional. Both `config.json` and legacy `hf_quant_config.json` metadata are
+supported. ModelOpt's excluded layers retain BF16, including the GDN a/b projections;
+FP8 KV-cache quantization is not supported.
+
 ### 2. Test the API
 
 **Chat Completions (Streaming)**

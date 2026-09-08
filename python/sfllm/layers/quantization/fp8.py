@@ -57,6 +57,7 @@ class Fp8Config(QuantizationConfig):
         ignored_layers: Optional[List[str]] = None,
         weight_block_size: List[int] = None,
     ) -> None:
+        super().__init__()
         self.is_checkpoint_fp8_serialized = is_checkpoint_fp8_serialized
         if is_checkpoint_fp8_serialized:
             logger.info("Detected fp8 checkpoint.")
@@ -97,6 +98,17 @@ class Fp8Config(QuantizationConfig):
 
     @classmethod
     def from_config(cls, config: Dict[str, Any]) -> "Fp8Config":
+        config = config.get("quantization", config)
+        if "quant_algo" in config or config.get("quant_method") == "modelopt":
+            if config.get("quant_algo") != "FP8":
+                raise ValueError("Only ModelOpt per-tensor FP8 checkpoints are supported")
+            if config.get("kv_cache_quant_algo") or config.get("kv_cache_scheme"):
+                raise ValueError("ModelOpt FP8 KV-cache quantization is not supported")
+            return cls(
+                is_checkpoint_fp8_serialized=True,
+                activation_scheme="static",
+                ignored_layers=config.get("ignore", config.get("exclude_modules")),
+            )
         quant_method = cls.get_from_keys(config, ["quant_method"])
         is_checkpoint_fp8_serialized = "fp8" in quant_method
         activation_scheme = cls.get_from_keys(config, ["activation_scheme"])
@@ -119,7 +131,7 @@ class Fp8Config(QuantizationConfig):
     ) -> Optional[QuantizeMethodBase]:
         from sfllm.layers.linear import LinearBase
         if isinstance(layer, LinearBase):
-            if is_layer_skipped(prefix, self.ignored_layers):
+            if is_layer_skipped(prefix, self.ignored_layers, self.packed_modules_mapping):
                 return UnquantizedLinearMethod()
             return Fp8LinearMethod(self)
         return None
@@ -266,6 +278,11 @@ class Fp8LinearMethod(LinearMethodBase):
                 layer.register_parameter("input_scale", None)
 
     def process_weights_after_loading(self, layer: Module) -> None:
+        if self.quant_config.is_checkpoint_fp8_serialized and not self.block_quant:
+            for name in ("weight_scale", "input_scale"):
+                scale = getattr(layer, name, None)
+                if scale is not None and not torch.all(torch.isfinite(scale) & (scale > 0)):
+                    raise ValueError(f"Missing or invalid FP8 {name} in {layer.prefix}")
         if self.block_quant:
             # If ROCm, normalize the weights and scales to e4m3fnuz
             if _is_fp8_fnuz:

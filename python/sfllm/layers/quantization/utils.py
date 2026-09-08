@@ -1,4 +1,5 @@
 import torch
+from fnmatch import fnmatchcase
 from typing import Callable, List, Mapping, Union, Tuple
 from sfllm.layers.quantization.fp8_kernel import scaled_fp8_quant
 from types import MappingProxyType
@@ -111,7 +112,8 @@ def is_layer_skipped(
         is_skipped = None
         for shard_prefix in shard_prefixes:
             is_shard_skipped = any(
-                ignored in shard_prefix for ignored in ignored_layers
+                ignored in shard_prefix or fnmatchcase(shard_prefix, ignored)
+                for ignored in ignored_layers
             )
 
             if is_skipped is None:
@@ -123,7 +125,10 @@ def is_layer_skipped(
                     "to have the same precision."
                 )
     else:
-        is_skipped = any(ignored in prefix for ignored in ignored_layers)
+        is_skipped = any(
+            ignored in prefix or fnmatchcase(prefix, ignored)
+            for ignored in ignored_layers
+        )
         if "gate_up_proj" in prefix:
             prefix_gate = prefix.replace("gate_up_proj", "gate_proj")
             prefix_up = prefix.replace("gate_up_proj", "up_proj")
