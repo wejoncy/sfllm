@@ -111,6 +111,16 @@ def get_auth_headers() -> Dict[str, str]:
         return {}
 
 
+def get_server_internal_state(base_url):
+    response = requests.get(base_url + "/get_server_info", headers=get_auth_headers())
+    if response.status_code != 200:
+        return {}
+    info = response.json()
+    if "decode" in info:
+        info = info["decode"][0]
+    return info["internal_states"][0]
+
+
 # trt llm does not support ignore_eos
 # https://github.com/triton-inference-server/tensorrtllm_backend/issues/505
 async def async_request_trt_llm(
@@ -1538,11 +1548,14 @@ async def benchmark(
             f"Warmup completed with {args.warmup_requests} sequences. Starting main benchmark run..."
         )
 
-    # Flush cache
-    if ("sglang" in backend and _get_bool_env_var("SGLANG_IS_IN_CI")) or flush_cache:
-        requests.post(base_url + "/flush_cache", headers=get_auth_headers())
-
     time.sleep(1.0)
+
+    # SFLLM clears warmup caches and statistics before the timed requests.
+    sfllm = "sglang" in backend and "cum_forward_ct" in get_server_internal_state(base_url)
+    if sfllm or ("sglang" in backend and _get_bool_env_var("SGLANG_IS_IN_CI")) or flush_cache:
+        requests.post(
+            base_url + "/flush_cache", headers=get_auth_headers()
+        ).raise_for_status()
 
     # Start profiler
     if profile:
@@ -1603,6 +1616,9 @@ async def benchmark(
         backend=backend,
     )
     accept_length = None
+    if "sglang" in backend:
+        state = get_server_internal_state(base_url)
+        accept_length = state.get("avg_spec_accept_length")
 
     print("\n{s:{c}^{n}}".format(s=" Serving Benchmark Result ", n=50, c="="))
     print("{:<40} {:<10}".format("Backend:", backend))
