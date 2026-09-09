@@ -66,7 +66,7 @@ class Qwen2MLP(nn.Module):
                 f"Unsupported activation: {hidden_act}. "
                 "Only silu is supported for now."
             )
-        self.act_fn = SiluAndMul()
+        self.act_fn = SiluAndMul(quant_method=self.down_proj.quant_method)
 
     def forward(self, x):
         gate_up, _ = self.gate_up_proj(x)

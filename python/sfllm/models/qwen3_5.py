@@ -16,6 +16,10 @@ import sf_kernel
 from sfllm.engine.forward_params import ForwardBatch, ForwardMode
 from sfllm.kernels.gdn import GatedDeltaNetBackend, gated_rmsnorm
 from sfllm.layers.layernorm import GemmaRMSNorm
+from sfllm.layers.quantization.fp8_kernel import (
+    rmsnorm_silu_gate_quant_fp8,
+    sigmoid_mul_quant_fp8,
+)
 from sfllm.layers.linear import (
     MergedColumnParallelLinear,
     QKVParallelLinear,
@@ -24,10 +28,11 @@ from sfllm.layers.linear import (
 )
 from sfllm.layers.logits_processor import LogitsProcessor
 from sfllm.layers.quantization import Fp8Config, QuantizationConfig
+from sfllm.layers.quantization.utils import is_layer_skipped
 from sfllm.layers.radix_attention import RadixAttention
 from sfllm.layers.rotary_embedding import get_rope
 from sfllm.model_loader.model_config import get_pool_index_layers
-from sfllm.model_loader.weight_utils import default_weight_loader
+from sfllm.model_loader.weight_utils import default_weight_loader, get_layer_id
 from sfllm.models.interfaces import HasBatchState
 from sfllm.models.qwen2 import Qwen2MLP
 from sfllm.server_args import get_global_server_args
@@ -57,13 +62,24 @@ class Qwen3_5GatedDeltaNet(nn.Module):
         self.conv_states = conv_states
         self.ssm_states = ssm_states
         self.state_indices = state_indices
-        self.quant_config = quant_config
+        self.fused_in_proj = (
+            quant_config is None or quant_config.weight_strategy == "channel"
+        )
+        if quant_config is not None and self.fused_in_proj:
+            self.fused_in_proj = is_layer_skipped(
+                add_prefix("in_proj_qkvz", prefix), quant_config.ignored_layers,
+                quant_config.packed_modules_mapping,
+            ) == is_layer_skipped(
+                add_prefix("in_proj_ba", prefix), quant_config.ignored_layers,
+                quant_config.packed_modules_mapping,
+            )
 
         qkvz_sizes = [self.key_dim, self.key_dim, self.value_dim, self.value_dim]
         ba_sizes = [self.num_v_heads, self.num_v_heads]
-        if quant_config is None:
+        if self.fused_in_proj:
             self.in_proj_qkvzba = MergedColumnParallelLinear(
                 self.hidden_size, qkvz_sizes + ba_sizes, bias=False,
+                quant_config=quant_config,
                 prefix=add_prefix("in_proj_qkvzba", prefix),
             )
         else:
@@ -95,6 +111,7 @@ class Qwen3_5GatedDeltaNet(nn.Module):
             quant_config=quant_config,
             prefix=add_prefix("out_proj", prefix),
         )
+        self.fp8_output = self.out_proj.quant_method.input_dtype is not None
         server_args = get_global_server_args()
         self.backend = GatedDeltaNetBackend(
             prefill_backend=(
@@ -114,21 +131,22 @@ class Qwen3_5GatedDeltaNet(nn.Module):
         query_start_loc: Optional[torch.Tensor],
         query_start_loc_i64: Optional[torch.Tensor],
     ):
-        num_sequences = (
-            hidden_states.shape[0]
-            if forward_batch.forward_mode == ForwardMode.DECODE
-            else query_start_loc.shape[0] - 1
-        )
-        state_indices = self.state_indices[:num_sequences]
-
-        if self.quant_config is None:
+        mode = forward_batch.forward_mode
+        if self.fused_in_proj:
             projected, _ = self.in_proj_qkvzba(hidden_states)
             projected_qkvz, projected_ba = projected.split(
                 (self.conv_dim + self.value_dim, self.num_v_heads * 2), dim=-1
             )
         else:
-            projected_qkvz, _ = self.in_proj_qkvz(hidden_states)
-            projected_ba, _ = self.in_proj_ba(hidden_states)
+            qkvz_input, ba_input = hidden_states
+            projected_qkvz, _ = self.in_proj_qkvz(qkvz_input)
+            projected_ba, _ = self.in_proj_ba(ba_input)
+
+        num_tokens = projected_qkvz.shape[0]
+        num_sequences = num_tokens
+        if mode == ForwardMode.EXTEND:
+            num_sequences = query_start_loc.shape[0] - 1
+        state_indices = self.state_indices[:num_sequences]
 
         common = dict(
             conv_weight=self.conv_weight.view(self.conv_dim, self.conv_kernel_size),
@@ -163,9 +181,15 @@ class Qwen3_5GatedDeltaNet(nn.Module):
                 f"Qwen3.5 GDN does not support {forward_batch.forward_mode.name} yet"
             )
 
-        core = gated_rmsnorm(core, z, self.norm, self.rms_norm_eps).view(
-            hidden_states.shape[0], self.value_dim
-        )
+        if self.fp8_output:
+            core = rmsnorm_silu_gate_quant_fp8(
+                core, weight=self.norm, gate=z, eps=self.rms_norm_eps,
+                input_scale=self.out_proj.quant_method.input_scale,
+            )
+        else:
+            core = gated_rmsnorm(core, z, self.norm, self.rms_norm_eps).view(
+                num_tokens, self.value_dim
+            )
         output, _ = self.out_proj(core)
         return output
 
@@ -205,6 +229,7 @@ class Qwen3_5Attention(nn.Module):
             reduce_results=False,
             prefix=add_prefix("o_proj", prefix),
         )
+        self.fp8_output = self.o_proj.quant_method.input_dtype is not None
         self.q_norm = GemmaRMSNorm(self.head_dim, eps=config.rms_norm_eps)
         self.k_norm = GemmaRMSNorm(self.head_dim, eps=config.rms_norm_eps)
 
@@ -277,7 +302,12 @@ class Qwen3_5Attention(nn.Module):
         )
         if gate is not None:
             output = output.view(-1, self.q_size)
-            sf_kernel.fused_sigmoid_mul(output, gate)
+            if self.fp8_output:
+                output = sigmoid_mul_quant_fp8(
+                    output, gate=gate, input_scale=self.o_proj.quant_method.input_scale,
+                )
+            else:
+                sf_kernel.fused_sigmoid_mul(output, gate)
         output, _ = self.o_proj(output)
         return output
 
@@ -303,6 +333,7 @@ class Qwen3_5DecoderLayer(nn.Module):
                 quant_config,
                 add_prefix("self_attn", prefix),
             )
+            input_projections = (self.self_attn.qkv_proj,)
         elif layer_type == "linear_attention":
             self.linear_attn = Qwen3_5GatedDeltaNet(
                 config,
@@ -311,6 +342,10 @@ class Qwen3_5DecoderLayer(nn.Module):
                 state_buffers[2],
                 quant_config,
                 add_prefix("linear_attn", prefix),
+            )
+            input_projections = (
+                (self.linear_attn.in_proj_qkvzba,) if self.linear_attn.fused_in_proj
+                else (self.linear_attn.in_proj_qkvz, self.linear_attn.in_proj_ba)
             )
         else:
             raise ValueError(f"Unsupported Qwen3.5 layer type: {layer_type}")
@@ -321,9 +356,13 @@ class Qwen3_5DecoderLayer(nn.Module):
             quant_config,
             add_prefix("mlp", prefix),
         )
-        self.input_layernorm = GemmaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.input_layernorm = GemmaRMSNorm(
+            config.hidden_size, eps=config.rms_norm_eps,
+            quant_methods=tuple(p.quant_method for p in input_projections),
+        )
         self.post_attention_layernorm = GemmaRMSNorm(
-            config.hidden_size, eps=config.rms_norm_eps
+            config.hidden_size, eps=config.rms_norm_eps,
+            quant_methods=(self.mlp.gate_up_proj.quant_method,),
         )
 
     def forward(
@@ -511,7 +550,7 @@ class Qwen3_5ForConditionalGeneration(nn.Module, HasBatchState):
         if quant_config is not None and (
             not isinstance(quant_config, Fp8Config) or quant_config.weight_block_size is not None
         ):
-            raise ValueError("Qwen3.5 only supports per-tensor FP8 quantization")
+            raise ValueError("Qwen3.5 only supports per-tensor or per-channel FP8 quantization")
         text_config = config.text_config
         self.config = text_config
         self.quant_config = quant_config
@@ -543,10 +582,6 @@ class Qwen3_5ForConditionalGeneration(nn.Module, HasBatchState):
     def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]):
         params = dict(self.named_parameters())
         loaded = set()
-        qkvz_proj = "in_proj_qkvz" if self.quant_config is not None else "in_proj_qkvzba"
-        ba_proj = "in_proj_ba" if self.quant_config is not None else "in_proj_qkvzba"
-        ba_offset = 0 if self.quant_config is not None else 4
-
         for checkpoint_name, loaded_weight in weights:
             if checkpoint_name.startswith("model.visual.") or checkpoint_name.startswith("mtp."):
                 continue
@@ -557,6 +592,11 @@ class Qwen3_5ForConditionalGeneration(nn.Module, HasBatchState):
                 name = name.replace(".linear_attn.norm.weight", ".linear_attn.norm")
             if ".linear_attn.conv1d.weight" in name:
                 name = name.replace(".linear_attn.conv1d.weight", ".linear_attn.conv_weight")
+            if ".linear_attn.in_proj_" in name:
+                separate = not self.model.layers[get_layer_id(name)].linear_attn.fused_in_proj
+                qkvz_proj = "in_proj_qkvz" if separate else "in_proj_qkvzba"
+                ba_proj = "in_proj_ba" if separate else "in_proj_qkvzba"
+                ba_offset = 0 if separate else 4
 
             mappings = []
             if ".linear_attn.in_proj_qkv." in name:
@@ -567,7 +607,10 @@ class Qwen3_5ForConditionalGeneration(nn.Module, HasBatchState):
                         self.config.linear_num_value_heads * self.config.linear_value_head_dim,
                     ],
                     dim=0,
-                ) if name.endswith(".weight") else [loaded_weight] * 3
+                ) if name.endswith(".weight") or (
+                    name.endswith(".weight_scale")
+                    and self.quant_config.weight_strategy == "channel"
+                ) else [loaded_weight] * 3
                 target = name.replace("in_proj_qkv", qkvz_proj)
                 mappings = [(target, chunk, idx) for idx, chunk in enumerate(chunks)]
             elif ".linear_attn.in_proj_z." in name:

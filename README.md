@@ -69,7 +69,7 @@ python python/sfllm/serving/app.py \
   --dtype float16
 ```
 
-**Qwen3.5 per-tensor FP8:**
+**Qwen3.5 FP8:**
 
 Export a calibrated Hugging Face checkpoint with NVIDIA ModelOpt's
 `FP8_DEFAULT_CFG` and `export_hf_checkpoint`, then serve it with:
@@ -84,6 +84,10 @@ The exported quantization config is detected automatically, so `--quantization f
 is optional. Both `config.json` and legacy `hf_quant_config.json` metadata are
 supported. ModelOpt's excluded layers retain BF16, including the GDN a/b projections;
 FP8 KV-cache quantization is not supported.
+
+Qwen3.5 `compressed-tensors` exports using `FP8_DYNAMIC` (per-channel weights,
+per-token dynamic activations) are also detected automatically. Use the same
+command with `--dtype bfloat16`, including for exports whose config declares float32.
 
 ### 2. Test the API
 
