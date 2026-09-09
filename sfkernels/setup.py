@@ -184,6 +184,7 @@ if os.name == "nt":
     torch_lib_path = Path(torch.__file__).parent / "lib"
     extra_link_args = [f"/LIBPATH:{torch_lib_path}"]
     libraries = []  # On Windows, libraries are linked via extra_link_args
+    nvcc_flags.append("-Xcompiler=/Zc:preprocessor")
 else:
     if torch.version.hip is not None:
         cxx_flags = ["-O3"]
