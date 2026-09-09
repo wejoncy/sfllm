@@ -69,7 +69,7 @@ def get_quant_config(
     checkpoint_method = None
     if config is not None:
         checkpoint_method = config.get("quant_method")
-        if checkpoint_method == "modelopt" or "quantization" in config or "quant_algo" in config:
+        if checkpoint_method in ("modelopt", "compressed-tensors") or "quantization" in config or "quant_algo" in config:
             checkpoint_method = "fp8"
     method = model_config.quantization
     if method is not None and checkpoint_method is not None and method != checkpoint_method:

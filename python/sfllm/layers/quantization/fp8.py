@@ -16,27 +16,27 @@ from sfllm.layers.quantization.base_config import (
 from sfllm.utils import get_tensor_model_parallel_world_size,get_tensor_model_parallel_rank
 
 from sfllm.layers.quantization.fp8_kernel import (
-    per_token_group_quant_fp8,
+    fp8_dtype,
+    triton_scaled_mm,
 )
 from sfllm.layers.quantization.fp8_utils import (
     apply_fp8_linear,
-    cutlass_fp8_supported,
-    dispatch_w8a8_block_fp8_linear,
+    fp8_scaled_mm,
+    torch_scaled_mm,
+    triton_w8a8_block_fp8_linear,
     input_to_float8,
     normalize_e4m3fn_to_e4m3fnuz,
-    requant_weight_ue8m0_inplace,
     _is_fp8_fnuz,
 )
 
-from sfllm.layers.quantization.unquant import UnquantizedLinearMethod
 from sfllm.layers.quantization.utils import (
-    convert_to_channelwise,
     is_layer_skipped,
     requantize_with_max_scale,
 )
 
 from sfllm.layers.parameter import (
     BlockQuantScaleParameter,
+    ChannelQuantScaleParameter,
     ModelWeightParameter,
     PerTensorScaleParameter,
 )
@@ -56,6 +56,7 @@ class Fp8Config(QuantizationConfig):
         activation_scheme: str = "dynamic",
         ignored_layers: Optional[List[str]] = None,
         weight_block_size: List[int] = None,
+        weight_strategy: str = "tensor",
     ) -> None:
         super().__init__()
         self.is_checkpoint_fp8_serialized = is_checkpoint_fp8_serialized
@@ -79,6 +80,7 @@ class Fp8Config(QuantizationConfig):
                     f"The block-wise quantization only supports dynamic activation scheme for now, but got {activation_scheme} activation scheme."
                 )
         self.weight_block_size = weight_block_size
+        self.weight_strategy = weight_strategy
 
     @classmethod
     def get_name(cls) -> str:
@@ -99,6 +101,40 @@ class Fp8Config(QuantizationConfig):
     @classmethod
     def from_config(cls, config: Dict[str, Any]) -> "Fp8Config":
         config = config.get("quantization", config)
+        if config.get("quant_method") == "compressed-tensors":
+            groups = list(config.get("config_groups", {}).values())
+            if (
+                config.get("format") != "float-quantized"
+                or config.get("quantization_status") != "compressed"
+                or len(groups) != 1
+                or groups[0].get("targets") != ["Linear"]
+                or groups[0].get("output_activations") is not None
+                or config.get("kv_cache_scheme")
+                or config.get("sparsity_config")
+                or config.get("transform_config")
+            ):
+                raise ValueError("Only compressed-tensors FP8_DYNAMIC linear quantization is supported")
+            for name, strategy, dynamic in (
+                ("weights", "channel", False),
+                ("input_activations", "token", True),
+            ):
+                args = groups[0].get(name) or {}
+                if (
+                    args.get("type") != "float"
+                    or args.get("num_bits") != 8
+                    or args.get("strategy") != strategy
+                    or args.get("dynamic") is not dynamic
+                    or args.get("symmetric") is not True
+                    or args.get("group_size") is not None
+                    or args.get("block_structure") is not None
+                ):
+                    raise ValueError(f"Unsupported compressed-tensors FP8_DYNAMIC {name}: {args}")
+            return cls(
+                is_checkpoint_fp8_serialized=True,
+                activation_scheme="dynamic",
+                ignored_layers=config.get("ignore"),
+                weight_strategy="channel",
+            )
         if "quant_algo" in config or config.get("quant_method") == "modelopt":
             if config.get("quant_algo") != "FP8":
                 raise ValueError("Only ModelOpt per-tensor FP8 checkpoints are supported")
@@ -129,7 +165,7 @@ class Fp8Config(QuantizationConfig):
     def get_quant_method(
         self, layer: torch.nn.Module, prefix: str
     ) -> Optional[QuantizeMethodBase]:
-        from sfllm.layers.linear import LinearBase
+        from sfllm.layers.linear import LinearBase, UnquantizedLinearMethod
         if isinstance(layer, LinearBase):
             if is_layer_skipped(prefix, self.ignored_layers, self.packed_modules_mapping):
                 return UnquantizedLinearMethod()
@@ -141,32 +177,23 @@ class Fp8Config(QuantizationConfig):
 
 
 class Fp8LinearMethod(LinearMethodBase):
-    """Linear method for FP8.
-    Supports loading FP8 checkpoints with static weight scale and
-    dynamic/static activation scale.
+    """FP8 linear weights with tensor, channel, or block scales.
 
-    Also supports loading quantized FP16/BF16 model checkpoints with dynamic
-    activation scaling. The weight scaling factor will be initialized after
-    the model weights are loaded.
-
-    Limitations:
-    1. Only support per-tensor quantization due to torch._scaled_mm support.
-    2. Only support float8_e4m3fn data type due to the limitation of
-       torch._scaled_mm (https://github.com/pytorch/pytorch/blob/2e48b39603411a41c5025efbe52f89560b827825/aten/src/ATen/native/cuda/Blas.cpp#L854-L856)
-
-    Args:
-        quant_config: The quantization config.
+    Fused producers may pass (FP8 activations, scales) for non-block weights.
     """
 
     def __init__(self, quant_config: Union[Fp8Config, ]):
         self.quant_config = quant_config
-        self.cutlass_fp8_supported = cutlass_fp8_supported()
 
-        # For GPUs that lack FP8 hardware support, we can leverage the Marlin
-        # kernel for fast weight-only FP8 quantization
-        self.use_marlin = False
         self.block_quant = self.quant_config.weight_block_size is not None
-        self.w8a8_block_fp8_linear = dispatch_w8a8_block_fp8_linear()
+        self.input_dtype = None if self.block_quant else fp8_dtype
+        self.scaled_mm = triton_scaled_mm
+        if current_platform.is_cuda() and current_platform.has_device_capability((8, 9)):
+            # Preserve the original accumulation for scalar activation/weight scales.
+            if quant_config.activation_scheme == "static" and quant_config.weight_strategy == "tensor":
+                self.scaled_mm = torch_scaled_mm
+            elif fp8_scaled_mm is not None:
+                self.scaled_mm = fp8_scaled_mm
 
     def create_weights(
         self,
@@ -180,6 +207,11 @@ class Fp8LinearMethod(LinearMethodBase):
     ):
         output_size_per_partition = sum(output_partition_sizes)
         weight_loader = extra_weight_attrs.get("weight_loader")
+        # Native GEMMs require aligned dimensions and BF16/FP16 output.
+        output_alignment = 16 if self.scaled_mm is torch_scaled_mm else 8
+        if (input_size_per_partition % 16 or output_size_per_partition % output_alignment
+                or params_dtype not in (torch.float16, torch.bfloat16)):
+            self.scaled_mm = triton_scaled_mm
 
         tp_size = get_tensor_model_parallel_world_size()
         if self.block_quant:
@@ -234,10 +266,7 @@ class Fp8LinearMethod(LinearMethodBase):
         if self.quant_config.is_checkpoint_fp8_serialized:
             # WEIGHT SCALE
             if self.block_quant:
-                if hasattr(self.quant_config, "activation_scheme"):
-                    assert self.quant_config.activation_scheme == "dynamic"
-                elif hasattr(self.quant_config, "linear_activation_scheme"):
-                    assert self.quant_config.linear_activation_scheme == "dynamic"
+                assert self.quant_config.activation_scheme == "dynamic"
                 scale = BlockQuantScaleParameter(
                     data=torch.empty(
                         (output_size_per_partition + block_n - 1) // block_n,
@@ -248,9 +277,19 @@ class Fp8LinearMethod(LinearMethodBase):
                     output_dim=0,
                     weight_loader=weight_loader,
                 )
-                scale.format_ue8m0 = False
                 scale[:] = torch.finfo(torch.float32).min
                 layer.register_parameter("weight_scale_inv", scale)
+            elif self.quant_config.weight_strategy == "channel":
+                scale = ChannelQuantScaleParameter(
+                    data=torch.full(
+                        (output_size_per_partition, 1),
+                        torch.finfo(torch.float32).min,
+                        dtype=torch.float32,
+                    ),
+                    output_dim=0,
+                    weight_loader=weight_loader,
+                )
+                layer.register_parameter("weight_scale", scale)
             else:
                 scale = PerTensorScaleParameter(
                     data=torch.empty(len(output_partition_sizes), dtype=torch.float32),
@@ -260,13 +299,7 @@ class Fp8LinearMethod(LinearMethodBase):
                 layer.register_parameter("weight_scale", scale)
 
             # INPUT ACTIVATION SCALE
-            if (
-                hasattr(self.quant_config, "activation_scheme")
-                and self.quant_config.activation_scheme == "static"
-            ) or (
-                hasattr(self.quant_config, "linear_activation_scheme")
-                and self.quant_config.linear_activation_scheme == "static"
-            ):
+            if self.quant_config.activation_scheme == "static":
                 scale = PerTensorScaleParameter(
                     data=torch.empty(len(output_partition_sizes), dtype=torch.float32),
                     weight_loader=weight_loader,
@@ -294,32 +327,6 @@ class Fp8LinearMethod(LinearMethodBase):
                 )
                 layer.input_scale = None
             else:
-                # For fp8 linear weights run with deepgemm, the weights and scales need be requantized to ue8m0
-                from sfllm.layers.quantization.fp8_utils import (
-                    deepgemm_w8a8_block_fp8_linear_with_fallback,
-                )
-                from sfllm.model_loader.utils import (
-                    should_deepgemm_weight_requant_ue8m0,
-                )
-
-                if (
-                    should_deepgemm_weight_requant_ue8m0(
-                        weight_block_size=getattr(
-                            self.quant_config, "weight_block_size", None
-                        ),
-                    )
-                    and (
-                        self.w8a8_block_fp8_linear
-                        is deepgemm_w8a8_block_fp8_linear_with_fallback
-                    )
-                    and (not layer.weight_scale_inv.format_ue8m0)
-                ):
-                    requant_weight_ue8m0_inplace(
-                        layer.weight,
-                        layer.weight_scale_inv,
-                        self.quant_config.weight_block_size,
-                    )
-                    layer.weight_scale_inv.format_ue8m0 = True
                 weight, weight_scale = layer.weight.data, layer.weight_scale_inv.data
 
             layer.weight.data = weight.data
@@ -329,16 +336,7 @@ class Fp8LinearMethod(LinearMethodBase):
 
             # If checkpoint not serialized fp8, quantize the weights.
             if not self.quant_config.is_checkpoint_fp8_serialized:
-                if self.cutlass_fp8_supported or self.use_marlin:
-                    # apply per-channel quantization default as
-                    # cutlass sgl-kernel and marlin only support per-channel scale
-                    qweight, weight_scale = per_token_group_quant_fp8(
-                        layer.weight, layer.weight.shape[-1]
-                    )
-                    weight_scale = weight_scale.t().contiguous()
-                else:
-                    # per-tensor quantization
-                    qweight, weight_scale = input_to_float8(layer.weight)
+                qweight, weight_scale = input_to_float8(layer.weight)
 
                 # Update the layer with the new values.
                 layer.weight = Parameter(qweight.t(), requires_grad=False)
@@ -351,41 +349,24 @@ class Fp8LinearMethod(LinearMethodBase):
                 layer.weight_scale = Parameter(
                     layer.weight_scale.data, requires_grad=False
                 )
-                if (
-                    hasattr(self.quant_config, "activation_scheme")
-                    and self.quant_config.activation_scheme == "static"
-                ) or (
-                    hasattr(self.quant_config, "linear_activation_scheme")
-                    and self.quant_config.linear_activation_scheme == "static"
-                ):
-                    layer.input_scale = Parameter(
-                        layer.input_scale.data, requires_grad=False
-                    )
-
-                # cutlass sgl-kernel and marlin only support per-channel scale
-                if self.cutlass_fp8_supported or self.use_marlin:
-                    weight = layer.weight
-                    weight_scale = convert_to_channelwise(
-                        layer.weight_scale, layer.logical_widths
-                    )
-                else:
-                    # Dequant -> Quant with max scale so we can run per tensor.
-                    weight = layer.weight
-                    weight_scale = layer.weight_scale
-                    # If ROCm, normalize the weights and scales to e4m3fnuz
-                    if _is_fp8_fnuz:
-                        weight, weight_scale, input_scale = (
-                            normalize_e4m3fn_to_e4m3fnuz(
-                                weight=weight,
-                                weight_scale=weight_scale,
-                                input_scale=layer.input_scale,
-                            )
+                weight = layer.weight
+                weight_scale = layer.weight_scale
+                # If ROCm, normalize the weights and scales to e4m3fnuz
+                if _is_fp8_fnuz:
+                    weight, weight_scale, input_scale = (
+                        normalize_e4m3fn_to_e4m3fnuz(
+                            weight=weight,
+                            weight_scale=weight_scale,
+                            input_scale=layer.input_scale,
                         )
-                        if input_scale is not None:
-                            layer.input_scale = Parameter(
-                                input_scale, requires_grad=False
-                            )
+                    )
+                    if input_scale is not None:
+                        layer.input_scale = Parameter(
+                            input_scale, requires_grad=False
+                        )
 
+                if self.quant_config.weight_strategy != "channel":
+                    # Merge per-tensor scales; preserve serialized channel scales.
                     weight_scale, weight = requantize_with_max_scale(
                         weight=weight,
                         weight_scale=weight_scale,
@@ -395,23 +376,19 @@ class Fp8LinearMethod(LinearMethodBase):
                 # Update layer with new values.
                 layer.weight = Parameter(weight.t(), requires_grad=False)
                 layer.weight_scale = Parameter(weight_scale, requires_grad=False)
-                if (
-                    hasattr(self.quant_config, "activation_scheme")
-                    and self.quant_config.activation_scheme == "static"
-                ) or (
-                    hasattr(self.quant_config, "linear_activation_scheme")
-                    and self.quant_config.linear_activation_scheme == "static"
-                ):
+                if self.quant_config.activation_scheme == "static":
                     layer.input_scale = Parameter(
                         layer.input_scale.max(), requires_grad=False
                     )
 
-        # if self.use_marlin:
-        #     if self.block_quant:
-        #         layer.weight_block_size = self.quant_config.weight_block_size
-        #     prepare_fp8_layer_for_marlin(layer, not self.block_quant)
-        #     # Activations not quantized for marlin.
-        #     del layer.input_scale
+        if not self.block_quant:
+            self.input_scale = layer.input_scale
+            if self.scaled_mm is fp8_scaled_mm and layer.weight_scale.numel() == 1:
+                # SGL GEMM accepts scalar activation scales but needs one weight scale per column.
+                layer.weight_scale = Parameter(
+                    layer.weight_scale.expand(layer.weight.shape[1], 1).contiguous(),
+                    requires_grad=False,
+                )
 
     def apply(
         self,
@@ -419,29 +396,8 @@ class Fp8LinearMethod(LinearMethodBase):
         x: torch.Tensor,
         bias: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        if self.use_marlin:
-            return apply_fp8_marlin_linear(
-                input=x,
-                weight=layer.weight,
-                weight_scale=layer.weight_scale,
-                workspace=layer.workspace,
-                size_n=layer.output_size_per_partition,
-                size_k=layer.input_size_per_partition,
-                bias=bias,
-            )
-
         if self.block_quant:
-            if isinstance(x, tuple):
-                return self.w8a8_block_fp8_linear(
-                    input=x[0],
-                    weight=layer.weight,
-                    block_size=self.quant_config.weight_block_size,
-                    weight_scale=layer.weight_scale_inv,
-                    input_scale=x[1],
-                    bias=bias,
-                )
-
-            return self.w8a8_block_fp8_linear(
+            return triton_w8a8_block_fp8_linear(
                 input=x,
                 weight=layer.weight,
                 block_size=self.quant_config.weight_block_size,
@@ -450,12 +406,18 @@ class Fp8LinearMethod(LinearMethodBase):
                 bias=bias,
             )
 
+        if isinstance(x, tuple):
+            quantized, scale = x
+            return self.scaled_mm(
+                quantized, layer.weight, scale, layer.weight_scale,
+                layer.params_dtype, bias,
+            )
+
         return apply_fp8_linear(
             input=x,
             weight=layer.weight,
             weight_scale=layer.weight_scale,
             input_scale=layer.input_scale,
             bias=bias,
-            cutlass_fp8_supported=self.cutlass_fp8_supported,
-            use_per_token_if_dynamic=False,
+            scaled_mm=self.scaled_mm,
         )
