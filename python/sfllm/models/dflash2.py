@@ -111,13 +111,14 @@ class DFlash2Attention(Qwen3Attention):
     """Non-causal Qwen3 block attention with target-KV materialization."""
 
     def __init__(self, config, layer_id: int, quant_config=None, prefix: str = ""):
+        rope = getattr(config, "rope_parameters", None) or {}
         super().__init__(
             hidden_size=int(config.hidden_size),
             num_heads=int(config.num_attention_heads),
             num_kv_heads=int(config.num_key_value_heads),
             layer_id=layer_id,
-            rope_theta=float(getattr(config, "rope_theta", 1_000_000)),
-            rope_scaling=getattr(config, "rope_scaling", None),
+            rope_theta=float(rope.get("rope_theta", getattr(config, "rope_theta", 1_000_000))),
+            rope_scaling=rope or getattr(config, "rope_scaling", None),
             head_dim=int(getattr(config, "head_dim", 0) or 0) or None,
             max_position_embeddings=int(config.max_position_embeddings),
             quant_config=quant_config,
@@ -129,8 +130,9 @@ class DFlash2Attention(Qwen3Attention):
         self.attn.is_causal = False
         if config.layer_types[layer_id] == "sliding_attention":
             self.attn.sliding_window_size = int(config.sliding_window)
-            self.attn.is_causal = not config.dflash_config.get(
-                "sliding_window_non_causal", False
+            self.attn.is_causal = getattr(
+                config, "is_causal",
+                not config.dflash_config.get("sliding_window_non_causal", False),
             )
 
     def materialize_kv(
@@ -141,15 +143,17 @@ class DFlash2Attention(Qwen3Attention):
         kv_buffer: Tuple[torch.Tensor, torch.Tensor],
     ) -> None:
         k, v = raw_kv.split([self.kv_size, self.kv_size], dim=-1)
-        k = self.k_norm(k.reshape(-1, self.head_dim)).view_as(k)
-        # The CUDA RoPE op also performs the pool write. This avoids a second
-        # indexed scatter for every draft layer inside the decode graph.
-        dummy_q = torch.empty_like(k)
-        self.rotary_emb(
+        k = k.view(k.shape[0], self.num_kv_heads, self.head_dim)
+        v = v.view_as(k)
+        # Target KV materialization has no query heads.
+        torch.ops.sfkernels.qk_norm_rope_and_cache(
+            k[:, :0], k, v,
+            self.q_norm.weight, self.k_norm.weight,
+            self.rotary_emb.cos_sin_cache,
             positions,
-            dummy_q,
-            k,
-            fused_set_kv_buffer_arg=(v, kv_buffer[0], kv_buffer[1], cache_locs),
+            not self.rotary_emb.is_neox_style,
+            kv_buffer[0], kv_buffer[1], cache_locs,
+            self.k_norm.variance_epsilon,
         )
 
 

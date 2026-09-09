@@ -176,7 +176,10 @@ def split_lastdim_pytorch_reference(
     return segments
 
 
-@triton.jit
+@triton.jit(
+    do_not_specialize=["seq_len"],
+    do_not_specialize_on_alignment=["seq_len"],
+)
 def move_neg1_to_tail_kernel(
     # Input tensor
     input_ptr,              # Input tensor [batch_size, seq_len]
@@ -185,7 +188,10 @@ def move_neg1_to_tail_kernel(
     # Dimensions
     batch_size,
     seq_len,
+    block_counts,
     BLOCK_SIZE: tl.constexpr,
+    BLOCK_COUNTS: tl.constexpr,
+    COUNT_ONLY: tl.constexpr,
 ):
     # Get sequence index
     seq_id = tl.program_id(0)
@@ -194,8 +200,9 @@ def move_neg1_to_tail_kernel(
     input_row_start = seq_id * seq_len
     output_row_start = seq_id * seq_len
     
-    # Step 1: Vectorized read entire sequence
-    indices = tl.arange(0, BLOCK_SIZE)
+    block_id = tl.program_id(1)
+    num_blocks = tl.num_programs(1)
+    indices = block_id * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
     load_mask = indices < seq_len
     
     input_positions = input_row_start + indices
@@ -203,10 +210,22 @@ def move_neg1_to_tail_kernel(
     
     # Step 2: Identify valid elements
     valid_mask = (elements != -1) & load_mask
+    total_valid = tl.sum(valid_mask.to(tl.int32))
+    if COUNT_ONLY:
+        tl.store(block_counts + seq_id * num_blocks + block_id, total_valid)
+        return
     
     # Step 3: Compute destination indices using cumsum
     # cumsum gives 1-based index, subtract 1 to get 0-based index
     dest_indices = tl.cumsum(valid_mask.to(tl.int32), axis=0) - 1
+    if block_counts is not None:
+        blocks = tl.arange(0, BLOCK_COUNTS)
+        counts = tl.load(
+            block_counts + seq_id * num_blocks + blocks,
+            mask=blocks < num_blocks, other=0,
+        )
+        dest_indices += tl.sum(tl.where(blocks < block_id, counts, 0))
+        total_valid = tl.sum(counts)
     
     # Step 4: Store valid elements to their compacted positions
     # We write to output_ptr + row_start + dest_indices
@@ -214,7 +233,6 @@ def move_neg1_to_tail_kernel(
     tl.store(output_ptr + output_row_start + dest_indices, elements, mask=valid_mask)
     
     # Step 5: Fill the tail with -1
-    total_valid = tl.sum(valid_mask.to(tl.int32))
     tail_mask = (indices >= total_valid) & load_mask
     tl.store(output_ptr + output_row_start + indices, -1, mask=tail_mask)
 
@@ -222,27 +240,33 @@ def move_neg1_to_tail_kernel(
 def move_neg1_to_tail(
     input_tensor: torch.Tensor
 ) -> torch.Tensor:
+    """Compact each row stably; large rows use bounded tiles and block counts."""
     orig_shape = input_tensor.shape
     if input_tensor.dim() == 1:
         input_tensor = input_tensor.unsqueeze(0)
     
     batch_size, seq_len = input_tensor.shape
-    output_tensor = torch.zeros_like(input_tensor)
-    
-    # Use a fixed block size to avoid frequent recompilation
-    # 32768 is a reasonable upper bound that fits in shared memory on modern GPUs
-    BLOCK_SIZE = 4096
-    if seq_len > BLOCK_SIZE:
-        BLOCK_SIZE = triton.next_power_of_2(seq_len)
-        
-    grid = (batch_size,)
-    move_neg1_to_tail_kernel[grid](
-        input_tensor,
-        output_tensor,
-        batch_size,
-        seq_len,
-        BLOCK_SIZE
-    )
+    output_tensor = torch.empty_like(input_tensor)
+
+    BLOCK_SIZE = min(1024, triton.next_power_of_2(max(seq_len, 1)))
+    num_blocks = max(1, triton.cdiv(seq_len, BLOCK_SIZE))
+    block_counts = None
+    if num_blocks > 1:
+        block_counts = torch.empty(
+            (batch_size, num_blocks), dtype=torch.int32, device=input_tensor.device
+        )
+
+    for count_only in (True, False) if block_counts is not None else (False,):
+        move_neg1_to_tail_kernel[(batch_size, num_blocks)](
+            input_tensor,
+            output_tensor,
+            batch_size,
+            seq_len,
+            block_counts,
+            BLOCK_SIZE,
+            triton.next_power_of_2(num_blocks),
+            COUNT_ONLY=count_only,
+        )
     
     return output_tensor.view(orig_shape)
 

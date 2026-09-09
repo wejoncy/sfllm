@@ -23,7 +23,7 @@ for_comparation = None
 class EagleWorker(SpeculativeWorker):
     def __init__(self,server_args:ServerArgs):
         super().__init__(server_args)
-        self.target_model_runner.model.set_eagle3_layers_to_capture()
+        self.target_model_runner.model.set_layers_to_capture()
         self.topk = server_args.speculative_eagle_topk
         self.speculative_num_steps = server_args.speculative_num_steps
         self.speculative_num_draft_tokens = server_args.speculative_num_draft_tokens

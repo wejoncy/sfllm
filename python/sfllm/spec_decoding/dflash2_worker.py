@@ -9,6 +9,7 @@ from sfllm.kernels.dflash2 import (
     prepare_dflash2_block,
 )
 from sfllm.models.dflash2 import DFlash2Config
+from sfllm.models.interfaces import HasBatchState
 from sfllm.model_loader.model_config import ModelConfig
 from sfllm.server_args import ServerArgs
 from sfllm.spec_decoding.spec_utils import EagleSpecInput, EagleVerifyInput
@@ -20,8 +21,8 @@ def _validate_model_pair(
     target_config,
     dflash2_config: DFlash2Config,
 ) -> None:
-    if getattr(target_config, "model_type", None) != "qwen3":
-        raise ValueError("DFlash2 currently supports Qwen3 targets.")
+    if getattr(target_config, "model_type", None) not in ("qwen3", "qwen3_5_text"):
+        raise ValueError("DFlash2 supports Qwen3 and Qwen3.5 targets.")
     for name in ("hidden_size", "vocab_size"):
         draft_value = getattr(draft_config, name, None)
         target_value = getattr(target_config, name, None)
@@ -52,7 +53,7 @@ class DFlash2Worker(SpeculativeWorker):
             raise ValueError("DFlash2 requires --speculative-draft-model-path.")
         if server_args.quantization is not None:
             raise ValueError(
-                "The initial DFlash2 backend supports dense target/draft weights only."
+                "DFlash2 reads target quantization from the checkpoint; omit --quantization."
             )
 
         draft_config = ModelConfig(
@@ -66,13 +67,22 @@ class DFlash2Worker(SpeculativeWorker):
             raise ValueError("DFlash2 sliding attention requires --attention-backend fa3.")
 
         # A DFlash block maps directly to the shared Eagle protocol width.
+        self.block_size = server_args.speculative_num_draft_tokens
+        if self.block_size is None:
+            self.block_size = checkpoint_config.block_size
+        if not 2 <= self.block_size <= checkpoint_config.block_size:
+            raise ValueError(
+                f"DFlash2 draft token count must be between 2 and {checkpoint_config.block_size}."
+            )
         server_args.speculative_eagle_topk = 1
-        server_args.speculative_num_steps = checkpoint_config.block_size - 1
-        server_args.speculative_num_draft_tokens = checkpoint_config.block_size
-        self.block_size = checkpoint_config.block_size
+        server_args.speculative_num_steps = self.block_size - 1
+        server_args.speculative_num_draft_tokens = self.block_size
 
         super().__init__(server_args)
         self.dflash2_config = self.draft_model_runner.model.dflash_config
+        for layer in self.draft_model_runner.model.layers:
+            layer.attention_conv.block_size = self.block_size
+            layer.mlp_conv.block_size = self.block_size
         _validate_model_pair(
             draft_config=self.draft_model_runner.get_config(),
             target_config=self.target_model_runner.get_config(),
@@ -80,7 +90,7 @@ class DFlash2Worker(SpeculativeWorker):
         )
 
         target_model = self.target_model_runner.model
-        target_model.set_eagle3_layers_to_capture(
+        target_model.set_layers_to_capture(
             list(self.dflash2_config.target_layer_ids)
         )
 
@@ -139,9 +149,20 @@ class DFlash2Worker(SpeculativeWorker):
 
     @torch.inference_mode()
     def forward(self, batch: ScheduleBatch) -> BatchResult:
+        model = self.target_model_runner.model
+        if isinstance(model, HasBatchState):
+            model.prepare_batch_state(batch)
         if batch.forward_batch.forward_mode == ForwardMode.EXTEND:
             return self._forward_prefill(batch)
         return self.forward_e2e(batch)
+
+    def accept(self, batch, proposal, verification):
+        result = super().accept(batch, proposal, verification)
+        model = self.target_model_runner.model
+        if isinstance(model, HasBatchState):
+            # The linear chain commits its anchor plus the accepted drafts.
+            model.commit_speculative_state(result[3])
+        return result
 
     @torch.inference_mode()
     def _forward_prefill(self, batch: ScheduleBatch) -> BatchResult:
