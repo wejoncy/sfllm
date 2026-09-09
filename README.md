@@ -69,6 +69,20 @@ python python/sfllm/serving/app.py \
   --dtype float16
 ```
 
+**AngelSlim EAGLE3 config note:** Our tests favor `rope_theta=10000` in the
+draft `config.json` for `AngelSlim/Qwen3-4B_eagle3` and
+`AngelSlim/Qwen3-1.7B_eagle3`. Their configs declare `1000000`, but
+[AngelSlim's published training code](https://github.com/Tencent/AngelSlim/blob/917de3ae8c3147ff158b1b7a9c40082808486ae9/angelslim/compressor/speculative/train/models/draft/llama_eagle3.py#L186-L190)
+uses RoPE's default base of `10000`. Keep the target at `1000000`;
+this correction is specific to these draft checkpoints.
+
+ShareGPT acceptance length (`1000000` → `10000`): **4B: 2.3871 → 2.4971**
+(1000 requests); **1.7B: 2.3170 → 2.4012** (32 requests). Both used BF16,
+FA3, EAGLE3 4/4/8, server concurrency 32, client concurrency 22, and EOS enabled;
+acceptance length excludes the prefill token. The tested 1.7B draft also needs
+`tie_word_embeddings=false`: its 32000-row output head cannot share the
+151936-row target embedding.
+
 **Qwen3.5 FP8:**
 
 Export a calibrated Hugging Face checkpoint with NVIDIA ModelOpt's

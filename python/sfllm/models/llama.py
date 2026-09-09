@@ -193,8 +193,15 @@ class LlamaDecoderLayer(nn.Module):
     ) -> None:
         super().__init__()
         self.hidden_size = config.hidden_size
-        rope_theta = getattr(config, "rope_theta", 10000)
-        rope_scaling = getattr(config, "rope_scaling", None)
+        # Transformers 5 may move rope_theta into rope_parameters/rope_scaling.
+        # Honor the configured value; correct affected AngelSlim draft configs
+        # in config.json, as described in README.md, rather than overriding here.
+        rope_scaling = getattr(config, "rope_parameters", None)
+        if rope_scaling is None:
+            rope_scaling = getattr(config, "rope_scaling", None)
+        rope_theta = (rope_scaling or {}).get(
+            "rope_theta", getattr(config, "rope_theta", 10000)
+        )
         if rope_scaling is not None and getattr(
             config, "original_max_position_embeddings", None
         ):
