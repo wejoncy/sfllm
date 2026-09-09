@@ -19,19 +19,19 @@ import os
 from functools import lru_cache
 from typing import Any, Dict, List, Optional, Tuple
 
+from sfllm.utils import get_bool_env_var
 from sfllm.utils.platform import current_platform
 
 import torch
 import triton
 import triton.language as tl
-# from sglang.srt.layers import deep_gemm_wrapper
-from sfllm.utils import (
-    direct_register_custom_op,
-)
+from triton.experimental import gluon
+from triton.experimental.gluon import language as gl
 
 _is_hip = current_platform.is_hip()
 _is_cuda = current_platform.is_cuda()
 _is_cpu = False
+_native_fp8_dot = not _is_cuda or current_platform.has_device_capability((8, 9))
 
 def ceil_div(x: int, y: int) -> int:
     return (x + y - 1) // y
@@ -40,40 +40,10 @@ def ceil_align(x: int, y: int) -> int:
     return ceil_div(x, y) * y
 
 
-def get_bool_env_var(name: str, default: str = "false") -> bool:
-    # FIXME: move your environment variable to sglang.srt.environ
-    value = os.getenv(name, default)
-    value = value.lower()
-
-    truthy_values = ("true", "1")
-    falsy_values = ("false", "0")
-
-    if (value not in truthy_values) and (value not in falsy_values):
-        if value not in _warned_bool_env_var_keys:
-            logger.warning(
-                f"get_bool_env_var({name}) see non-understandable value={value} and treat as false"
-            )
-        _warned_bool_env_var_keys.add(value)
-
-    return value in truthy_values
-
-def supports_custom_op() -> bool:
-    return hasattr(torch.library, "custom_op")
-
 if _is_cuda:
     import sf_kernel
     sgl_per_tensor_quant_fp8 = torch.ops.sfkernels.sgl_per_tensor_quant_fp8
     sgl_per_token_quant_fp8 = torch.ops.sfkernels.sgl_per_token_quant_fp8
-    # Temporary
-    try:
-        from sgl_kernel import sgl_per_token_group_quant_8bit
-
-        enable_sgl_per_token_group_quant_8bit = True
-    except ImportError:
-        # from sgl_kernel import sgl_per_token_group_quant_fp8
-        sgl_per_token_group_quant_fp8 = None
-
-        enable_sgl_per_token_group_quant_8bit = False
 
 if _is_hip:
     try:
@@ -99,32 +69,6 @@ else:
     fp8_dtype = torch.float8_e4m3fn
     fp8_max = torch.finfo(fp8_dtype).max
 fp8_min = -fp8_max
-
-if supports_custom_op() and False:
-    def deep_gemm_fp8_fp8_bf16_nt(
-        A: torch.Tensor,
-        As: torch.Tensor,
-        B: torch.Tensor,
-        Bs: torch.Tensor,
-        C: torch.Tensor,
-    ) -> None:
-        deep_gemm_wrapper.gemm_nt_f8f8bf16((A, As), (B, Bs), C)
-
-    def deep_gemm_fp8_fp8_bf16_nt_fake(
-        A: torch.Tensor,
-        As: torch.Tensor,
-        B: torch.Tensor,
-        Bs: torch.Tensor,
-        C: torch.Tensor,
-    ) -> None:
-        return
-
-    direct_register_custom_op(
-        op_name="deep_gemm_fp8_fp8_bf16_nt",
-        op_func=deep_gemm_fp8_fp8_bf16_nt,
-        mutates_args=["C"],
-        fake_impl=deep_gemm_fp8_fp8_bf16_nt_fake,
-    )
 
 
 @triton.jit
@@ -332,113 +276,6 @@ def _per_token_group_quant_8bit_raw(
 per_token_group_quant_fp8 = _per_token_group_quant_8bit_raw
 
 
-def _per_token_group_quant_8bit_fuse_silu_and_mul(
-    x: torch.Tensor,
-    group_size: int,
-    dst_dtype: torch.dtype,
-    column_major_scales: bool,
-    scale_tma_aligned: bool,
-    scale_ue8m0: bool,
-    masked_m: Optional[torch.Tensor],
-) -> Tuple[torch.Tensor, torch.Tensor]:
-    # Another way to implement (can be used in e.g. comparison tests)
-    # from sgl_kernel import silu_and_mul
-    # x_after_silu_and_mul = silu_and_mul(x)
-    # return per_token_group_quant_fp8(
-    #     x_after_silu_and_mul,
-    #     group_size=group_size,
-    #     eps=eps,
-    #     column_major_scales=column_major_scales,
-    #     scale_tma_aligned=scale_tma_aligned,
-    #     scale_ue8m0=scale_ue8m0,
-    # )
-
-    from deep_gemm import transform_sf_into_required_layout
-
-    from sglang.srt.layers.moe.ep_moe.kernels import silu_and_mul_masked_post_quant_fwd
-
-    assert column_major_scales
-    assert scale_tma_aligned
-    assert scale_ue8m0
-
-    needs_unsqueeze = x.dim() == 2
-    if needs_unsqueeze:
-        num_tokens, _ = x.shape
-        x = x.unsqueeze(0)
-        assert masked_m is None
-        masked_m = torch.tensor([num_tokens], device=x.device, dtype=torch.int32)
-
-    # Use `zeros` for easier testing
-    output = torch.zeros(
-        (*x.shape[:-1], x.shape[-1] // 2),
-        device=x.device,
-        dtype=dst_dtype,
-    )
-    # Use `zeros` for easier testing
-    output_scale_for_kernel = torch.zeros(
-        (*x.shape[:-1], x.shape[-1] // 2 // group_size),
-        device=x.device,
-        dtype=torch.float32,
-    )
-    silu_and_mul_masked_post_quant_fwd(
-        input=x,
-        output=output,
-        output_scale=output_scale_for_kernel,
-        quant_group_size=group_size,
-        masked_m=masked_m,
-        scale_ue8m0=scale_ue8m0,
-    )
-
-    assert group_size == 128
-    output_scale = transform_sf_into_required_layout(
-        output_scale_for_kernel,
-        num_groups=output.shape[0],
-        mn=output.shape[-2],
-        k=output.shape[-1],
-        recipe=(1, group_size, group_size),
-        is_sfa=True,
-    )
-
-    if needs_unsqueeze:
-        output = output.squeeze(0)
-        output_scale = output_scale.squeeze(0)
-
-    return output, output_scale
-
-
-def per_token_group_quant_8bit(
-    x: torch.Tensor,
-    group_size: int,
-    dst_dtype: torch.dtype,
-    eps: float = 1e-10,
-    column_major_scales: bool = False,
-    scale_tma_aligned: bool = False,
-    scale_ue8m0: bool = False,
-    fuse_silu_and_mul: bool = False,
-    masked_m: Optional[torch.Tensor] = None,
-) -> Tuple[torch.Tensor, torch.Tensor]:
-    if fuse_silu_and_mul:
-        return _per_token_group_quant_8bit_fuse_silu_and_mul(
-            x=x,
-            group_size=group_size,
-            dst_dtype=dst_dtype,
-            column_major_scales=column_major_scales,
-            scale_tma_aligned=scale_tma_aligned,
-            scale_ue8m0=scale_ue8m0,
-            masked_m=masked_m,
-        )
-    else:
-        return _per_token_group_quant_8bit_raw(
-            x=x,
-            group_size=group_size,
-            eps=eps,
-            column_major_scales=column_major_scales,
-            scale_tma_aligned=scale_tma_aligned,
-            scale_ue8m0=scale_ue8m0,
-            dtype=dst_dtype,
-        )
-
-
 def create_per_token_group_quant_fp8_output_scale(
     x_shape,
     device,
@@ -483,100 +320,128 @@ def create_per_token_group_quant_fp8_output_scale(
         )
 
 
-def sglang_per_token_group_quant_fp8(
-    x: torch.Tensor,
-    group_size: int,
-    eps: float = 1e-10,
-    column_major_scales: bool = False,
-    scale_tma_aligned: bool = False,
-    scale_ue8m0: bool = False,
-    fuse_silu_and_mul: bool = False,
-    masked_m: Optional[torch.Tensor] = None,
-    enable_v2: Optional[bool] = None,
+@gluon.jit
+def _norm_activation_fp8_kernel(
+    X, W, R, Gate, Out, Scale,
+    x_strides: gl.constexpr, residual_strides: gl.constexpr,
+    gate_strides: gl.constexpr, weight_stride: gl.constexpr,
+    heads: gl.constexpr, width: gl.constexpr, eps: gl.constexpr,
+    GEMMA: gl.constexpr, SILU_MUL: gl.constexpr,
+    BLOCK_H: gl.constexpr, BLOCK_D: gl.constexpr,
+    STATIC_SCALE: gl.constexpr, FP8_MAX: gl.constexpr,
 ):
-    assert (
-        x.shape[-1] % group_size == 0
-    ), "the last dimension of `x` cannot be divisible by `group_size`"
-    assert x.is_contiguous(), "`x` is not contiguous"
-
-    out_shape = (*x.shape[:-1], x.shape[-1] // (2 if fuse_silu_and_mul else 1))
-
-    x_q = torch.empty(out_shape, device=x.device, dtype=fp8_dtype)
-    x_s = create_per_token_group_quant_fp8_output_scale(
-        x_shape=out_shape,
-        device=x.device,
-        group_size=group_size,
-        column_major_scales=column_major_scales,
-        scale_tma_aligned=scale_tma_aligned,
-        scale_ue8m0=scale_ue8m0,
-    )
-
-    if x.shape[0] > 0:
-        # Temporary
-        if enable_sgl_per_token_group_quant_8bit:
-            sgl_per_token_group_quant_8bit(
-                x,
-                x_q,
-                x_s,
-                group_size,
-                eps,
-                fp8_min,
-                fp8_max,
-                scale_ue8m0,
-                fuse_silu_and_mul,
-                masked_m,
-                enable_v2=enable_v2,
-            )
+    row = gl.program_id(0)
+    if heads > 1:
+        layout: gl.constexpr = gl.BlockedLayout([1, 4], [1, 32], [gl.num_warps(), 1], [1, 0])
+    else:
+        layout: gl.constexpr = gl.BlockedLayout([1, 4], [1, 32], [1, gl.num_warps()], [1, 0])
+    h = gl.arange(0, BLOCK_H, layout=gl.SliceLayout(1, layout))
+    d = gl.arange(0, BLOCK_D, layout=gl.SliceLayout(0, layout))
+    mask = (h[:, None] < heads) & (d[None, :] < width)
+    offsets = h[:, None] * width + d[None, :]
+    x_offsets = row * x_strides[0] + h[:, None] * x_strides[1] + d[None, :] * x_strides[2]
+    x = gl.load(X + x_offsets,
+                mask=mask, other=0).to(gl.float32)
+    if R is not None:
+        residual_offsets = (row * residual_strides[0] + h[:, None] * residual_strides[1]
+                            + d[None, :] * residual_strides[2])
+        x += gl.load(R + residual_offsets, mask=mask, other=0).to(gl.float32)
+        gl.store(R + residual_offsets, x, mask=mask)
+    if W is not None:
+        inv_rms = gl.rsqrt(gl.sum(x * x, axis=1) / width + eps)
+        weight = gl.load(W + d * weight_stride, mask=d < width, other=0).to(gl.float32)
+        x = x * inv_rms[:, None] * (weight[None, :] + GEMMA)
+    if SILU_MUL:
+        up = gl.load(X + x_offsets + width * x_strides[2], mask=mask, other=0).to(gl.float32)
+        x = x / (1.0 + gl.exp(-x)) * up
+    if Gate is not None:
+        gate = gl.load(Gate + row * gate_strides[0] + h[:, None] * gate_strides[1]
+                       + d[None, :] * gate_strides[2],
+                       mask=mask, other=0).to(gl.float32)
+        if W is not None:
+            x *= gate / (1.0 + gl.exp(-gate))
         else:
-            assert not enable_v2
-            sgl_per_token_group_quant_fp8(
-                x, x_q, x_s, group_size, eps, fp8_min, fp8_max, scale_ue8m0
-            )
+            x *= 1.0 / (1.0 + gl.exp(-gate))
+    # Preserve the producer's BF16/FP16 rounding before quantization.
+    x = gl.where(mask, x.to(X.dtype.element_ty).to(gl.float32), 0.0)
+    for i in gl.static_range(len(Out)):
+        value = x
+        if Scale[i] is not None:
+            if STATIC_SCALE[i]:
+                scale = gl.load(Scale[i])
+            else:
+                amax = gl.max(gl.reshape(gl.abs(x), (BLOCK_H * BLOCK_D,)), axis=0)
+                scale = gl.div_rn(amax, FP8_MAX)
+                gl.store(Scale[i] + row, scale)
+            # Static quantization uses the same reciprocal as static_quant_fp8.
+            inv_scale = 1.0 / scale if STATIC_SCALE[i] else gl.where(scale == 0, 0.0, gl.div_rn(1.0, scale))
+            value = gl.minimum(gl.maximum(value * inv_scale, -FP8_MAX), FP8_MAX)
+        gl.store(Out[i] + row * heads * width + offsets, value, mask=mask)
 
-    return x_q, x_s
 
-
-# TODO maybe unify int8 and fp8 code later
-def sglang_per_token_group_quant_8bit(
-    x: torch.Tensor,
-    group_size: int,
-    dst_dtype: torch.dtype,
-    eps: float = 1e-10,
-    column_major_scales: bool = False,
-    scale_tma_aligned: bool = False,
-    scale_ue8m0: bool = False,
-    fuse_silu_and_mul: bool = False,
-    masked_m: Optional[torch.Tensor] = None,
-    enable_v2: Optional[bool] = None,
+def _launch_fp8_kernel(
+    x: torch.Tensor, *, weight=None, residual=None, gate=None,
+    eps: float = 1e-6, gemma: bool = False, silu_mul: bool = False,
+    output_dtypes=(fp8_dtype,), input_scales=(None,),
 ):
-    from sglang.srt.layers.quantization.int8_kernel import (
-        sglang_per_token_group_quant_int8,
+    """Produce each requested FP8 or original-precision output in one kernel."""
+    heads = x.shape[1] if x.ndim == 3 else (gate.shape[1] if gate is not None and gate.ndim == 3 else 1)
+    width = x.shape[-1] // (2 if silu_mul else 1) // (heads if x.ndim == 2 else 1)
+    outputs = tuple(
+        torch.empty((x.shape[0], heads * width), device=x.device, dtype=dtype or x.dtype)
+        for dtype in output_dtypes
     )
-
-    if dst_dtype == torch.int8:
-        assert not column_major_scales
-        assert not scale_tma_aligned
-        assert not fuse_silu_and_mul
-        assert masked_m is None
-        return sglang_per_token_group_quant_int8(
-            x=x,
-            group_size=group_size,
-            eps=eps,
-            dtype=dst_dtype,
-            enable_v2=enable_v2,
-        )
-
-    return sglang_per_token_group_quant_fp8(
-        x=x,
-        group_size=group_size,
-        eps=eps,
-        column_major_scales=column_major_scales,
-        scale_tma_aligned=scale_tma_aligned,
-        scale_ue8m0=scale_ue8m0,
-        fuse_silu_and_mul=fuse_silu_and_mul,
-        masked_m=masked_m,
-        enable_v2=enable_v2,
+    scales = tuple(
+        (scale if scale is not None else torch.empty((x.shape[0], 1), device=x.device, dtype=torch.float32))
+        if dtype is not None else None
+        for dtype, scale in zip(output_dtypes, input_scales)
     )
+    strides = tuple(
+        (t.stride(0), t.stride(1) if t.ndim == 3 else width * t.stride(-1), t.stride(-1))
+        if t is not None else (0, 0, 0)
+        for t in (x, residual, gate)
+    )
+    num_warps = 4 if heads * width <= 4096 else 8
+    _norm_activation_fp8_kernel[(x.shape[0],)](
+        x, weight, residual, gate, outputs, scales,
+        *strides, weight.stride(0) if weight is not None else 0,
+        heads, width, eps, gemma, silu_mul,
+        triton.next_power_of_2(heads), triton.next_power_of_2(width),
+        tuple(scale is not None for scale in input_scales), fp8_max,
+        num_warps=num_warps,
+        enable_fp_fusion=False,
+    )
+    results = tuple(
+        (output, scale) if dtype is not None else output
+        for output, scale, dtype in zip(outputs, scales, output_dtypes)
+    )
+    return results[0] if len(results) == 1 else results
+
+
+def gemma_rmsnorm_quant_fp8(x, weight, residual=None, eps=1e-6,
+                          output_dtypes=(fp8_dtype,), input_scales=(None,)):
+    """Return normalized inputs per projection; update residual if given.
+
+    Static FP8 preserves BF16/FP16 intermediate rounding, which FlashInfer's
+    direct FP32-to-FP8 norm output does not provide.
+    """
+    return _launch_fp8_kernel(x, weight=weight, residual=residual, eps=eps, gemma=True,
+                             output_dtypes=output_dtypes, input_scales=input_scales)
+
+
+def rmsnorm_silu_gate_quant_fp8(x, weight, gate, eps=1e-6, input_scale=None):
+    """Return headwise RMSNorm(x) * SiLU(gate) as (FP8, scale)."""
+    return _launch_fp8_kernel(x, weight=weight, gate=gate, eps=eps, input_scales=(input_scale,))
+
+
+def silu_and_mul_quant_fp8(x, input_scale=None):
+    """Return SiLU(x[..., :d]) * x[..., d:] as (FP8, scale)."""
+    return _launch_fp8_kernel(x, silu_mul=True, input_scales=(input_scale,))
+
+
+def sigmoid_mul_quant_fp8(x, gate, input_scale=None):
+    """Return x * sigmoid(gate) as (FP8, scale)."""
+    return _launch_fp8_kernel(x, gate=gate, input_scales=(input_scale,))
 
 
 def sglang_per_token_quant_fp8(
@@ -1073,27 +938,6 @@ def prepare_block_fp8_matmul_inputs(
     return M, N, K, C
 
 
-def w8a8_block_fp8_matmul_deepgemm(
-    A: torch.Tensor,
-    B: torch.Tensor,
-    As: torch.Tensor,
-    Bs: torch.Tensor,
-    block_size: List[int],
-    output_dtype: torch.dtype,
-) -> torch.Tensor:
-    M, N, K, C = prepare_block_fp8_matmul_inputs(A, B, As, Bs, block_size, output_dtype)
-
-    # Deepgemm only supports output tensor type as bfloat16
-    assert C.dtype == torch.bfloat16 and deep_gemm_wrapper.ENABLE_JIT_DEEPGEMM
-
-    if supports_custom_op():
-        torch.ops.sglang.deep_gemm_fp8_fp8_bf16_nt(A, As, B, Bs, C)
-    else:
-        deep_gemm_wrapper.gemm_nt_f8f8bf16((A, As), (B, Bs), C)
-
-    return C
-
-
 def w8a8_block_fp8_matmul_triton(
     A: torch.Tensor,
     B: torch.Tensor,
@@ -1175,25 +1019,6 @@ def w8a8_block_fp8_matmul_triton(
     )
 
     return C
-
-
-# universal entry point, for testing purposes
-def w8a8_block_fp8_matmul(
-    A: torch.Tensor,
-    B: torch.Tensor,
-    As: torch.Tensor,
-    Bs: torch.Tensor,
-    block_size: List[int],
-    output_dtype: torch.dtype = torch.float16,
-) -> torch.Tensor:
-    if output_dtype == torch.bfloat16 and deep_gemm_wrapper.ENABLE_JIT_DEEPGEMM:
-        return w8a8_block_fp8_matmul_deepgemm(
-            A, B, As, Bs, block_size, output_dtype=output_dtype
-        )
-
-    return w8a8_block_fp8_matmul_triton(
-        A, B, As, Bs, block_size, output_dtype=output_dtype
-    )
 
 
 @triton.jit
@@ -1678,6 +1503,7 @@ def scaled_mm_kernel(
     BLOCK_SIZE_K: tl.constexpr,
     BLOCK_SIZE_SCALE_A: tl.constexpr,
     BLOCK_SIZE_SCALE_B: tl.constexpr,
+    NATIVE_FP8_DOT: tl.constexpr,
 ):
     pid = tl.program_id(axis=0)
 
@@ -1728,10 +1554,15 @@ def scaled_mm_kernel(
     for k in range(0, tl.cdiv(K, BLOCK_SIZE_K)):
         masks_k = offsets_k < K
         masks_a = masks_am[:, None] & masks_k[None, :]
-        a = tl.load(a_ptrs, mask=masks_a)
+        a = tl.load(a_ptrs, mask=masks_a, other=0.0)
 
         masks_b = masks_k[:, None] & masks_bn[None, :]
-        b = tl.load(b_ptrs, mask=masks_b)
+        b = tl.load(b_ptrs, mask=masks_b, other=0.0)
+
+        if not NATIVE_FP8_DOT:
+            # FP8 values are exact in BF16; convert inside GEMM on older GPUs.
+            a = a.to(tl.bfloat16)
+            b = b.to(tl.bfloat16)
 
         # Accumulate results.
         accumulator = tl.dot(a, b, accumulator, out_dtype=accumulator_dtype)
@@ -1829,7 +1660,7 @@ def triton_scaled_mm(
         else:
             tile_shape = (128, 128, 128)
 
-    block_size_m, block_size_n, block_size_k = tile_shape
+        block_size_m, block_size_n, block_size_k = tile_shape
 
     block_size_sa = 1 if has_scalar(scale_a) else block_size_m
     block_size_sb = 1 if has_scalar(scale_b) else block_size_n
@@ -1860,28 +1691,13 @@ def triton_scaled_mm(
         BLOCK_SIZE_K=block_size_k,
         BLOCK_SIZE_SCALE_A=block_size_sa,
         BLOCK_SIZE_SCALE_B=block_size_sb,
+        NATIVE_FP8_DOT=_native_fp8_dot or input.dtype != fp8_dtype,
     )
 
-    return result.to(out_dtype)
+    return result
 
 
 if _is_cuda:
-    if enable_sgl_per_token_group_quant_8bit:
-
-        @torch.library.register_fake("sgl_kernel::sgl_per_token_group_quant_8bit")
-        def _(
-            input, output_q, output_s, group_size, eps, fp8_min, fp8_max, scale_ue8m0
-        ):
-            return
-
-    else:
-        pass
-
-        # @torch.library.register_fake("sf_kernel::sgl_per_token_group_quant_fp8")
-        # def _(
-        #     input, output_q, output_s, group_size, eps, fp8_min, fp8_max, scale_ue8m0
-        # ):
-        #     return
 
     # FIXME: for some models, this fake registration will cause NaN outputs.
     # So we gate the fake registration with an environment variable for them.

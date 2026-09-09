@@ -52,6 +52,10 @@ class QuantizeMethodBase(ABC):
 class LinearMethodBase(QuantizeMethodBase):
     """Base class for different (maybe quantized) linear methods."""
 
+    # Input format for a fused producer; None preserves the activation dtype.
+    input_dtype: torch.dtype | None = None
+    input_scale: torch.Tensor | None = None
+
     @abstractmethod
     def create_weights(
         self,

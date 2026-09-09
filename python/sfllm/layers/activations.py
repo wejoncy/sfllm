@@ -22,20 +22,25 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from sfllm.layers.op_base import CustomOp
+from sfllm.layers.quantization.fp8_kernel import silu_and_mul_quant_fp8
 from sfllm.model_loader.weight_utils import set_weight_attrs
 
 logger = logging.getLogger(__name__)
 
 
 class SiluAndMul(CustomOp):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+    def __init__(self, quant_method=None):
+        super().__init__()
+        self.output_quantization = quant_method
+        self.fp8_output = quant_method is not None and quant_method.input_dtype is not None
 
     def forward_native(self, x: torch.Tensor) -> torch.Tensor:
         d = x.shape[-1] // 2
         return F.silu(x[..., :d]) * x[..., d:]
 
     def forward_cuda(self, x: torch.Tensor) -> torch.Tensor:
+        if self.fp8_output:
+            return silu_and_mul_quant_fp8(x, input_scale=self.output_quantization.input_scale)
         d = x.shape[-1] // 2
         output_shape = x.shape[:-1] + (d,)
         out = torch.empty(output_shape, dtype=x.dtype, device=x.device)

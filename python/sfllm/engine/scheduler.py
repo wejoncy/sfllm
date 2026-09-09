@@ -52,7 +52,7 @@ class Scheduler:
         self.running_queue = queue.Queue()
         
         self.max_context_length = server_args.max_context_length
-        self.max_prefill_tokens = min(self.max_context_length, 8192)
+        self.max_prefill_tokens = self.max_context_length
         self.max_running_req = server_args.max_running_requests
         # Stable slots are shared by overlap token handoff and model-owned state.
         self.free_request_indices = deque(range(self.max_running_req))
