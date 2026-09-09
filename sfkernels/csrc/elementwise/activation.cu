@@ -163,9 +163,17 @@ void silu_and_mul(at::Tensor& out, at::Tensor& input) {
   const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
   const at::cuda::OptionalCUDAGuard device_guard(device_of(input));
 
+#ifdef USE_ROCM
   DISPATCH_PYTORCH_DTYPE_TO_CTYPE_FLOAT_FP16(input.scalar_type(), c_type, [&] {
     uint32_t vec_size = 16 / sizeof(c_type);
-#ifndef USE_ROCM
+    dim3 grid(num_tokens);
+    dim3 block(std::min(d / vec_size, 1024U));
+    launch_silu_kernel<c_type>(out, input, d, grid, block, stream);
+    return true;
+  });
+#else
+  DISPATCH_PYTORCH_DTYPE_TO_CTYPE_FLOAT_FP16(input.scalar_type(), c_type, [&] {
+    uint32_t vec_size = 16 / sizeof(c_type);
     if (d % vec_size == 0) {
       constexpr uint32_t block_size = 256;
       uint32_t num_vectors = num_tokens * d / vec_size;
@@ -178,12 +186,12 @@ void silu_and_mul(at::Tensor& out, at::Tensor& input) {
               num_tokens);
       return true;
     }
-#endif
     dim3 grid(num_tokens);
     dim3 block(std::min(d / vec_size, 1024U));
     launch_silu_kernel<c_type>(out, input, d, grid, block, stream);
     return true;
   });
+#endif
 }
 
 void fused_sigmoid_mul(at::Tensor& output, const at::Tensor& gate) {
@@ -210,8 +218,12 @@ void fused_sigmoid_mul(at::Tensor& output, const at::Tensor& gate) {
   const int64_t gate_head_stride = gate.dim() == 3 ? gate.stride(1) : 0;
   const at::cuda::OptionalCUDAGuard device_guard(device_of(output));
   const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+#ifdef USE_ROCM
   DISPATCH_PYTORCH_DTYPE_TO_CTYPE_FLOAT_FP16(output.scalar_type(), c_type, [&] {
-#ifndef USE_ROCM
+    TORCH_CHECK(false, "fused_sigmoid_mul is only available on CUDA");
+  });
+#else
+  DISPATCH_PYTORCH_DTYPE_TO_CTYPE_FLOAT_FP16(output.scalar_type(), c_type, [&] {
     auto launch = [&](auto vector_size) {
       constexpr uint32_t vec_size = decltype(vector_size)::value;
       const uint32_t vectors_per_head = head_dim / vec_size;
@@ -243,10 +255,8 @@ void fused_sigmoid_mul(at::Tensor& output, const at::Tensor& gate) {
       launch(std::integral_constant<uint32_t, 1>{});
     }
     return true;
-#else
-    TORCH_CHECK(false, "fused_sigmoid_mul is only available on CUDA");
-#endif
   });
+#endif
 }
 
 void gelu_tanh_and_mul(at::Tensor& out, at::Tensor& input) {
