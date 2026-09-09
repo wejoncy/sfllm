@@ -600,7 +600,7 @@ class LlamaForCausalLM(nn.Module):
     def load_kv_cache_scales(self, quantization_param_path: str) -> None:
         self.model.load_kv_cache_scales(quantization_param_path)
 
-    def set_eagle3_layers_to_capture(self, layer_ids: Optional[List[int]] = None):
+    def set_layers_to_capture(self, layer_ids: Optional[List[int]] = None):
         if layer_ids is None:
             self.capture_aux_hidden_states = True
             num_layers = self.config.num_hidden_layers

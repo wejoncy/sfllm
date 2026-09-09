@@ -29,7 +29,7 @@ class ServerArgs:
     speculative_draft_model_path: Optional[str] = None
     speculative_eagle_topk: int = 4
     speculative_num_steps: int = 4
-    speculative_num_draft_tokens: int = 8
+    speculative_num_draft_tokens: Optional[int] = None
 
     #piecewise for prefill
     enable_piecewise_cuda_graph: bool = False
@@ -201,7 +201,7 @@ class ServerArgs:
             "--speculative-num-draft-tokens",
             type=int,
             default=ServerArgs.speculative_num_draft_tokens,
-            help="The number of draft tokens to use in speculative decoding.",
+            help="Draft token count: defaults to 8 for Eagle, or the checkpoint block size for DFlash2.",
         )
         parser.add_argument(
             "--enable-debug",
@@ -220,6 +220,8 @@ class ServerArgs:
         return cls(**{attr: getattr(args, attr) for attr in attrs})
 
     def __post_init__(self):
+        if self.speculative_num_draft_tokens is None and self.speculative_algorithm != "dflash2":
+            self.speculative_num_draft_tokens = 8
         if self.max_running_requests is None:
             self.max_running_requests = self.cuda_graph_max_bs
         if self.max_running_requests <= 0:

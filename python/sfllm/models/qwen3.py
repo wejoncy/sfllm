@@ -409,7 +409,7 @@ class Qwen3ForCausalLM(nn.Module):
         torch.cuda.empty_cache()
         torch.cuda.synchronize()
 
-    def set_eagle3_layers_to_capture(self, layer_ids: Optional[List[int]] = None):
+    def set_layers_to_capture(self, layer_ids: Optional[List[int]] = None):
         self.capture_aux_hidden_states = True
         if layer_ids is None:
             num_layers = self.config.num_hidden_layers

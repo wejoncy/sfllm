@@ -476,7 +476,7 @@ class Qwen2ForCausalLM(nn.Module):
         torch.cuda.empty_cache()
         torch.cuda.synchronize()
 
-    def set_eagle3_layers_to_capture(self, layer_ids: Optional[List[int]] = None):
+    def set_layers_to_capture(self, layer_ids: Optional[List[int]] = None):
         if not self.pp_group.is_last_rank:
             return
 

@@ -4,9 +4,10 @@ import asyncio
 import time
 import queue
 from typing import Dict, Any
+from fastapi import HTTPException
 from sfllm.engine.sampling_params import SamplingParams
-from sfllm.engine.sequence import RequestSequence, AbortSequence,SequenceStatus
-from sfllm.serving.req_protocol import GenerateReqInput
+from sfllm.engine.sequence import RequestSequence, AbortSequence, SequenceStatus
+from sfllm.serving.req_protocol import GenerateReqInput, ControlRequest
 from sfllm.serving.tokenizer_manager import TokenizerManager
 
 logger = logging.getLogger(__name__)
@@ -16,16 +17,36 @@ class EngineServer:
         self.tokenizer_input_queue = multiprocessing.Queue()
         self.tokenizer_output_queue = multiprocessing.Queue()
         self.req_to_state: Dict[str, Any] = {}
+        self.control_results = {}
         self.server_args = server_args
-        self.ready_flag = multiprocessing.Value("b", False)
         self.worker_threads = []
         self.tokenizer_manager = TokenizerManager(self.server_args)
         self.tokenizer_manager.set_tokenizer_queues(
             self.tokenizer_input_queue, self.tokenizer_output_queue
         )
 
+    async def request_control(self, request: ControlRequest):
+        if not self.running:
+            raise HTTPException(503, "Inference worker stopped")
+        future = self.control_results.get(request)
+        if future is None or future.done():
+            future = self.control_results[request] = asyncio.get_running_loop().create_future()
+            self.tokenizer_input_queue.put(request)
+        # Keep one in-flight request per operation, even if an HTTP caller leaves.
+        try:
+            return await asyncio.wait_for(
+                asyncio.shield(future), self.server_args.request_timeout_seconds
+            )
+        except (TimeoutError, RuntimeError) as exc:
+            raise HTTPException(503, str(exc)) from exc
+
     async def submit_request(self, request: GenerateReqInput) -> int:
         """Submit a new inference request and return the request ID."""
+        flush_result = self.control_results.get(ControlRequest.FLUSH_CACHE)
+        if not self.running or (
+            flush_result is not None and not flush_result.done()
+        ):
+            raise HTTPException(503, "Inference worker unavailable.")
         import uuid
         request_id = str(uuid.uuid4().hex) + "_" + str(time.time())
         params = request.sampling_params or {}
@@ -115,7 +136,9 @@ class EngineServer:
             ):
                 logger.error("Inference worker process has stopped unexpectedly.")
                 self.running = False
-                self.worker_threads[-1].join()
+                for future in self.control_results.values():
+                    if not future.done():
+                        future.set_exception(RuntimeError("Inference worker stopped"))
                 break
             try:
                 # A fixed async sleep adds up to 100 ms to every streamed
@@ -125,6 +148,10 @@ class EngineServer:
                     self.tokenizer_output_queue.get, True, 0.1
                 )
             except queue.Empty:
+                continue
+            if isinstance(response, tuple):
+                request, result = response
+                self.control_results[request].set_result(result)
                 continue
             import copy
             for sequence_id, output in response.items():

@@ -29,7 +29,7 @@ import json
 
 import argparse
 
-from sfllm.serving.req_protocol import ChatRequest, CompletionRequest, GenerateReqInput
+from sfllm.serving.req_protocol import ChatRequest, CompletionRequest, GenerateReqInput, ControlRequest
 from sfllm.serving.engine_server import EngineServer
 from sfllm.server_args import ServerArgs
 from sfllm.version import __version__
@@ -183,11 +183,27 @@ def create_app(server_args):
             ],
         }
 
+    @app.api_route("/flush_cache", methods=["GET", "POST"])
+    async def flush_cache():
+        success = await app.state.inference_worker.request_control(ControlRequest.FLUSH_CACHE)
+        if not success:
+            raise HTTPException(409, "Cache not flushed: requests are still pending.")
+        return {"success": True}
+
     @app.get("/server_info")
     @app.get("/get_server_info")
     async def get_server_info():
-        # Returns interna states per DP.
-        internal_states= [{}]
+        tokens, decode_steps = await app.state.inference_worker.request_control(
+            ControlRequest.GET_METRICS
+        )
+        internal_states = [{
+            "cum_spec_accept_tokens": tokens,
+            "cum_forward_ct": decode_steps,
+            "avg_spec_accept_length": (
+                tokens / decode_steps
+                if server_args.speculative_algorithm and decode_steps else None
+            ),
+        }]
         return {
             "internal_states": internal_states,
             "version": __version__,

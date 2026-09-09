@@ -1,6 +1,13 @@
 from pydantic import AliasChoices, BaseModel, Field, RootModel
 from typing import List, Optional, Dict, Union, Literal
 from dataclasses import dataclass
+from enum import Enum
+
+
+class ControlRequest(Enum):
+    FLUSH_CACHE = "flush_cache"
+    GET_METRICS = "get_metrics"
+
 
 # OpenAI compatible request models
 class ContentItem(BaseModel):
