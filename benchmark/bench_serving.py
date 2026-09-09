@@ -111,6 +111,16 @@ def get_auth_headers() -> Dict[str, str]:
         return {}
 
 
+def get_server_internal_state(base_url):
+    response = requests.get(base_url + "/get_server_info", headers=get_auth_headers())
+    if response.status_code != 200:
+        return {}
+    info = response.json()
+    if "decode" in info:
+        info = info["decode"][0]
+    return info["internal_states"][0]
+
+
 # trt llm does not support ignore_eos
 # https://github.com/triton-inference-server/tensorrtllm_backend/issues/505
 async def async_request_trt_llm(
@@ -516,6 +526,7 @@ async def async_request_sglang_generate(
         st = time.perf_counter()
         most_recent_timestamp = st
         last_output_len = 0
+        final_status = "PENDING"
         try:
             async with session.post(
                 url=api_url, json=payload, headers=headers
@@ -532,6 +543,9 @@ async def async_request_sglang_generate(
                             pass
                         else:
                             data = json.loads(chunk)
+                            meta_info = data.get("meta_info", {})
+                            output_len = meta_info.get("completion_tokens", output_len)
+                            final_status = data.get("status")
 
                             # NOTE: Some completion API might have a last
                             # usage summary response without a token so we
@@ -539,7 +553,6 @@ async def async_request_sglang_generate(
                             if "text" in data and data["text"]:
                                 timestamp = time.perf_counter()
                                 generated_text = data["text"]
-                                output_len = data["meta_info"]["completion_tokens"]
 
                                 # First token
                                 if ttft == 0.0:
@@ -560,7 +573,11 @@ async def async_request_sglang_generate(
                                 last_output_len = output_len
 
                     output.generated_text = generated_text
-                    output.success = True
+                    if final_status in ("PENDING", "RUNNING"):
+                        raise RuntimeError("Stream ended before a terminal response")
+                    output.success = final_status not in ("FAILED", "CANCELLED")
+                    if not output.success:
+                        output.error = final_status
                     output.latency = latency
                     output.output_len = output_len
                 else:
@@ -1531,11 +1548,14 @@ async def benchmark(
             f"Warmup completed with {args.warmup_requests} sequences. Starting main benchmark run..."
         )
 
-    # Flush cache
-    if ("sglang" in backend and _get_bool_env_var("SGLANG_IS_IN_CI")) or flush_cache:
-        requests.post(base_url + "/flush_cache", headers=get_auth_headers())
-
     time.sleep(1.0)
+
+    # SFLLM clears warmup caches and statistics before the timed requests.
+    sfllm = "sglang" in backend and "cum_forward_ct" in get_server_internal_state(base_url)
+    if sfllm or ("sglang" in backend and _get_bool_env_var("SGLANG_IS_IN_CI")) or flush_cache:
+        requests.post(
+            base_url + "/flush_cache", headers=get_auth_headers()
+        ).raise_for_status()
 
     # Start profiler
     if profile:
@@ -1586,20 +1606,6 @@ async def benchmark(
     if pbar is not None:
         pbar.close()
 
-    if "sglang" in backend:
-        server_info = requests.get(base_url + "/get_server_info")
-        if server_info.status_code == 200:
-            server_info_json = server_info.json()
-            if "decode" in server_info_json:
-                server_info_json = server_info_json["decode"][0]
-            accept_length = server_info_json["internal_states"][0].get(
-                "avg_spec_accept_length", None
-            )
-        else:
-            accept_length = None
-    else:
-        accept_length = None
-
     # Compute metrics and print results
     benchmark_duration = time.perf_counter() - benchmark_start_time
     metrics, output_lens = calculate_metrics(
@@ -1609,6 +1615,10 @@ async def benchmark(
         tokenizer=tokenizer,
         backend=backend,
     )
+    accept_length = None
+    if "sglang" in backend:
+        state = get_server_internal_state(base_url)
+        accept_length = state.get("avg_spec_accept_length")
 
     print("\n{s:{c}^{n}}".format(s=" Serving Benchmark Result ", n=50, c="="))
     print("{:<40} {:<10}".format("Backend:", backend))
@@ -1649,8 +1659,9 @@ async def benchmark(
         )
     )
     print("{:<40} {:<10.2f}".format("Concurrency:", metrics.concurrency))
-    if accept_length:
-        print("{:<40} {:<10.2f}".format("Accept length:", accept_length))
+    print("{:<40} {}".format(
+        "Accept len:", f"{accept_length:.4f}" if accept_length is not None else "N/A"
+    ))
     print("{s:{c}^{n}}".format(s="End-to-End Latency", n=50, c="-"))
     print(
         "{:<40} {:<10.2f}".format("Mean E2E Latency (ms):", metrics.mean_e2e_latency_ms)

@@ -89,6 +89,17 @@ Qwen3.5 `compressed-tensors` exports using `FP8_DYNAMIC` (per-channel weights,
 per-token dynamic activations) are also detected automatically. Use the same
 command with `--dtype bfloat16`, including for exports whose config declares float32.
 
+For a compatible Qwen3.5 DFlash2 draft, add:
+
+```bash
+  --speculative-algorithm dflash2 \
+  --speculative-draft-model-path /path/to/dflash2-checkpoint \
+  --speculative-num-draft-tokens 5
+```
+
+The draft token count is configurable (2 to the checkpoint block size); omit it
+to use the checkpoint default. The selector top-k stays as configured in the checkpoint.
+
 ### 2. Test the API
 
 **Chat Completions (Streaming)**

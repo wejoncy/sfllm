@@ -3,9 +3,8 @@ from tokenizers.decoders import DecodeStream
 from transformers import AutoConfig, AutoTokenizer, GenerationConfig
 import torch.multiprocessing as multiprocessing
 from sfllm.engine.sequence import AbortSequence, DecodeSequence, RequestSequence
-from sfllm.engine.sampling_params import SamplingParams
-from sfllm.serving.req_protocol import GenerateReqInput
 from sfllm.engine.inference_engine import InferenceEngine, OVERLAP_IDLE_WAIT_SECONDS
+from sfllm.serving.req_protocol import ControlRequest
 from sfllm.server_args import set_global_server_args_for_scheduler
 
 logger = logging.getLogger(__name__)
@@ -79,14 +78,22 @@ class TokenizerManager:
             else:
                 try:
                     for _ in range(self.server_args.max_running_requests):
-                        self.inference_engine.add_request(self.inferengine_input_queue.get_nowait())
+                        request = self.inferengine_input_queue.get_nowait()
+                        self.inference_engine.add_request(request)
+                        if isinstance(request, ControlRequest):
+                            self.tokenizer_output_queue.put(
+                                self.inference_engine.output_batch_queue.get_nowait()
+                            )
                 except queue.Empty:
                     pass
                 seq_group = self.inference_engine.step()
             if len(seq_group) == 0:
                 continue
 
-            self.tokenizer_input_queue.put(seq_group)
+            if isinstance(seq_group, tuple):
+                self.tokenizer_output_queue.put(seq_group)
+            else:
+                self.tokenizer_input_queue.put(seq_group)
         if not self.server_args.disable_overlap:
             th_event.set()
             thread.join()
@@ -101,7 +108,12 @@ class TokenizerManager:
                 break
             try:
                 out_sequence = self.tokenizer_input_queue.get()
-                if isinstance(out_sequence, AbortSequence):
+                if isinstance(out_sequence, ControlRequest):
+                    if out_sequence is ControlRequest.FLUSH_CACHE and self.decode_states:
+                        self.tokenizer_output_queue.put((out_sequence, False))
+                    else:
+                        self.inferengine_input_queue.put(out_sequence)
+                elif isinstance(out_sequence, AbortSequence):
                     self.decode_states.pop(out_sequence.sequence_id, None)
                     self.inferengine_input_queue.put(out_sequence)
                 elif isinstance(out_sequence, RequestSequence):

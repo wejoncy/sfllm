@@ -14,7 +14,10 @@ from torch import nn
 import sf_kernel
 
 from sfllm.engine.forward_params import ForwardBatch, ForwardMode
-from sfllm.kernels.gdn import GatedDeltaNetBackend, gated_rmsnorm
+from sfllm.kernels.gdn import (
+    GatedDeltaNetBackend, gated_rmsnorm, scatter_recurrent_state,
+    update_recurrent_state_indices,
+)
 from sfllm.layers.layernorm import GemmaRMSNorm
 from sfllm.layers.quantization.fp8_kernel import (
     rmsnorm_silu_gate_quant_fp8,
@@ -62,6 +65,9 @@ class Qwen3_5GatedDeltaNet(nn.Module):
         self.conv_states = conv_states
         self.ssm_states = ssm_states
         self.state_indices = state_indices
+        self.intermediate_conv = None
+        self.ssm_state_indices = None
+        self.ssm_output_indices = None
         self.fused_in_proj = (
             quant_config is None or quant_config.weight_strategy == "channel"
         )
@@ -146,6 +152,8 @@ class Qwen3_5GatedDeltaNet(nn.Module):
         num_sequences = num_tokens
         if mode == ForwardMode.EXTEND:
             num_sequences = query_start_loc.shape[0] - 1
+        elif mode == ForwardMode.TARGET_VERIFY:
+            num_sequences //= forward_batch.max_extend_len
         state_indices = self.state_indices[:num_sequences]
 
         common = dict(
@@ -153,6 +161,10 @@ class Qwen3_5GatedDeltaNet(nn.Module):
             conv_states=self.conv_states,
             ssm_states=self.ssm_states,
             state_indices=state_indices,
+            ssm_state_indices=(
+                self.ssm_state_indices[:num_sequences]
+                if self.ssm_state_indices is not None else None
+            ),
             a_log=self.A_log,
             dt_bias=self.dt_bias,
             num_k_heads=self.num_k_heads,
@@ -162,6 +174,13 @@ class Qwen3_5GatedDeltaNet(nn.Module):
         )
         if forward_batch.forward_mode == ForwardMode.DECODE:
             core, z = self.backend.decode(projected_qkvz, projected_ba, **common)
+        elif mode == ForwardMode.TARGET_VERIFY:
+            core, z = self.backend.decode(
+                projected_qkvz, projected_ba,
+                intermediate_conv=self.intermediate_conv[:num_sequences],
+                ssm_output_indices=self.ssm_output_indices[:num_sequences],
+                **common,
+            )
         elif forward_batch.forward_mode == ForwardMode.EXTEND:
             mixed_qkv = projected_qkvz[:, : self.conv_dim]
             z = projected_qkvz[:, self.conv_dim :].view(
@@ -420,6 +439,10 @@ class Qwen3_5Model(nn.Module):
         }
 
         max_state_rows = int(server_args.max_running_requests)
+        spec_steps = (
+            server_args.speculative_num_draft_tokens
+            if server_args.speculative_algorithm == "dflash2" else 0
+        )
         conv_dim = (
             2 * config.linear_num_key_heads * config.linear_key_head_dim
             + config.linear_num_value_heads * config.linear_value_head_dim
@@ -438,7 +461,7 @@ class Qwen3_5Model(nn.Module):
             "ssm_states",
             torch.zeros(
                 len(linear_attention_layer_ids),
-                max_state_rows + 1,
+                max_state_rows * (spec_steps + 1) + 1,
                 config.linear_num_value_heads,
                 config.linear_value_head_dim,
                 config.linear_key_head_dim,
@@ -473,6 +496,34 @@ class Qwen3_5Model(nn.Module):
             prefix=add_prefix("layers", prefix),
         )
         self.norm = GemmaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.layers_to_capture = []
+        self.register_buffer("ssm_output_indices", None, persistent=False)
+        if spec_steps:
+            self.register_buffer(
+                "intermediate_conv",
+                self.conv_states.new_empty((
+                    self.conv_states.shape[0], max_state_rows, spec_steps,
+                    *self.conv_states.shape[2:],
+                )),
+                persistent=False,
+            )
+            self.register_buffer(
+                "ssm_current_slots",
+                (torch.arange(max_state_rows + 1, dtype=torch.int32) - 1)
+                * (spec_steps + 1) + 1,
+                persistent=False,
+            )
+            self.register_buffer(
+                "ssm_state_indices", torch.empty_like(self.state_indices), persistent=False,
+            )
+            self.ssm_output_indices = torch.empty(
+                (max_state_rows, spec_steps), dtype=torch.int32
+            )
+            for layer_id, state_id in state_layer_ids.items():
+                attn = self.layers[layer_id].linear_attn
+                attn.intermediate_conv = self.intermediate_conv[state_id]
+                attn.ssm_state_indices = self.ssm_state_indices
+                attn.ssm_output_indices = self.ssm_output_indices
 
     def prepare_batch_state(self, scheduled_batch) -> None:
         batch_size = len(scheduled_batch)
@@ -498,6 +549,7 @@ class Qwen3_5Model(nn.Module):
     ) -> torch.Tensor:
         hidden_states = self.embed_tokens(input_ids) if input_embeds is None else input_embeds
         residual = None
+        aux_hidden_states = []
         query_start_loc = None
         query_start_loc_i64 = None
         if forward_batch.forward_mode == ForwardMode.EXTEND:
@@ -507,7 +559,19 @@ class Qwen3_5Model(nn.Module):
                     (0, hidden_states.shape[0])
                 )
             query_start_loc_i64 = query_start_loc.to(torch.int64)
-        for layer in self.layers:
+        if self.ssm_output_indices is not None:
+            if forward_batch.forward_mode == ForwardMode.EXTEND:
+                batch_size = query_start_loc.shape[0] - 1
+            elif forward_batch.forward_mode == ForwardMode.TARGET_VERIFY:
+                batch_size = hidden_states.shape[0] // forward_batch.max_extend_len
+            else:
+                batch_size = hidden_states.shape[0]
+            update_recurrent_state_indices(
+                self.ssm_current_slots, self.state_indices[:batch_size],
+                self.ssm_state_indices, self.ssm_output_indices,
+                prefill=forward_batch.forward_mode == ForwardMode.EXTEND,
+            )
+        for layer_id, layer in enumerate(self.layers):
             hidden_states, residual = layer(
                 positions,
                 hidden_states,
@@ -516,11 +580,13 @@ class Qwen3_5Model(nn.Module):
                 query_start_loc,
                 query_start_loc_i64,
             )
+            if layer_id in self.layers_to_capture:
+                aux_hidden_states.append(hidden_states + residual)
         if residual is not None:
             hidden_states, _ = self.norm(hidden_states, residual)
         else:
             hidden_states = self.norm(hidden_states)
-        return hidden_states
+        return (hidden_states, aux_hidden_states) if aux_hidden_states else hidden_states
 
 
 class Qwen3_5ForConditionalGeneration(nn.Module, HasBatchState):
@@ -566,6 +632,22 @@ class Qwen3_5ForConditionalGeneration(nn.Module, HasBatchState):
     def prepare_batch_state(self, scheduled_batch) -> None:
         self.model.prepare_batch_state(scheduled_batch)
 
+    def set_layers_to_capture(self, layer_ids) -> None:
+        self.model.layers_to_capture = layer_ids
+
+    def commit_speculative_state(self, accepted_steps: torch.Tensor) -> None:
+        """Commit the anchor and accepted drafts; the bonus is the next anchor."""
+        indices = self.model.state_indices[:accepted_steps.shape[0]]
+        scatter_recurrent_state(
+            self.model.intermediate_conv, self.model.conv_states,
+            indices, accepted_steps,
+        )
+        update_recurrent_state_indices(
+            self.model.ssm_current_slots, indices,
+            self.model.ssm_state_indices, self.model.ssm_output_indices,
+            accepted_steps=accepted_steps,
+        )
+
     def forward(
         self,
         input_ids: torch.Tensor,
@@ -575,9 +657,12 @@ class Qwen3_5ForConditionalGeneration(nn.Module, HasBatchState):
         get_embedding: bool = False,
     ):
         hidden_states = self.model(input_ids, positions, forward_batch, input_embeds)
+        aux_hidden_states = None
+        if self.model.layers_to_capture:
+            hidden_states, aux_hidden_states = hidden_states
         if get_embedding:
             return hidden_states, forward_batch
-        return self.logits_processor(hidden_states, self.lm_head, None, forward_batch)
+        return self.logits_processor(hidden_states, self.lm_head, aux_hidden_states, forward_batch)
 
     def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]):
         params = dict(self.named_parameters())

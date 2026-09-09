@@ -21,7 +21,6 @@ class SpeculativeWorker:
 
     def __init__(self, server_args: ServerArgs) -> None:
         self.server_args = server_args
-        self.total_accepted_tokens = 0
         self.draft_model_runner = ModelRunner(server_args, is_draft=True)
         self.target_model_runner = ModelRunner(server_args)
 
@@ -253,11 +252,9 @@ class SpeculativeWorker:
 
         if self.server_args.enable_debug:
             accepted = accept_length_cpu.clamp(min=0).sum().item()
-            self.total_accepted_tokens += accepted
             logger.info(
-                "Speculative decoding: accepted %s tokens, total accepted %s.",
+                "Speculative decoding: accepted %s tokens.",
                 accepted,
-                self.total_accepted_tokens,
             )
         return scheduled_batch
 

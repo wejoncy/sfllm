@@ -3,3 +3,6 @@ class HasBatchState:
 
     def prepare_batch_state(self, scheduled_batch) -> None:
         raise NotImplementedError
+
+    def commit_speculative_state(self, accepted_steps) -> None:
+        raise NotImplementedError

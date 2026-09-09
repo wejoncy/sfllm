@@ -17,6 +17,7 @@ from sfllm.spec_decoding.eagle_worker import EagleWorker
 from sfllm.engine.scheduler import Scheduler
 from sfllm.engine.sampling_params import SamplingParams
 from sfllm.engine.sequence import RequestSequence, SequenceStatus, AbortSequence, DecodeSequence
+from sfllm.serving.req_protocol import ControlRequest
 from sfllm.engine.schedule_batch import ScheduleBatch, BatchResult
 from sfllm.server_args import ServerArgs
 from sfllm.utils.nutils import configure_logger
@@ -62,7 +63,6 @@ class InferenceEngine:
         if not isinstance(batch_result, BatchResult):
             assert False, "Only BatchResult is supported now."
 
-        self.scheduler.metrics.update_spec_metrics(batch_result.spec_info)
         self.scheduler.metrics.log_prefill_metrics(schedule_batch)
         self.scheduler.metrics.log_decode_metrics(schedule_batch)
         token_ids_tensor = batch_result.next_token_ids
@@ -142,7 +142,29 @@ class InferenceEngine:
                 )
             if sequence.stream or not sequence.status.is_active():
                 outputs.append(DecodeSequence(sequence))
+        self.scheduler.metrics.update_spec_metrics(batch_result.spec_info, outputs)
         return outputs
+
+    def flush_cache(self) -> bool:
+        scheduler = self.scheduler
+        if (not scheduler.is_done()
+                or len(scheduler.free_request_indices) != scheduler.max_running_req):
+            return False
+        pools = ((scheduler.mem_pool, scheduler.draft_memory_pool)
+                 if self.is_spec_algo else (scheduler.mem_pool,))
+        if any(pool.used_block_ids for pool in pools):
+            return False
+        torch.cuda.synchronize()
+        for pool in pools:
+            pool.sort_free_blocks()
+        scheduler.flying_batch = ScheduleBatch([], scheduler.mem_pool, scheduler.draft_memory_pool)
+        scheduler.abort_requests.clear()
+        scheduler.scheduler_policy.total_token_used = 0
+        scheduler.scheduler_policy.cur_token_used = 0
+        self.decode_states.clear()
+        torch.cuda.empty_cache()
+        scheduler.metrics.reset()
+        return True
 
     def new_request(self, prompt: str|Tuple[str, List[int]], sampling_params: SamplingParams) -> int:
         if isinstance(prompt, str):
@@ -156,15 +178,24 @@ class InferenceEngine:
 
     def add_request(
         self,
-        prompt: str | Tuple[str, List[int]] | RequestSequence,
+        prompt: str | Tuple[str, List[int]] | RequestSequence | AbortSequence | ControlRequest,
         sampling_params: SamplingParams = SamplingParams(),
-    ) -> int:
+    ) -> int | None:
         """Add a new inference request to the queue."""
         if isinstance(prompt, RequestSequence):
             sequence = prompt
         elif isinstance(prompt, AbortSequence):
             self.scheduler.add_abort_request(prompt.sequence_id)
             return prompt.sequence_id
+        elif prompt is ControlRequest.FLUSH_CACHE:
+            self.output_batch_queue.put((prompt, self.flush_cache()))
+            return
+        elif prompt is ControlRequest.GET_METRICS:
+            metrics = self.scheduler.metrics
+            self.output_batch_queue.put(
+                (prompt, (metrics.cum_spec_accept_tokens, metrics.cum_forward_ct))
+            )
+            return
         else:
             sequence = self.new_request(prompt, sampling_params)
         self.scheduler.add_request(sequence)
