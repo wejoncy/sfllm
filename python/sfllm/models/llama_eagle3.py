@@ -29,7 +29,7 @@ from sfllm.engine.forward_params import  ForwardBatch
 from sfllm.layers.layernorm import RMSNorm
 from sfllm.layers.linear import QKVParallelLinear
 from sfllm.layers.quantization import QuantizationConfig
-from sfllm.utils import add_prefix, get_tensor_model_parallel_world_size,make_layers_non_pp
+from sfllm.utils import add_prefix
 
 
 class LlamaDecoderLayer(LlamaDecoderLayer):
@@ -260,5 +260,7 @@ class LlamaForCausalLMEagle3(LlamaForCausalLM):
     def get_hot_token_id(self):
         return self.hot_token_id
 
+class Eagle3LlamaForCausalLM(LlamaForCausalLMEagle3):
+    ...
 
-EntryClass = [LlamaForCausalLMEagle3]
+EntryClass = [LlamaForCausalLMEagle3, Eagle3LlamaForCausalLM]
