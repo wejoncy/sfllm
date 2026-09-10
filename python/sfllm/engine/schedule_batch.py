@@ -10,6 +10,7 @@ from sfllm.engine.forward_params import ForwardBatch,ForwardMode
 from sfllm.engine.sequence import RequestSequence
 from sfllm.utils.nutils import DEFAULT_CUDA_GRAPH_BATCH_SIZES
 from sfllm.layers.sampler import SamplingBatchInfo
+from sfllm.kernels.triton_utils import compact_accepted_tokens
 from sfllm.server_args import get_global_server_args
 from sfllm.spec_decoding.spec_common import SpecInput
 
@@ -216,6 +217,12 @@ class ScheduleBatch:
                 self.update_spec_info_if_needed(hidden_states_buffer=hidden_states_buffer)
         else:
             self.update_spec_info_if_needed(None)
+            draft = self.forward_batch_spec
+            draft.kv_indices = compact_accepted_tokens(
+                draft.kv_indices, draft.kv_indptr,
+                (draft.kv_indptr - draft.qo_indptr).diff(), fill_value=0,
+            )
+            draft.kv_indptr.sub_(draft.qo_indptr)
 
     def prepare_inputs(self, is_overlap:bool=False):
         cur_seq_lens_list = [0]

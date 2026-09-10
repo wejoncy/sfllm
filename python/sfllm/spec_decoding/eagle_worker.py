@@ -15,7 +15,6 @@ from sfllm.spec_decoding.spec_utils import (EagleSpecInput,
                                             generate_kv_indices_for_mtd)
 from sfllm.spec_decoding.draft_cuda_graph_runner import EagleCudaGraphRunner
 from sfllm.spec_decoding.spec_worker import SpeculativeWorker
-from sfllm.kernels.triton_utils import compact_accepted_tokens
 
 ALIGN_EAGLE_WITH_SGLANG_ = False
 logger = logging.getLogger(__name__)
@@ -286,40 +285,30 @@ class EagleWorker(SpeculativeWorker):
         )
 
     def commit_previous(self, scheduled_batch: ScheduleBatch) -> None:
-        """Commit accepted tokens using a prefix that excludes these queries."""
+        """Advance Eagle's draft KV state with the previous accepted tokens."""
+        #decode for the latest token#######################
+        # the first time will be skipped as we have run it in prefill stage
         spec_info = scheduled_batch.spec_info
         if spec_info.hidden_states.shape[-1] == self.target_model_runner.get_config().hidden_size:
             return
+        forward_batch_spec = scheduled_batch.forward_batch_spec
+        old_input_ids = scheduled_batch.input_ids
+        old_position_ids = scheduled_batch.position_ids
 
-        forward_batch = scheduled_batch.forward_batch_spec
-        full_indptr, full_indices = forward_batch.kv_indptr, forward_batch.kv_indices
-        query_indptr = forward_batch.qo_indptr
-        prefix_lens = full_indptr.diff() - query_indptr.diff()
-        prefix_indices = compact_accepted_tokens(
-            full_indices, full_indptr, prefix_lens, fill_value=0,
-        )
-        prefix_indptr = torch.cat((full_indptr[:1], prefix_lens.cumsum(0, dtype=torch.int32)))
+        forward_batch_spec.forward_mode = ForwardMode.DRAFT_EXTEND
+        scheduled_batch.input_ids = spec_info.verified_id  # the real input_ids
+        scheduled_batch.position_ids = scheduled_batch.forward_batch_spec.position_ids_extend # the real position_ids
+        forward_batch_spec.spec_info = spec_info
 
-        target_batch = scheduled_batch.forward_batch
-        input_ids, position_ids = scheduled_batch.input_ids, scheduled_batch.position_ids
-        mode, previous_spec_info = forward_batch.forward_mode, forward_batch.spec_info
-        try:
-            scheduled_batch.forward_batch, scheduled_batch.forward_batch_spec = forward_batch, target_batch
-            scheduled_batch.input_ids = spec_info.verified_id
-            scheduled_batch.position_ids = forward_batch.position_ids_extend
-            forward_batch.forward_mode = ForwardMode.DRAFT_EXTEND
-            forward_batch.spec_info = spec_info
-            forward_batch.kv_indptr, forward_batch.kv_indices = prefix_indptr, prefix_indices
-            with torch.cuda.nvtx.range("commit_previous"):
+        # Run forward
+        with torch.cuda.nvtx.range("commit_previous"):
+            with scheduled_batch.switch_spec_forward_batch():
                 logits_output = self.draft_model_runner.forward(scheduled_batch)
-        finally:
-            scheduled_batch.forward_batch, scheduled_batch.forward_batch_spec = target_batch, forward_batch
-            scheduled_batch.input_ids, scheduled_batch.position_ids = input_ids, position_ids
-            forward_batch.kv_indptr, forward_batch.kv_indices = full_indptr, full_indices
-            forward_batch.forward_mode, forward_batch.spec_info = mode, previous_spec_info
 
-        spec_info.hidden_states = logits_output.aux_hidden_states[0][query_indptr[1:] - 1]
+        spec_info.hidden_states = logits_output.aux_hidden_states[0][(forward_batch_spec.qo_indptr[1:]-1)]
         spec_info.logits = logits_output.next_token_logits
+        scheduled_batch.position_ids = old_position_ids
+        scheduled_batch.input_ids = old_input_ids
 
 
     # why this work???
