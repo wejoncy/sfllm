@@ -129,11 +129,12 @@ class DFlash2Attention(Qwen3Attention):
         )
         self.attn.is_causal = False
         if config.layer_types[layer_id] == "sliding_attention":
-            self.attn.sliding_window_size = int(config.sliding_window)
             self.attn.is_causal = getattr(
                 config, "is_causal",
                 not config.dflash_config.get("sliding_window_non_causal", False),
             )
+            window = int(config.sliding_window) - 1
+            self.attn.sliding_window_size = (window, 0 if self.attn.is_causal else window)
 
     def materialize_kv(
         self,

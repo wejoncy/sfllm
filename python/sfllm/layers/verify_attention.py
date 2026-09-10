@@ -71,7 +71,7 @@ def verify_attention(q, k, v, layer, forward_batch, save_kv_cache=True, *, works
         or layer.qk_head_dim != layer.v_head_dim
         or layer.qk_head_dim > 256
         or layer.qk_head_dim % 8
-        or layer.sliding_window_size > 0
+        or layer.sliding_window_size != (-1, -1)
         or layer.logit_cap
         or layer.is_cross_attention
     ):

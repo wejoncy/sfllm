@@ -74,10 +74,6 @@ class FA3AttentionWorkspace:
             page_table,
             cache_seqlens,
             append_query=not is_decode and not is_tree_verify,
-            prefix_window=(
-                layer.sliding_window_size
-                if forward_batch.forward_mode == ForwardMode.DRAFT_EXTEND else -1
-            ),
         )
         scheduler_metadata = get_scheduler_metadata(
             batch_size=batch_size,
@@ -91,6 +87,7 @@ class FA3AttentionWorkspace:
             cu_seqlens_q=qo_indptr,
             page_size=1,
             causal=layer.is_causal and not is_tree_verify,
+            window_size=layer.sliding_window_size,
             num_splits=0,
         )
         return FA3AttentionMetadata(
@@ -170,4 +167,5 @@ class FA3AttentionBackend:
             metadata,
             layer.scaling,
             layer.is_causal,
+            sliding_window_size=layer.sliding_window_size,
         )

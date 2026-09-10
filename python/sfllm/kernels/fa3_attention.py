@@ -15,13 +15,10 @@ def _build_page_table_kernel(
     page_table_stride: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
     APPEND_QUERY: tl.constexpr,
-    PREFIX_WINDOW: tl.constexpr,
 ):
     batch_idx = tl.program_id(0)
     prefix_start = tl.load(kv_indptr + batch_idx).to(tl.int64)
     prefix_end = tl.load(kv_indptr + batch_idx + 1).to(tl.int64)
-    if PREFIX_WINDOW > 0:
-        prefix_start = tl.maximum(prefix_start, prefix_end - PREFIX_WINDOW)
     prefix_len = prefix_end - prefix_start
     if APPEND_QUERY:
         query_start = tl.load(qo_indptr + batch_idx).to(tl.int64)
@@ -68,7 +65,6 @@ def build_page_table(
     cache_seqlens: torch.Tensor,
     *,
     append_query: bool,
-    prefix_window: int = -1,
 ) -> None:
     _build_page_table_kernel[(page_table.shape[0],)](
         kv_indices,
@@ -80,7 +76,6 @@ def build_page_table(
         page_table.stride(0),
         BLOCK_SIZE=256,
         APPEND_QUERY=append_query,
-        PREFIX_WINDOW=prefix_window,
         num_warps=4,
     )
 
@@ -95,6 +90,7 @@ def fa3_attention_fwd(
     causal: bool,
     *,
     return_softmax_lse: bool = False,
+    sliding_window_size: tuple[int, int] = (-1, -1),
 ) -> torch.Tensor:
     result = flash_attn_with_kvcache(
         q,
@@ -106,6 +102,7 @@ def fa3_attention_fwd(
         max_seqlen_q=metadata.max_query_len,
         softmax_scale=softmax_scale,
         causal=causal,
+        window_size=sliding_window_size,
         num_splits=0,
         scheduler_metadata=metadata.scheduler_metadata,
         return_softmax_lse=return_softmax_lse,
