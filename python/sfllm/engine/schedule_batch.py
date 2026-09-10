@@ -136,10 +136,9 @@ class ScheduleBatch:
                 src_hd_list = [ seq.hidden_states[0] for seq in self.sequences]
                 src_range_list = [ seq.hidden_states[1] for seq in self.sequences]
                 src_range = torch.stack(src_range_list, dim=0)
-                draft_steps = hidden_states_buffer.shape[1]
                 hidden_states_buffer = hidden_states_buffer.view(-1, hidden_states_buffer.shape[-1])
                 self.spec_info.hidden_states = copy_tensors_to_buffer(src_hd_list, src_range, hidden_states_buffer)
-                self.spec_info.hidden_states = self.spec_info.hidden_states[:len(src_hd_list)*draft_steps]
+                self.spec_info.hidden_states = self.spec_info.hidden_states[:self.spec_info.verified_id.numel()]
             else:
                 self.spec_info.hidden_states = torch.cat([seq.hidden_states for seq in self.sequences], dim=0)
             cache_sources = [seq.out_cache_loc_lazy for seq in self.sequences
@@ -167,13 +166,8 @@ class ScheduleBatch:
         spec_kv_indices_list = []
         spec_kv_indptr_list = [0]
         device = self.device
-        for sequence in self.sequences:
-            total_draft_len = len(sequence.new_tokens)
-            if (len(sequence.tokens) == sequence.last_generated_token_pos
-                    and sequence.accept_length_cpu[0].item() < 0):
-                spec_out_cache_loc_list.append(0)
-            else:
-                spec_out_cache_loc_list.extend(sequence.out_cache_loc_spec[-total_draft_len:])
+        for sequence, positions in zip(self.sequences, positions_outs):
+            spec_out_cache_loc_list.extend(sequence.out_cache_loc_spec[positions.start:positions.stop])
             spec_kv_indptr_list.append(spec_kv_indptr_list[-1] + len(sequence.out_cache_loc_spec))
             spec_kv_indices_list.extend(sequence.out_cache_loc_spec)
 

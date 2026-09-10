@@ -295,11 +295,6 @@ class EagleWorker(SpeculativeWorker):
         full_indptr, full_indices = forward_batch.kv_indptr, forward_batch.kv_indices
         query_indptr = forward_batch.qo_indptr
         prefix_lens = full_indptr.diff() - query_indptr.diff()
-        rows = torch.arange(spec_info.verified_id.numel(), device=full_indptr.device)
-        sequence_ids = torch.searchsorted(query_indptr[1:], rows, right=True).clamp_max(len(scheduled_batch) - 1)
-        valid = rows < query_indptr[-1]
-        cache_offsets = torch.where(valid, full_indptr[sequence_ids] + forward_batch.position_ids_extend, 0)
-        query_cache_locs = torch.where(valid, full_indices[cache_offsets], 0)
         prefix_indices = compact_accepted_tokens(
             full_indices, full_indptr, prefix_lens, fill_value=0,
         )
@@ -307,7 +302,6 @@ class EagleWorker(SpeculativeWorker):
 
         target_batch = scheduled_batch.forward_batch
         input_ids, position_ids = scheduled_batch.input_ids, scheduled_batch.position_ids
-        cache_locs = forward_batch.out_cache_loc
         mode, previous_spec_info = forward_batch.forward_mode, forward_batch.spec_info
         try:
             scheduled_batch.forward_batch, scheduled_batch.forward_batch_spec = forward_batch, target_batch
@@ -316,14 +310,12 @@ class EagleWorker(SpeculativeWorker):
             forward_batch.forward_mode = ForwardMode.DRAFT_EXTEND
             forward_batch.spec_info = spec_info
             forward_batch.kv_indptr, forward_batch.kv_indices = prefix_indptr, prefix_indices
-            forward_batch.out_cache_loc = query_cache_locs
             with torch.cuda.nvtx.range("commit_previous"):
                 logits_output = self.draft_model_runner.forward(scheduled_batch)
         finally:
             scheduled_batch.forward_batch, scheduled_batch.forward_batch_spec = target_batch, forward_batch
             scheduled_batch.input_ids, scheduled_batch.position_ids = input_ids, position_ids
             forward_batch.kv_indptr, forward_batch.kv_indices = full_indptr, full_indices
-            forward_batch.out_cache_loc = cache_locs
             forward_batch.forward_mode, forward_batch.spec_info = mode, previous_spec_info
 
         spec_info.hidden_states = logits_output.aux_hidden_states[0][query_indptr[1:] - 1]
