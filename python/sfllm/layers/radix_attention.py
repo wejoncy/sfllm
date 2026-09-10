@@ -109,7 +109,6 @@ class RadixAttention(nn.Module):
             dtype=torch.get_default_dtype(),
             is_causal=is_causal,
             window_size=window_size,
-            logit_cap=logit_cap,
         )
 
     def forward(
