@@ -89,8 +89,10 @@ def fa3_attention_fwd(
     softmax_scale: float,
     causal: bool,
     *,
+    layer_id: int,
+    logit_cap: float = 0.0,
     return_softmax_lse: bool = False,
-    sliding_window_size: tuple[int, int] = (-1, -1),
+    window_size: tuple[int, int] = (-1, -1),
 ) -> torch.Tensor:
     result = flash_attn_with_kvcache(
         q,
@@ -102,9 +104,10 @@ def fa3_attention_fwd(
         max_seqlen_q=metadata.max_query_len,
         softmax_scale=softmax_scale,
         causal=causal,
-        window_size=sliding_window_size,
+        window_size=window_size,
+        softcap=logit_cap,
         num_splits=0,
-        scheduler_metadata=metadata.scheduler_metadata,
+        scheduler_metadata=metadata.scheduler_metadata[metadata.layer_index_mapping[layer_id]],
         return_softmax_lse=return_softmax_lse,
         out=out,
     )

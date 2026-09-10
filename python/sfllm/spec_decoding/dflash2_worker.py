@@ -109,6 +109,7 @@ class DFlash2Worker(SpeculativeWorker):
         embeddings = self.target_model_runner.model.get_input_embeddings()(input_ids)
         draft_batch = ForwardBatch(None)
         draft_batch.forward_mode = ForwardMode.DRAFT_EXTEND
+        self.draft_model_runner.prepare_attention(draft_batch, token_count)
         self.draft_model_runner.model(
             input_ids=input_ids,
             positions=positions,
@@ -254,10 +255,12 @@ class DFlash2Worker(SpeculativeWorker):
         flat_ids = self._block_ids[:batch_size].reshape(-1)
         flat_positions = self._positions[:batch_size].reshape(-1)
         embeddings = self.target_model_runner.model.get_input_embeddings()(flat_ids)
+        forward_batch = self._draft_block_batch(batch)
+        self.draft_model_runner.prepare_attention(forward_batch, flat_ids.shape[0])
         draft_hidden = self.draft_model_runner.model(
             input_ids=flat_ids,
             positions=flat_positions,
-            forward_batch=self._draft_block_batch(batch),
+            forward_batch=forward_batch,
             input_embeds=embeddings,
         ).view(batch_size, block, -1)
 
