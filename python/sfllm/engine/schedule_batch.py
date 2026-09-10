@@ -14,6 +14,16 @@ from sfllm.server_args import get_global_server_args
 from sfllm.spec_decoding.spec_common import SpecInput
 
 
+def _pack_cache_indices(parts, padding, device):
+    """Copy local CPU views into batch-owned pinned storage before H2D."""
+    count = sum(part.numel() for part in parts)
+    staging = torch.empty(count + padding, dtype=torch.int64, device="cpu", pin_memory=True)
+    torch.cat(parts, out=staging[:count])
+    if padding:
+        staging[count:].zero_()
+    return staging.to(device, non_blocking=True)
+
+
 class ScheduleBatch:
     def __init__(self, sequences, mem_pool, draft_mem_pool=None):
         self.sequences:RequestSequence = sequences
@@ -91,20 +101,17 @@ class ScheduleBatch:
         return group_hash
 
     def prepare_prefill_for_draft(self):
-        spec_out_cache_loc_list = []
-        spec_kv_indices_list = []
+        spec_out_cache_parts = []
+        spec_kv_indices_parts = []
         device = self.device
         for sequence in self.sequences:
-            spec_out_cache_loc_list.extend(sequence.out_cache_loc_spec[-len(sequence.new_tokens):])
-            spec_kv_indices_list.extend(sequence.out_cache_loc_spec)
+            cache_locs = torch.from_numpy(np.asarray(sequence.out_cache_loc_spec, dtype=np.int64))
+            spec_out_cache_parts.append(cache_locs[-len(sequence.new_tokens):])
+            spec_kv_indices_parts.append(cache_locs)
 
         padded_token = self.forward_batch.padded_token
-        if padded_token > 0:
-            spec_out_cache_loc_list.extend([0] * padded_token)
-            spec_kv_indices_list.extend([0] * padded_token)
-
-        out_cache_loc_spec = torch.tensor(spec_out_cache_loc_list, dtype=torch.int64, pin_memory=True).to(device, non_blocking=True)
-        kv_indices_spec = torch.tensor(spec_kv_indices_list, dtype=torch.int64, pin_memory=True).to(device, non_blocking=True)
+        out_cache_loc_spec = _pack_cache_indices(spec_out_cache_parts, padded_token, device)
+        kv_indices_spec = _pack_cache_indices(spec_kv_indices_parts, padded_token, device)
 
         self.forward_batch_spec.max_extend_len = self.forward_batch.max_extend_len
         self.forward_batch_spec.kv_indptr = self.forward_batch.kv_indptr
@@ -164,7 +171,7 @@ class ScheduleBatch:
         position_ids_list = list(itertools.chain.from_iterable(positions_outs))
 
         spec_out_cache_loc_list = []
-        spec_kv_indices_list = []
+        spec_kv_indices_parts = []
         spec_kv_indptr_list = [0]
         device = self.device
         for sequence in self.sequences:
@@ -175,14 +182,15 @@ class ScheduleBatch:
             else:
                 spec_out_cache_loc_list.extend(sequence.out_cache_loc_spec[-total_draft_len:])
             spec_kv_indptr_list.append(spec_kv_indptr_list[-1] + len(sequence.out_cache_loc_spec))
-            spec_kv_indices_list.extend(sequence.out_cache_loc_spec)
+            spec_kv_indices_parts.append(torch.from_numpy(
+                np.asarray(sequence.out_cache_loc_spec, dtype=np.int64)
+            ))
 
         padded_token = self.forward_batch.padded_token
         if padded_token > 0:
             spec_out_cache_loc_list.extend([0] * padded_token)
-            spec_kv_indices_list.extend([0] * padded_token)
         out_cache_loc_spec = torch.tensor(spec_out_cache_loc_list, dtype=torch.int64, pin_memory=True).to(device, non_blocking=True)
-        kv_indices_spec = torch.tensor(spec_kv_indices_list, dtype=torch.int64, pin_memory=True).to(device, non_blocking=True)
+        kv_indices_spec = _pack_cache_indices(spec_kv_indices_parts, padded_token, device)
 
         #kv_indptr would be used in two place, extend forward for the latest accepted token,, the other is multi-step draft decode path
         self.forward_batch_spec.kv_indptr = torch.tensor(
@@ -284,17 +292,7 @@ class ScheduleBatch:
         position_ids = torch.tensor(position_ids_list, dtype=torch.long, pin_memory=True).to(device, non_blocking=True)
         cur_seq_lens = torch.tensor(cur_seq_lens_list, dtype=torch.int32, pin_memory=True).to(device, non_blocking=True)
         out_cache_loc = torch.tensor(out_cache_loc_list, dtype=torch.int64, pin_memory=True).to(device, non_blocking=True)
-        num_kv_indices = sum(part.shape[0] for part in kv_indices_parts)
-        kv_indices_cpu = torch.empty(
-            num_kv_indices + padded_token,
-            dtype=torch.int64,
-            device="cpu",
-            pin_memory=True,
-        )
-        torch.cat(kv_indices_parts, out=kv_indices_cpu[:num_kv_indices])
-        if padded_token:
-            kv_indices_cpu[num_kv_indices:].zero_()
-        kv_indices = kv_indices_cpu.to(device, non_blocking=True)
+        kv_indices = _pack_cache_indices(kv_indices_parts, padded_token, device)
 
         prefix_lens = torch.tensor(prefix_lens_list, dtype=torch.int32, pin_memory=True).to(device, non_blocking=True)
 
