@@ -19,6 +19,8 @@ class EagleCudaGraphRunner():
         indptr_shape.insert(0, steps)
         indices_shape = list(draft_model_runner.kv_indices_buffer.shape)
         indices_shape.insert(0, steps)
+        max_batch_size = max(self.server_args.max_running_requests, self.server_args.cuda_graph_max_bs)
+        indices_shape[-1] = (indices_shape[-1] + steps * max_batch_size) * self.topk
         self.kv_indptr_buffer = draft_model_runner.kv_indptr_buffer
         self.kv_indptr_buffer_s = torch.zeros(indptr_shape, dtype=torch.int32, device=draft_model_runner.device_id)
         self.kv_indices_buffer_s = torch.zeros(indices_shape, dtype=torch.long, device=draft_model_runner.device_id)

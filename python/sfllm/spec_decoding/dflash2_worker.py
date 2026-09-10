@@ -209,8 +209,8 @@ class DFlash2Worker(SpeculativeWorker):
         forward_batch = ForwardBatch(self.draft_mem_pool)
         forward_batch.forward_mode = ForwardMode.DRAFT_EXTEND
         forward_batch.qo_indptr = batch.forward_batch.qo_indptr
-        forward_batch.kv_indptr = batch.forward_batch_spec.kv_indptr
-        forward_batch.kv_indices = batch.forward_batch_spec.kv_indices
+        forward_batch.kv_indptr = batch.forward_batch.kv_indptr
+        forward_batch.kv_indices = batch.forward_batch_spec.kv_indices_mtd
         forward_batch.out_cache_loc = self._draft_scratch_locs[:token_count]
         forward_batch.seq_lens = batch.forward_batch.seq_lens
         forward_batch.max_extend_len = self.block_size

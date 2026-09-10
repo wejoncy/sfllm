@@ -629,7 +629,7 @@ def generate_kv_indices_for_mtd_triton(kv_out_buffer: Tuple[torch.Tensor, torch.
         assert kv_indptr.shape[0] == running_steps and kv_indptr.is_contiguous()
         kv_indices_stride_0 = kv_indices.stride(0)
         kv_indptr_stride_0 = kv_indptr.stride(0)
-        assert (seq_lens_sum + (running_steps - 1 + 1) * bs) * topk < kv_indices_stride_0
+        assert (seq_lens_sum + (running_steps - 1 + 1) * bs) * topk <= kv_indices_stride_0
     else:
         kv_indptr = torch.zeros((running_steps*(topk*bs+1),), dtype=torch.int32, device=device)
         kv_indices = torch.empty(
