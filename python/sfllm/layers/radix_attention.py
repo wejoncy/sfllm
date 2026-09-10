@@ -66,7 +66,7 @@ class RadixAttention(nn.Module):
         layer_id: int,
         logit_cap: float = 0.0,
         v_head_dim: int = -1,
-        sliding_window_size: int = -1,
+        sliding_window_size: tuple[int, int] = (-1, -1),
         is_cross_attention: bool = False,
         pos_encoding_mode: str = "NONE",
         logit_capping_method: str = "tanh",
@@ -83,7 +83,7 @@ class RadixAttention(nn.Module):
         self.scaling = scaling
         self.layer_id = layer_id
         self.logit_cap = logit_cap
-        self.sliding_window_size = sliding_window_size or -1
+        self.sliding_window_size = sliding_window_size
         self.is_cross_attention = is_cross_attention
         self.is_causal = True
         self.use_irope = use_irope
