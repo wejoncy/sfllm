@@ -330,7 +330,8 @@ class InferenceEngine:
                         b = cur_batch.forward_batch_spec.kv_indptr
                         # x1=x.clone()
                         cur_batch.forward_batch_spec.kv_indices_mtd = compact_accepted_tokens(x, b, cur_batch.forward_batch.seq_lens)
-                        cur_batch.forward_batch_spec.kv_indices = cur_batch.forward_batch_spec.kv_indices_mtd
+                        prefix_lens = cur_batch.forward_batch.seq_lens - accept_length
+                        cur_batch.forward_batch_spec.kv_indices = compact_accepted_tokens(x, b, prefix_lens, fill_value=0)
 
                         # row_ids = torch.arange(x.shape[0], device=device_id)
                         # seg_ids = torch.searchsorted(b, row_ids, right=True) - 1  # [N]
@@ -341,7 +342,7 @@ class InferenceEngine:
                         # x[mask] = -1
                         # x[:] = move_neg1_to_tail(x)
                         # cur_batch.forward_batch_spec.kv_indices_mtd -= extra_length # can't handle it here, may generate_kv_indices_kernel
-                        cur_batch.forward_batch_spec.kv_indptr[1:] = cur_batch.forward_batch.seq_lens.cumsum(dim=0)
+                        cur_batch.forward_batch_spec.kv_indptr[1:] = prefix_lens.cumsum(dim=0)
                         if cur_batch.spec_info.out_cache_loc is not None:
                             # even we don't know the accept index yet, we can adjust it in GPU async
                             # would it affect when this is in the scheduler stream?
@@ -368,7 +369,7 @@ class InferenceEngine:
                             # cur_batch.forward_batch.kv_indices[:draft_token_steps-len(cur_batch)] = resolve_out_cache_loc
                             # cur_batch.forward_batch.kv_indices[:] = move_neg1_to_tail(cur_batch.forward_batch.kv_indices)
                             # cur_batch.forward_batch.kv_indices = cur_batch.forward_batch.kv_indices[:len(cur_batch)*num_draft_tokens]
-                        cur_batch.forward_batch.kv_indptr[1:] = cur_batch.forward_batch_spec.kv_indptr[1:]
+                        cur_batch.forward_batch.kv_indptr[1:] = cur_batch.forward_batch.seq_lens.cumsum(dim=0)
 
                         x = cur_batch.forward_batch_spec.position_ids_extend
                         x.record_stream(compute_stream)

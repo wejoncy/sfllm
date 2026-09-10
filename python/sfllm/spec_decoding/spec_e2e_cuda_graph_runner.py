@@ -77,7 +77,7 @@ class SpeculativeE2ECudaGraphRunner():
         spec_forward_batch.position_ids_extend = self.spec_position_ids_extend[:token_nums]# position_ids
         spec_forward_batch.out_cache_loc = self.spec_out_cache_loc[:token_nums] 
         spec_forward_batch.kv_indptr = self.spec_kv_indptr_buffer[: batch_size + 1]
-        spec_forward_batch.kv_indices = self.spec_kv_indices_buffer[: batch_size] # ....
+        spec_forward_batch.kv_indices = self.spec_kv_indices_buffer
         spec_forward_batch.qo_indptr = self.spec_qo_indptr_buffer[: batch_size + 1]
         spec_forward_batch.num_kv_splits = self.num_kv_splits_buffer[:batch_size]
         spec_forward_batch.forward_mode = ForwardMode.DRAFT_EXTEND
