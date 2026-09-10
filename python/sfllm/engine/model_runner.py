@@ -78,9 +78,7 @@ class ModelRunner:
         # attn backend related buffers
         self.attn_backend = create_attention_backend(self, layer_metadata)
         max_kv_splits = 16
-        max_batch_size = self.server_args.max_running_requests
-        if self.server_args.speculative_algorithm == "eagle3":
-            max_batch_size *= self.server_args.speculative_eagle_topk
+        max_batch_size = 512 * 2
         num_heads = max(m["num_heads"] for m in layer_metadata.values())
         output_width = max(
             m["num_heads"] * m["v_head_dim"] for m in layer_metadata.values()
