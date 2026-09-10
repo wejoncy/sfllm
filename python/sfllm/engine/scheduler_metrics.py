@@ -26,6 +26,8 @@ class RunningMetrics:
 
     def reset(self):
         self.num_generated_tokens = 0
+        self.spec_num_forward_ct = 0
+        self.spec_num_accepted_tokens = 0
         self.cum_forward_ct = 0
         self.cum_spec_accept_tokens = 0
         self.prefill_tokens = 0
@@ -44,6 +46,10 @@ class RunningMetrics:
         num_accepted_tokens = spec_info.accept_length_cpu.sum().item()
         if num_accepted_tokens < 0:
             return
+        # Live logs average this interval; completed-output totals stay separate.
+        batch_size = len(spec_info.accept_length_cpu)
+        self.spec_num_forward_ct += batch_size
+        self.spec_num_accepted_tokens += num_accepted_tokens + batch_size
         self.num_generated_tokens += num_accepted_tokens
 
     def log_prefill_metrics(self, schedule_batch: ScheduleBatch):
@@ -91,11 +97,12 @@ class RunningMetrics:
                 f"gen throughput (token/s): {self.num_generated_tokens / elapsed:.2f}, "
                 f"cache usage: {cache_usage:.2f}%"
             )
-            if schedule_batch.spec_info is not None and self.cum_forward_ct:
-                avg_accept_lengths = self.cum_spec_accept_tokens / self.cum_forward_ct
+            if schedule_batch.spec_info is not None and self.spec_num_forward_ct:
+                avg_accept_lengths = self.spec_num_accepted_tokens / self.spec_num_forward_ct
                 msg += f", accept len: {avg_accept_lengths:.2f}"
             logger.info(msg)
             self.last_refresh_time = current_time
             self.num_generated_tokens = 0
+            self.spec_num_accepted_tokens = self.spec_num_forward_ct = 0
 
         self.num_generated_tokens += batch_size
