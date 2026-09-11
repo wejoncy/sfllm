@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from inspect import signature
 from typing import Tuple
 
 import torch
@@ -11,39 +10,6 @@ import triton.language as tl
 from triton.experimental import gluon as tg
 from triton.experimental.gluon import language as gl
 import sf_kernel
-
-
-def _load_gdn_kernels(prefill_backend: str, decode_backend: str):
-    chunk_gated_delta_rule = None
-    gdn_decode = None
-    if prefill_backend == decode_backend == "triton":
-        return chunk_gated_delta_rule, gdn_decode
-    if torch.version.cuda is None:
-        return chunk_gated_delta_rule, gdn_decode
-    arch = torch.cuda.get_device_capability()[0]
-    if arch < 9:
-        return chunk_gated_delta_rule, gdn_decode
-    if prefill_backend == "flashinfer":
-        try:
-            from flashinfer import gdn_prefill
-
-            prefill = getattr(gdn_prefill, "chunk_gated_delta_rule", None)
-            if (
-                prefill is not None
-                and {"use_cp", "output_state"} <= signature(prefill).parameters.keys()
-                and getattr(gdn_prefill, f"cp_delta_rule_dsl_sm{arch}0", None) is not None
-                # FlashInfer's SM100 CP kernel requires CUDA 13.
-                and (arch != 10 or int(torch.version.cuda.split(".")[0]) >= 13)
-            ):
-                chunk_gated_delta_rule = prefill
-        except (ImportError, RuntimeError):
-            pass
-    if decode_backend == "flashinfer":
-        try:
-            from flashinfer import gdn_decode
-        except (ImportError, RuntimeError):
-            pass
-    return chunk_gated_delta_rule, gdn_decode
 
 
 @tg.jit(
@@ -843,16 +809,14 @@ class GatedDeltaNetBackend:
             raise ValueError("GDN backends must be one of: flashinfer, triton")
         self.prefill_backend = prefill_backend
         self.decode_backend = decode_backend
-        (
-            self._gdn_prefill,
-            self._gdn_decode,
-        ) = _load_gdn_kernels(prefill_backend, decode_backend)
-        self._gdn_mtp = getattr(self._gdn_decode, "gated_delta_rule_mtp", None)
-        if self._gdn_mtp is not None and (
-            getattr(self._gdn_decode, "get_tile_v_mtp", None) is None
-            or "ssm_state_indices" not in signature(self._gdn_mtp).parameters
-        ):
-            self._gdn_mtp = None
+        if prefill_backend == "flashinfer":
+            from flashinfer.gdn_prefill import chunk_gated_delta_rule
+
+            self._gdn_prefill = chunk_gated_delta_rule
+        if decode_backend == "flashinfer":
+            from flashinfer import gdn_decode
+
+            self._gdn_decode = gdn_decode
 
     def prefill(
         self,
@@ -874,12 +838,13 @@ class GatedDeltaNetBackend:
         head_v_dim: int,
         ssm_state_indices: torch.Tensor = None,
     ) -> torch.Tensor:
-        use_flashinfer = (
-            self._gdn_prefill is not None
-            and head_k_dim == head_v_dim == 128
+        use_flashinfer = self.prefill_backend == "flashinfer"
+        if use_flashinfer and not (
+            head_k_dim == head_v_dim == 128
             and ssm_states.dtype in (torch.float32, torch.bfloat16)
             and mixed_qkv.dtype in (torch.float16, torch.bfloat16)
-        )
+        ):
+            raise ValueError("FlashInfer GDN prefill requires K=V=128, FP16/BF16 inputs and FP32/BF16 states.")
         q, k, v, g, beta = split_l2norm_qkv_gates(
             mixed_qkv,
             a,
@@ -932,38 +897,6 @@ class GatedDeltaNetBackend:
         scatter_recurrent_state(output_state, ssm_states, state_indices)
         return output
 
-    def _decode_kernel(self, qkv, states, dt_bias, state_indices, output_indices):
-        """Select an available implementation using tensor metadata only."""
-        if (
-            self._gdn_decode is None or states.dtype not in (torch.float32, torch.bfloat16)
-            or qkv.dtype not in (torch.float16, torch.bfloat16)
-            or dt_bias.dtype not in (torch.bfloat16, torch.float32)
-        ):
-            return None
-        num_v_heads, head_v_dim, head_k_dim = states.shape[-3:]
-        if head_k_dim < 128 or head_v_dim < 128:
-            return None
-        if output_indices is None:
-            if states.dtype == torch.bfloat16:
-                if head_k_dim == head_v_dim == 128 and getattr(
-                    self._gdn_decode, "_GDN_DECODE_BF16_STATE_AVAILABLE", False
-                ):
-                    return self._gdn_decode.gated_delta_rule_decode_pretranspose
-                return None
-            if (
-                getattr(self._gdn_decode, "run_pretranspose_decode", None) is not None
-                and head_v_dim % self._gdn_decode.TILE_V == 0
-            ):
-                return self._gdn_decode.gated_delta_rule_decode_pretranspose
-        elif states.dtype == torch.float32 and self._gdn_mtp is not None and output_indices.shape[1] >= 2:
-            tile_v = self._gdn_decode.get_tile_v_mtp(
-                state_indices.shape[0], output_indices.shape[1],
-                num_v_heads=num_v_heads, v_dim=head_v_dim,
-            )
-            if head_v_dim % tile_v == 0:
-                return self._gdn_mtp
-        return None
-
     def decode(
         self,
         projected_qkvz: torch.Tensor,
@@ -996,10 +929,7 @@ class GatedDeltaNetBackend:
         if ssm_state_indices is not None:
             state_indices = ssm_state_indices
         steps = ssm_output_indices.shape[1] if ssm_output_indices is not None else 1
-        recurrent = self._decode_kernel(
-            mixed_qkv, ssm_states, dt_bias, state_indices, ssm_output_indices
-        )
-        if recurrent is None:
+        if self.decode_backend == "triton":
             core = packed_gdn_decode(
                 mixed_qkv=mixed_qkv,
                 a=a,
@@ -1012,6 +942,11 @@ class GatedDeltaNetBackend:
                 ssm_output_indices=ssm_output_indices,
             )
         else:
+            recurrent = (
+                self._gdn_decode.gated_delta_rule_mtp
+                if ssm_output_indices is not None
+                else self._gdn_decode.gated_delta_rule_decode_pretranspose
+            )
             state_options = (
                 dict(ssm_state_indices=ssm_output_indices, disable_state_update=False)
                 if ssm_output_indices is not None else dict(state=None)
