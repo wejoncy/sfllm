@@ -4,10 +4,7 @@ import torch
 
 from sfllm.engine.forward_params import ForwardBatch, ForwardMode
 from sfllm.engine.schedule_batch import BatchResult, ScheduleBatch
-from sfllm.kernels.dflash2 import (
-    dflash2_selector_greedy_walk,
-    prepare_dflash2_block,
-)
+from sfllm.kernels.dflash2 import prepare_dflash2_block
 from sfllm.models.dflash2 import DFlash2Config
 from sfllm.models.interfaces import HasBatchState
 from sfllm.model_loader.model_config import ModelConfig
@@ -22,13 +19,13 @@ def _validate_model_pair(
     dflash2_config: DFlash2Config,
 ) -> None:
     if getattr(target_config, "model_type", None) not in ("qwen3", "qwen3_5_text"):
-        raise ValueError("DFlash2 supports Qwen3 and Qwen3.5 targets.")
+        raise ValueError("Block drafts support Qwen3 and Qwen3.5 targets.")
     for name in ("hidden_size", "vocab_size"):
         draft_value = getattr(draft_config, name, None)
         target_value = getattr(target_config, name, None)
         if draft_value != target_value:
             raise ValueError(
-                "DFlash2 draft/target shape mismatch: "
+                "Draft/target shape mismatch: "
                 f"draft {name}={draft_value!r}, target {name}={target_value!r}."
             )
 
@@ -40,7 +37,7 @@ def _validate_model_pair(
     ]
     if invalid_layer_ids:
         raise ValueError(
-            "DFlash2 target_layer_ids are outside the target model: "
+            "Draft target_layer_ids are outside the target model: "
             f"{invalid_layer_ids}."
         )
 
@@ -48,31 +45,35 @@ def _validate_model_pair(
 class DFlash2Worker(SpeculativeWorker):
     """DFlash2 model logic on top of SFLLM's Eagle overlap contract."""
 
+    config_cls = DFlash2Config
+    checkpoint_verify_extra = 0
+
     def __init__(self, server_args: ServerArgs) -> None:
         if not server_args.speculative_draft_model_path:
-            raise ValueError("DFlash2 requires --speculative-draft-model-path.")
+            raise ValueError("Block drafts require --speculative-draft-model-path.")
         if server_args.quantization is not None:
             raise ValueError(
-                "DFlash2 reads target quantization from the checkpoint; omit --quantization."
+                "Block drafts read target quantization from the checkpoint; omit --quantization."
             )
 
         draft_config = ModelConfig(
             server_args.speculative_draft_model_path
         ).hf_config
-        checkpoint_config = DFlash2Config.from_hf_config(draft_config)
+        checkpoint_config = self.config_cls.from_hf_config(draft_config)
         if (
             "sliding_attention" in draft_config.layer_types
             and server_args.attention_backend != "fa3"
         ):
-            raise ValueError("DFlash2 sliding attention requires --attention-backend fa3.")
+            raise ValueError("Sliding draft attention requires --attention-backend fa3.")
 
-        # A DFlash block maps directly to the shared Eagle protocol width.
+        # DSpark config counts proposals; DFlash2 config includes the anchor.
+        max_block_size = checkpoint_config.block_size + self.checkpoint_verify_extra
         self.block_size = server_args.speculative_num_draft_tokens
         if self.block_size is None:
-            self.block_size = checkpoint_config.block_size
-        if not 2 <= self.block_size <= checkpoint_config.block_size:
+            self.block_size = max_block_size
+        if not 2 <= self.block_size <= max_block_size:
             raise ValueError(
-                f"DFlash2 draft token count must be between 2 and {checkpoint_config.block_size}."
+                f"Draft token count must be between 2 and {max_block_size}."
             )
         server_args.speculative_eagle_topk = 1
         server_args.speculative_num_steps = self.block_size - 1
@@ -81,8 +82,9 @@ class DFlash2Worker(SpeculativeWorker):
         super().__init__(server_args)
         self.dflash2_config = self.draft_model_runner.model.dflash_config
         for layer in self.draft_model_runner.model.layers:
-            layer.attention_conv.block_size = self.block_size
-            layer.mlp_conv.block_size = self.block_size
+            for conv in (layer.attention_conv, layer.mlp_conv):
+                if conv is not None:
+                    conv.block_size = self.block_size
         _validate_model_pair(
             draft_config=self.draft_model_runner.get_config(),
             target_config=self.target_model_runner.get_config(),
@@ -168,11 +170,11 @@ class DFlash2Worker(SpeculativeWorker):
     @torch.inference_mode()
     def _forward_prefill(self, batch: ScheduleBatch) -> BatchResult:
         if not all(sequence.sampling_params.is_greedy for sequence in batch):
-            raise ValueError("DFlash2 currently supports greedy requests only.")
+            raise ValueError("Block drafts currently support greedy requests only.")
 
         output = self.target_model_runner.forward(batch)
         if output.aux_hidden_states is None:
-            raise RuntimeError("DFlash2 target prefill returned no captured states.")
+            raise RuntimeError("Target prefill returned no captured states for the draft.")
         self.draft_model_runner.model.materialize_target_kv(
             target_hidden=torch.cat(output.aux_hidden_states, dim=-1),
             positions=batch.position_ids,
@@ -264,23 +266,11 @@ class DFlash2Worker(SpeculativeWorker):
             input_embeds=embeddings,
         ).view(batch_size, block, -1)
 
-        prediction_hidden = draft_hidden[:, 1:]
-        candidate_ids, unary_logits = self.draft_model_runner.model.compute_candidates(
-            prediction_hidden.reshape(-1, prediction_hidden.shape[-1]),
+        self.draft_model_runner.model.sample_proposals(
+            draft_hidden[:, 1:],
             self.target_model_runner.model.lm_head.weight,
-        )
-        top_k = self.dflash2_config.selector_top_k
-        candidate_ids = candidate_ids.view(batch_size, block - 1, top_k)
-        pairwise = (
-            self.draft_model_runner.model.candidate_selector.compute_pairwise_scores(
-                candidate_ids=candidate_ids,
-                hidden_states=prediction_hidden,
-                anchor_token_ids=self._block_ids[:batch_size, 0],
-            )
-        )
-        dflash2_selector_greedy_walk(
-            candidate_ids, unary_logits.view(batch_size, block - 1, top_k),
-            pairwise, self._proposals[:batch_size],
+            self._block_ids[:batch_size, 0],
+            self._proposals[:batch_size],
         )
 
         candidates = self._candidates[:batch_size]

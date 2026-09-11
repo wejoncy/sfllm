@@ -441,7 +441,7 @@ class Qwen3_5Model(nn.Module):
         max_state_rows = int(server_args.max_running_requests)
         spec_steps = (
             server_args.speculative_num_draft_tokens
-            if server_args.speculative_algorithm == "dflash2" else 0
+            if server_args.speculative_algorithm in ("dflash2", "dspark") else 0
         )
         conv_dim = (
             2 * config.linear_num_key_heads * config.linear_key_head_dim

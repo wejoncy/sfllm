@@ -50,6 +50,7 @@ class SpeculativeAlgorithm(IntEnum):
     EAGLE = auto()
     EAGLE3 = auto()
     DFLASH2 = auto()
+    DSPARK = auto()
 
     def is_none(self):
         return self == SpeculativeAlgorithm.NONE
@@ -66,6 +67,7 @@ class SpeculativeAlgorithm(IntEnum):
             "EAGLE": SpeculativeAlgorithm.EAGLE,
             "EAGLE3": SpeculativeAlgorithm.EAGLE3,
             "DFLASH2": SpeculativeAlgorithm.DFLASH2,
+            "DSPARK": SpeculativeAlgorithm.DSPARK,
             None: SpeculativeAlgorithm.NONE,
         }
         if name is not None:
