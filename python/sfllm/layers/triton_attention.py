@@ -19,9 +19,29 @@ class TritonAttention:
         self.static_kv_splits = False
         self.decode_attention_fwd = decode_attention_fwd
         self.extend_attention_fwd = extend_attention_fwd
+        self.scratch_shapes = []
+        self.layer_index_mapping = {}
+        for layer_id, params in layer_metadata.items():
+            shape = (params["num_heads"], params["v_head_dim"])
+            if shape not in self.scratch_shapes:
+                self.scratch_shapes.append(shape)
+            self.layer_index_mapping[layer_id] = self.scratch_shapes.index(shape)
 
     def prepare(self, forward_batch, num_tokens):
-        """Triton consumes the ragged indices already supplied by ForwardBatch."""
+        if forward_batch.forward_mode != ForwardMode.DECODE:
+            return
+        splits = forward_batch.max_kv_splits
+        self.forward_metadata = tuple(
+            (
+                forward_batch.attn_logits[:num_tokens * heads * splits * dim].view(
+                    num_tokens, heads, splits, dim,
+                ),
+                forward_batch.attn_lse[:num_tokens * heads * splits].view(
+                    num_tokens, heads, splits,
+                ),
+            )
+            for heads, dim in self.scratch_shapes
+        )
 
     def get_num_kv_splits(
         self,
@@ -128,12 +148,7 @@ class TritonAttention:
         o = torch.empty_like(q)
         kv_indptr = forward_batch.kv_indptr
         kv_indices = forward_batch.kv_indices
-        scratch_shape = (q.shape[0], layer.tp_q_head_num, forward_batch.max_kv_splits)
-        scratch_size = scratch_shape[0] * scratch_shape[1] * scratch_shape[2]
-        attn_logits = forward_batch.attn_logits[:scratch_size * layer.v_head_dim].view(
-            *scratch_shape, layer.v_head_dim,
-        )
-        attn_lse = forward_batch.attn_lse[:scratch_size].view(scratch_shape)
+        attn_logits, attn_lse = self.forward_metadata[self.layer_index_mapping[layer.layer_id]]
         self.decode_attention_fwd(
             q.view(-1, layer.tp_q_head_num, layer.qk_head_dim),
             forward_batch.past_key_values[layer.layer_id][0],
