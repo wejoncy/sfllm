@@ -112,6 +112,9 @@ class DFlash2Attention(Qwen3Attention):
 
     def __init__(self, config, layer_id: int, quant_config=None, prefix: str = ""):
         rope = getattr(config, "rope_parameters", None) or {}
+        sliding = config.layer_types[layer_id] == "sliding_attention"
+        is_causal = self.attention_is_causal(config, sliding)
+        window = int(config.sliding_window) - 1 if sliding else -1
         super().__init__(
             hidden_size=int(config.hidden_size),
             num_heads=int(config.num_attention_heads),
@@ -126,15 +129,16 @@ class DFlash2Attention(Qwen3Attention):
             attention_bias=bool(config.attention_bias),
             prefix=prefix,
             alt_stream=None,
+            is_causal=is_causal,
+            window_size=(window, 0 if sliding and is_causal else window),
         )
-        self.attn.is_causal = False
-        if config.layer_types[layer_id] == "sliding_attention":
-            self.attn.is_causal = getattr(
-                config, "is_causal",
-                not config.dflash_config.get("sliding_window_non_causal", False),
-            )
-            window = int(config.sliding_window) - 1
-            self.attn.sliding_window_size = (window, 0 if self.attn.is_causal else window)
+
+    @staticmethod
+    def attention_is_causal(config, sliding):
+        return sliding and getattr(
+            config, "is_causal",
+            not getattr(config, "dflash_config", {}).get("sliding_window_non_causal", False),
+        )
 
     def materialize_kv(
         self,

@@ -36,6 +36,8 @@ class Qwen3Attention(nn.Module):
         attention_bias: bool = False,
         prefix: str = "",
         alt_stream: Optional[torch.cuda.Stream] = None,
+        is_causal: bool = True,
+        window_size: tuple[int, int] = (-1, -1),
     ) -> None:
         super().__init__()
         self.hidden_size = hidden_size
@@ -99,6 +101,8 @@ class Qwen3Attention(nn.Module):
             num_kv_heads=self.num_kv_heads,
             layer_id=layer_id,
             prefix=add_prefix("attn", prefix),
+            is_causal=is_causal,
+            window_size=window_size,
         )
         self.alt_stream = alt_stream
 
