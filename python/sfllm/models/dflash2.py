@@ -305,10 +305,9 @@ class DFlash2CandidateSelector(nn.Module):
         )
         self.hidden_projection = nn.Linear(hidden_size, state_rank, bias=False)
 
-    def build_lattice(
+    def compute_pairwise_scores(
         self,
         candidate_ids: torch.Tensor,
-        unary_logits: torch.Tensor,
         hidden_states: torch.Tensor,
         anchor_token_ids: torch.Tensor,
     ) -> torch.Tensor:
@@ -322,10 +321,9 @@ class DFlash2CandidateSelector(nn.Module):
             dim=1,
         )
         predecessors = self.predecessor_codebook[predecessor_ids]
-        pairwise = torch.einsum(
+        return torch.einsum(
             "blpr,blcr->blpc", predecessors * hidden[:, :, None], successors
         )
-        return unary_logits[:, :, None, :] + pairwise.float()
 
 
 class DFlash2DraftModel(nn.Module):
