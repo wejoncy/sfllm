@@ -24,6 +24,7 @@ class ServerArgs:
     linear_attn_backend: Literal["triton", "flashinfer"] = "flashinfer"
     linear_attn_prefill_backend: Optional[Literal["triton", "flashinfer"]] = None
     linear_attn_decode_backend: Optional[Literal["triton", "flashinfer"]] = None
+    mamba_ssm_dtype: Optional[Literal["float32", "bfloat16"]] = None
     # speculative decoding
     speculative_algorithm: Optional[str] = None
     speculative_draft_model_path: Optional[str] = None
@@ -140,6 +141,12 @@ class ServerArgs:
             default=ServerArgs.linear_attn_decode_backend,
             choices=["triton", "flashinfer"],
             help="GDN decode backend; inherits --linear-attn-backend when unset.",
+        )
+        parser.add_argument(
+            "--mamba-ssm-dtype",
+            choices=["float32", "bfloat16"],
+            default=ServerArgs.mamba_ssm_dtype,
+            help="Recurrent SSM state dtype; defaults to the model config or float32.",
         )
         parser.add_argument(
             "--tokenizer-mode",

@@ -466,7 +466,8 @@ class Qwen3_5Model(nn.Module):
                 config.linear_value_head_dim,
                 config.linear_key_head_dim,
                 dtype={"float32": torch.float32, "bfloat16": torch.bfloat16}[
-                    vars(config).get("mamba_ssm_dtype", "float32")
+                    server_args.mamba_ssm_dtype
+                    or vars(config).get("mamba_ssm_dtype", "float32")
                 ],
             ),
             persistent=False,

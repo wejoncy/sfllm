@@ -114,6 +114,11 @@ For a compatible Qwen3.5 DFlash2 draft, add:
 The draft token count is configurable (2 to the checkpoint block size); omit it
 to use the checkpoint default. The selector top-k stays as configured in the checkpoint.
 
+For Qwen3.5, `--mamba-ssm-dtype bfloat16` explicitly selects BF16 recurrent
+states. The default uses the model config's SSM dtype, or FP32 if unspecified.
+GDN prefill and ordinary decode use their selected backends. BF16 speculative
+verification always uses Triton and needs no backend setting.
+
 ### 2. Test the API
 
 **Chat Completions (Streaming)**
