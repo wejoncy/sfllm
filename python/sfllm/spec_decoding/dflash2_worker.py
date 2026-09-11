@@ -271,16 +271,16 @@ class DFlash2Worker(SpeculativeWorker):
         )
         top_k = self.dflash2_config.selector_top_k
         candidate_ids = candidate_ids.view(batch_size, block - 1, top_k)
-        selector_scores = (
-            self.draft_model_runner.model.candidate_selector.build_lattice(
+        pairwise = (
+            self.draft_model_runner.model.candidate_selector.compute_pairwise_scores(
                 candidate_ids=candidate_ids,
-                unary_logits=unary_logits.view(batch_size, block - 1, top_k),
                 hidden_states=prediction_hidden,
                 anchor_token_ids=self._block_ids[:batch_size, 0],
             )
         )
         dflash2_selector_greedy_walk(
-            candidate_ids, selector_scores, self._proposals[:batch_size]
+            candidate_ids, unary_logits.view(batch_size, block - 1, top_k),
+            pairwise, self._proposals[:batch_size],
         )
 
         candidates = self._candidates[:batch_size]

@@ -6,6 +6,7 @@ import math
 import triton
 import triton.language as tl
 from sfllm.kernels.triton_utils import move_neg1_to_tail
+from sfllm.kernels.sampling import logits_argmax
 
 import sf_kernel
 from sfllm.spec_decoding.spec_common import SpecInput, SpecInputType
@@ -109,7 +110,7 @@ class EagleVerifyInput(SpecInput):
         # Sample tokens. Force greedy sampling on AMD
         is_all_greedy = True#sampling_info.is_all_greedy
         if is_all_greedy:
-            target_predict = torch.argmax(logits_output.next_token_logits, dim=-1)
+            target_predict = logits_argmax(logits_output.next_token_logits)
             target_predict = target_predict.reshape(bs, self.draft_token_num)
 
             sf_kernel.verify_tree_greedy(
