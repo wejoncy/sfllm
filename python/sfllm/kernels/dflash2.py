@@ -53,7 +53,8 @@ def prepare_dflash2_block(
 @triton.jit
 def _selector_greedy_walk_kernel(
     candidate_ids,
-    scores,
+    unary_logits,
+    pairwise,
     proposals_out,
     slots: tl.constexpr,
     top_k: tl.constexpr,
@@ -66,10 +67,15 @@ def _selector_greedy_walk_kernel(
     for slot in range(slots):
         score_offset = ((row * slots + slot) * top_k + predecessor) * top_k
         values = tl.load(
-            scores + score_offset + offsets,
+            pairwise + score_offset + offsets,
             mask=valid,
             other=-float("inf"),
-        )
+        ).to(tl.float32)
+        unary = tl.load(
+            unary_logits + (row * slots + slot) * top_k + offsets,
+            mask=valid, other=0,
+        ).to(tl.float32)
+        values = unary + values
         best = tl.max(values, axis=0)
         selected = tl.min(tl.where(values == best, offsets, top_k), axis=0)
         token_offset = (row * slots + slot) * top_k + selected
@@ -82,13 +88,15 @@ def _selector_greedy_walk_kernel(
 
 def dflash2_selector_greedy_walk(
     candidate_ids: torch.Tensor,
-    scores: torch.Tensor,
+    unary_logits: torch.Tensor,
+    pairwise: torch.Tensor,
     proposals_out: torch.Tensor,
 ) -> None:
     batch_size, slots, top_k = candidate_ids.shape
     _selector_greedy_walk_kernel[(batch_size,)](
         candidate_ids,
-        scores,
+        unary_logits,
+        pairwise,
         proposals_out,
         slots=slots,
         top_k=top_k,
