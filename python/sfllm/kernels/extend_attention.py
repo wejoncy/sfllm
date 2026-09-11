@@ -62,7 +62,7 @@ def _fwd_kernel(
     stride_buf_kh,
     stride_buf_vbs,
     stride_buf_vh,
-    SLIDING_WINDOW_SIZE: tl.constexpr,
+    WINDOW_SIZE: tl.constexpr,
     logit_cap: tl.constexpr,
     xai_temperature_len: tl.constexpr,
     Lq: tl.constexpr,
@@ -94,7 +94,7 @@ def _fwd_kernel(
 
     # For SWA, we should only load the mask in the sliding window
     window_kv_offset = 0
-    if USE_CUSTOM_MASK and SLIDING_WINDOW_SIZE > 0:
+    if USE_CUSTOM_MASK and window_kv_offset_ptr is not None:
         window_kv_offset = tl.load(window_kv_offset_ptr + cur_seq)
 
     offs_d = tl.arange(0, BLOCK_DMODEL)
@@ -159,16 +159,16 @@ def _fwd_kernel(
                 other=0,
             )
             final_mask &= custom_mask
-        if SLIDING_WINDOW_SIZE > 0:
-            # Add mask where q_id <= kv_id + sliding_window_size
+        if WINDOW_SIZE[0] >= 0:
+            # Add mask where q_id <= kv_id + window_size
             # q_id = prefix_len + cur_m, kv_id = cur_n
             window_mask = (
                 cur_seq_len_prefix + cur_block_m * BLOCK_M + offs_m[:, None]
-            ) <= (start_n + offs_n[None, :] + SLIDING_WINDOW_SIZE)
+            ) <= (start_n + offs_n[None, :] + WINDOW_SIZE[0])
             final_mask &= window_mask
 
         SKIP_TILE = False
-        if (USE_CUSTOM_MASK and not SKIP_PREFIX_CUSTOM_MASK) or SLIDING_WINDOW_SIZE > 0:
+        if (USE_CUSTOM_MASK and not SKIP_PREFIX_CUSTOM_MASK) or WINDOW_SIZE[0] >= 0:
             SKIP_TILE = tl.max(tl.max(final_mask.to(tl.int32), axis=1), axis=0) == 0
 
         if not SKIP_TILE:
@@ -273,15 +273,19 @@ def _fwd_kernel(
             mask_non_causal = mask_m[:, None] & mask_n[None, :]
             final_mask &= mask_non_causal
 
-        if SLIDING_WINDOW_SIZE > 0:
-            # Add mask where q_id <= kv_id + sliding_window_size
+        if WINDOW_SIZE[0] >= 0:
+            # Add mask where q_id <= kv_id + window_size
             window_mask = (cur_block_m * BLOCK_M + offs_m[:, None]) <= (
-                start_n + offs_n[None, :] + SLIDING_WINDOW_SIZE
+                start_n + offs_n[None, :] + WINDOW_SIZE[0]
             )
             final_mask &= window_mask
+        if WINDOW_SIZE[1] >= 0:
+            final_mask &= (start_n + offs_n[None, :]) <= (
+                cur_block_m * BLOCK_M + offs_m[:, None] + WINDOW_SIZE[1]
+            )
 
         SKIP_TILE = False
-        if USE_CUSTOM_MASK or SLIDING_WINDOW_SIZE > 0:
+        if USE_CUSTOM_MASK or WINDOW_SIZE != (-1, -1):
             SKIP_TILE = tl.max(tl.max(final_mask.to(tl.int32), axis=1), axis=0) == 0
 
         if not SKIP_TILE:
@@ -381,7 +385,7 @@ def extend_attention_fwd(
     sm_scale=None,
     logit_cap=0.0,
     skip_prefix_custom_mask=True,
-    sliding_window_size=-1,
+    window_size: tuple[int, int] = (-1, -1),
     sinks=None,
     window_kv_offsets=None,
     xai_temperature_len=-1,
@@ -489,7 +493,7 @@ def extend_attention_fwd(
         k_buffer.stride(1),
         v_buffer.stride(0),
         v_buffer.stride(1),
-        SLIDING_WINDOW_SIZE=sliding_window_size,
+        WINDOW_SIZE=window_size,
         logit_cap=logit_cap,
         xai_temperature_len=xai_temperature_len,
         BLOCK_DMODEL=BLOCK_DMODEL,
@@ -519,7 +523,7 @@ def extend_attention_fwd_torch(
     qo_indptr: torch.Tensor,  # [B+1]
     kv_indptr: torch.Tensor,  # [B+1]
     kv_indices: torch.Tensor,  # [prefix_tokens]
-    sliding_window_size: int,
+    window_left: int,
 ):
     B = qo_indptr.size(0) - 1
     _, H_Q, D = q.shape
@@ -566,8 +570,8 @@ def extend_attention_fwd_torch(
         causal_mask = pos_keys.unsqueeze(0) <= t.unsqueeze(1)
 
         # sliding window
-        if sliding_window_size is not None and sliding_window_size > 0:
-            start = (t - (sliding_window_size)).clamp_min(0)  # [extend_len]
+        if window_left is not None and window_left > 0:
+            start = (t - (window_left)).clamp_min(0)  # [extend_len]
         else:
             start = torch.zeros_like(t)
         window_mask = pos_keys.unsqueeze(0) >= start.unsqueeze(1)
@@ -664,7 +668,7 @@ def _test_extend_attention_sliding_window_once(
             is_causal=True,
             mask_indptr=None,
             max_len_extend=max_len_extend,
-            sliding_window_size=WINDOW_SIZE,
+            window_size=(WINDOW_SIZE, 0),
         )
 
         extend_attention_fwd_torch(

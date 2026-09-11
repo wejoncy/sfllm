@@ -95,7 +95,7 @@ class TritonAttention:
         sm_scale = layer.scaling
         logit_cap=0.0
         skip_prefix_custom_mask=True
-        sliding_window_size=-1
+        window_size=layer.window_size
         sinks=None
         window_kv_offsets=None
         xai_temperature_len=-1
@@ -128,7 +128,7 @@ class TritonAttention:
             sm_scale,
             logit_cap,
             skip_prefix_custom_mask,
-            sliding_window_size,
+            window_size,
             sinks,
             window_kv_offsets,
             xai_temperature_len,
@@ -161,6 +161,7 @@ class TritonAttention:
             forward_batch.num_kv_splits,
             forward_batch.max_kv_splits,
             layer.scaling,
+            window_size=layer.window_size,
         )
         return o
 
