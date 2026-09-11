@@ -113,8 +113,6 @@ class DFlash2Attention(Qwen3Attention):
     def __init__(self, config, layer_id: int, quant_config=None, prefix: str = ""):
         rope = getattr(config, "rope_parameters", None) or {}
         sliding = config.layer_types[layer_id] == "sliding_attention"
-        is_causal = self.attention_is_causal(config, sliding)
-        window = int(config.sliding_window) - 1 if sliding else -1
         super().__init__(
             hidden_size=int(config.hidden_size),
             num_heads=int(config.num_attention_heads),
@@ -129,8 +127,8 @@ class DFlash2Attention(Qwen3Attention):
             attention_bias=bool(config.attention_bias),
             prefix=prefix,
             alt_stream=None,
-            is_causal=is_causal,
-            window_size=(window, 0 if sliding and is_causal else window),
+            is_causal=self.attention_is_causal(config, sliding),
+            window_size=config.window_size if sliding else (-1, -1),
         )
 
     @staticmethod
@@ -334,6 +332,14 @@ class DFlash2DraftModel(nn.Module):
         del prefix
         self.config = config
         self.dflash_config = DFlash2Config.from_hf_config(config)
+        window = (
+            int(config.sliding_window) - 1
+            if "sliding_attention" in config.layer_types else -1
+        )
+        config.window_size = (
+            window,
+            0 if window >= 0 and DFlash2Attention.attention_is_causal(config, True) else window,
+        )
         hidden_size = int(config.hidden_size)
         self.layers = nn.ModuleList(
             [
