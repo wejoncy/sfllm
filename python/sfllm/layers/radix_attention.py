@@ -14,24 +14,34 @@
 """Radix attention."""
 from __future__ import annotations
 
+from contextlib import contextmanager
+from contextvars import ContextVar
+
 import torch
 from torch import nn
 
 from sfllm.engine.forward_params import ForwardBatch
-from sfllm.layers.triton_attention import RaggedAttention
-from sfllm.server_args import get_global_server_args
+from sfllm.layers.triton_attention import TritonAttention
 
 
-def create_attention_backend(
-    name: str,
-    layer_id: int,
-    *,
-    num_heads: int,
-    num_kv_heads: int,
-    head_dim: int,
-):
+_attention_metadata = ContextVar("attention_metadata")
+
+
+@contextmanager
+def collect_attention_metadata():
+    """Collect resolved attention parameters only while constructing one model."""
+    metadata = {}
+    token = _attention_metadata.set(metadata)
+    try:
+        yield metadata
+    finally:
+        _attention_metadata.reset(token)
+
+
+def create_attention_backend(model_runner, layer_metadata):
+    name = model_runner.server_args.attention_backend
     if name == "triton":
-        backend_cls = RaggedAttention
+        backend_cls = TritonAttention
     elif name == "fa3":
         try:
             from sfllm.layers.fa3_attention import FA3AttentionBackend
@@ -44,12 +54,7 @@ def create_attention_backend(
     else:
         raise ValueError(f"Unknown attention backend: {name!r}.")
 
-    return backend_cls(
-        layer_id,
-        num_heads=num_heads,
-        num_kv_heads=num_kv_heads,
-        head_dim=head_dim,
-    )
+    return backend_cls(model_runner, layer_metadata)
 
 
 class RadixAttention(nn.Module):
@@ -66,12 +71,13 @@ class RadixAttention(nn.Module):
         layer_id: int,
         logit_cap: float = 0.0,
         v_head_dim: int = -1,
-        sliding_window_size: tuple[int, int] = (-1, -1),
+        window_size: tuple[int, int] = (-1, -1),
         is_cross_attention: bool = False,
         pos_encoding_mode: str = "NONE",
         logit_capping_method: str = "tanh",
         use_irope: bool = False,
         prefix: str = "",
+        is_causal: bool = True,
     ):
         super().__init__()
         self.tp_q_head_num = num_heads
@@ -83,9 +89,9 @@ class RadixAttention(nn.Module):
         self.scaling = scaling
         self.layer_id = layer_id
         self.logit_cap = logit_cap
-        self.sliding_window_size = sliding_window_size
+        self.window_size = window_size
         self.is_cross_attention = is_cross_attention
-        self.is_causal = True
+        self.is_causal = is_causal
         self.use_irope = use_irope
         self.k_scale = None
         self.v_scale = None
@@ -94,12 +100,15 @@ class RadixAttention(nn.Module):
         self.pos_encoding_mode = pos_encoding_mode
         self.logit_capping_method = logit_capping_method
         self.xai_temperature_len = -1
-        self.attn_backend = create_attention_backend(
-            get_global_server_args().attention_backend,
-            layer_id,
+
+        _attention_metadata.get()[layer_id] = dict(
             num_heads=num_heads,
             num_kv_heads=num_kv_heads,
             head_dim=head_dim,
+            v_head_dim=self.v_head_dim,
+            dtype=torch.get_default_dtype(),
+            is_causal=is_causal,
+            window_size=window_size,
         )
 
     def forward(
@@ -119,7 +128,7 @@ class RadixAttention(nn.Module):
                 v = v.view(-1, self.tp_v_head_num, self.v_head_dim)
             else:
                 k = k.view(-1, self.tp_k_head_num, self.v_head_dim)
-        return self.attn_backend.forward(
+        return forward_batch.attn_backend.forward(
             q,
             k,
             v,

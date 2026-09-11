@@ -6,7 +6,6 @@ from sfllm.server_args import get_global_server_args
 
 try:
     from sgl_kernel import merge_state_v2
-    from sgl_kernel.flash_attn import get_scheduler_metadata
     from sfllm.kernels.fa3_attention import fa3_attention_fwd
 except ImportError:
     merge_state_v2 = None
@@ -21,16 +20,15 @@ FA3_VERIFY_AVAILABLE = (
 )
 
 
-def prepare_verify_attention(workspace, forward_batch, q, layer):
-    prefix = workspace.prepare(forward_batch, q, layer)
-    batch_size = prefix.cache_seqlens.shape[0]
-    width = prefix.max_query_len
-    if q.shape[0] != batch_size * width:
+def prepare_verify_attention(prefix_metadata, forward_batch, num_tokens):
+    batch_size = prefix_metadata.cache_seqlens.shape[0]
+    width = prefix_metadata.max_query_len
+    if num_tokens != batch_size * width:
         raise ValueError("Tree verification requires equal query counts per request.")
 
     # Every query sees the common prefix and its own visible tree nodes.
-    offsets = torch.arange(width, device=q.device)
-    prefix_lens = prefix.cache_seqlens[:, None, None]
+    offsets = torch.arange(width, device=prefix_metadata.page_table.device)
+    prefix_lens = prefix_metadata.cache_seqlens[:, None, None]
     mask_indices = (
         forward_batch.mask_indptr[:-1, None, None]
         + offsets[None, :, None] * (prefix_lens + width)
@@ -43,26 +41,14 @@ def prepare_verify_attention(workspace, forward_batch, q, layer):
         .expand(-1, width, -1).gather(2, order).reshape(-1, width).int()
     )
     cache_seqlens = mask.sum(dim=-1, dtype=torch.int32).flatten()
-    qo_indptr = torch.arange(q.shape[0] + 1, dtype=torch.int32, device=q.device)
-    scheduler = get_scheduler_metadata(
-        batch_size=q.shape[0],
-        max_seqlen_q=1,
-        max_seqlen_k=width,
-        num_heads=layer.tp_q_head_num,
-        num_heads_k=layer.tp_k_head_num,
-        headdim=layer.qk_head_dim,
-        cache_seqlens=cache_seqlens,
-        qkv_dtype=q.dtype,
-        cu_seqlens_q=qo_indptr,
-        page_size=1,
-        causal=False,
-        num_splits=0,
+    qo_indptr = torch.arange(num_tokens + 1, dtype=torch.int32, device=prefix_metadata.page_table.device)
+    suffix_metadata = prefix_metadata.prepare_metadata(
+        page_table, cache_seqlens, qo_indptr, 1, is_tree_verify=True,
     )
-    suffix = type(prefix)(page_table, cache_seqlens, scheduler, qo_indptr, 1)
-    return prefix, suffix
+    return prefix_metadata, suffix_metadata
 
 
-def verify_attention(q, k, v, layer, forward_batch, save_kv_cache=True, *, workspace):
+def verify_attention(q, k, v, layer, forward_batch, save_kv_cache=True, *, metadata):
     if (
         not FA3_VERIFY_AVAILABLE
         or get_global_server_args().speculative_algorithm != "eagle3"
@@ -71,7 +57,7 @@ def verify_attention(q, k, v, layer, forward_batch, save_kv_cache=True, *, works
         or layer.qk_head_dim != layer.v_head_dim
         or layer.qk_head_dim > 256
         or layer.qk_head_dim % 8
-        or layer.sliding_window_size != (-1, -1)
+        or layer.window_size != (-1, -1)
         or layer.logit_cap
         or layer.is_cross_attention
     ):
@@ -80,20 +66,16 @@ def verify_attention(q, k, v, layer, forward_batch, save_kv_cache=True, *, works
         return torch.zeros_like(q)
     if save_kv_cache:
         forward_batch.update(k, v, layer.layer_id)
-    if workspace is not None:
-        forward_batch._verify_attention_metadata = prepare_verify_attention(
-            workspace, forward_batch, q, layer
-        )
-    prefix, suffix = forward_batch._verify_attention_metadata
+    prefix_metadata, suffix_metadata = metadata
     query = q.view(-1, layer.tp_q_head_num, layer.qk_head_dim)
     k_buffer, v_buffer = forward_batch.past_key_values[layer.layer_id]
     prefix_out, prefix_lse, *_ = fa3_attention_fwd(
-        query, torch.empty_like(query), k_buffer, v_buffer, prefix, layer.scaling,
-        False, return_softmax_lse=True,
+        query, torch.empty_like(query), k_buffer, v_buffer, prefix_metadata, layer.scaling,
+        False, layer_id=layer.layer_id, return_softmax_lse=True,
     )
     suffix_out, suffix_lse, *_ = fa3_attention_fwd(
-        query, torch.empty_like(query), k_buffer, v_buffer, suffix, layer.scaling,
-        False, return_softmax_lse=True,
+        query, torch.empty_like(query), k_buffer, v_buffer, suffix_metadata, layer.scaling,
+        False, layer_id=layer.layer_id, return_softmax_lse=True,
     )
     output, _ = merge_state_v2(
         prefix_out, prefix_lse.T.contiguous(),

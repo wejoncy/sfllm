@@ -11,6 +11,7 @@ from sfllm.model_loader.model_loader import initialize_model
 from sfllm.engine.schedule_batch import ScheduleBatch,BatchResult
 from sfllm.engine.forward_params import ForwardMode, ForwardBatch
 from sfllm.engine.memory_pool import BlockMemoryManager
+from sfllm.layers.radix_attention import collect_attention_metadata, create_attention_backend
 from sfllm.layers.sampler import Sampler
 from sfllm.server_args import ServerArgs
 from sfllm.utils.nutils import DEFAULT_CUDA_GRAPH_BATCH_SIZES, MAX_PROCESSED_TOKENS
@@ -45,7 +46,8 @@ class ModelRunner:
         else:
             model_path = server_args.model_path
             self.tokenizer = transformers.AutoTokenizer.from_pretrained(model_path)
-        self.model = initialize_model(model_path, server_args.dtype, server_args.quantization)
+        with collect_attention_metadata() as attention_metadata:
+            self.model = initialize_model(model_path, server_args.dtype, server_args.quantization)
         self.device_id = device_id
         self.sampler = Sampler(self.model.config)
         self.rank = 0
@@ -67,32 +69,32 @@ class ModelRunner:
         self.out_cache_loc = torch.zeros((max_batch_size,), dtype=torch.int64, device=self.device_id)
         # we mange eagle related cuda graph buffers in EagleWorker
         self.create_cudagraph_buffers()
-        self.init_attn_backend_buffers()
+        self.init_attn_backend_buffers(attention_metadata)
 
     def get_config(self):
         return self.model.config
 
-    def init_attn_backend_buffers(self):
+    def init_attn_backend_buffers(self, layer_metadata):
         # attn backend related buffers
-        config = self.model.config
+        self.attn_backend = create_attention_backend(self, layer_metadata)
         max_kv_splits = 16
-        max_batch_size = 512
-        head_dim = getattr(config, "head_dim", config.hidden_size // config.num_attention_heads)
+        max_batch_size = 512 * 2
+        num_heads = max(m["num_heads"] for m in layer_metadata.values())
+        output_width = max(
+            m["num_heads"] * m["v_head_dim"] for m in layer_metadata.values()
+        )
         self.attn_logits = torch.empty(
-            (
-                max_batch_size*2,
-                config.num_attention_heads,
-                max_kv_splits,
-                head_dim,
-            ),
-            dtype=torch.float32,
-            device="cuda",
+            max_batch_size * max_kv_splits * output_width,
+            dtype=torch.float32, device="cuda",
         )
         self.attn_lse = torch.empty(
-            (max_batch_size*2, config.num_attention_heads, max_kv_splits),
-            dtype=torch.float32,
-            device="cuda",
+            max_batch_size * max_kv_splits * num_heads,
+            dtype=torch.float32, device="cuda",
         )
+
+    def prepare_attention(self, forward_batch: ForwardBatch, num_tokens: int):
+        forward_batch.attn_backend = self.attn_backend
+        return self.attn_backend.prepare(forward_batch, num_tokens)
 
     def init_memory_pool(self, num_blocks: int = None):
         self.block_memory_manager = BlockMemoryManager(
@@ -100,6 +102,10 @@ class ModelRunner:
         )
 
     def wrap_target_model(self, target_model_runner: 'ModelRunner'):
+        if self.attn_logits.numel() > target_model_runner.attn_logits.numel():
+            target_model_runner.attn_logits = self.attn_logits
+        if self.attn_lse.numel() > target_model_runner.attn_lse.numel():
+            target_model_runner.attn_lse = self.attn_lse
         self.attn_logits = target_model_runner.attn_logits
         self.attn_lse = target_model_runner.attn_lse
         self.compute_stream = target_model_runner.compute_stream
@@ -216,6 +222,7 @@ class ModelRunner:
         forward_batch.qo_indptr = qo_indptr_buffer[: 1]
         forward_batch.qo_indptr[0] = 0
         with torch.no_grad():
+            self.prepare_attention(forward_batch, self.input_ids[:profile_batch].shape[0])
             self.model(
                 self.input_ids[:profile_batch]*0,
                 positions=self.position_ids[:profile_batch]*0,
@@ -239,6 +246,7 @@ class ModelRunner:
         forward_batch.out_cache_loc = forward_batch.kv_indices
         self.compute_stream.synchronize()
 
+        self.prepare_attention(forward_batch, self.input_ids[:batch_size].shape[0])
         self.model(
             self.input_ids[:batch_size],
             positions=self.position_ids[:batch_size],
@@ -252,6 +260,7 @@ class ModelRunner:
                 cudagraph = torch.cuda.CUDAGraph()
                 # attention_mask = torch.empty((batch_size), dtype=torch.long, device=self.device_id)
                 with torch.cuda.graph(cudagraph, stream=self.compute_stream, pool=self.graph_pool):
+                    self.prepare_attention(forward_batch, self.input_ids[:batch_size].shape[0])
                     output = self.model(
                         self.input_ids[:batch_size],
                         positions=self.position_ids[:batch_size],
@@ -284,6 +293,7 @@ class ModelRunner:
         forward_batch.max_kv_split = 16
         self.compute_stream.synchronize()
 
+        self.prepare_attention(forward_batch, self.input_ids[:batch_size*draft_tokens_expand].shape[0])
         self.model(
             self.input_ids[:batch_size*draft_tokens_expand],
             positions=self.position_ids[:batch_size*draft_tokens_expand],
@@ -299,6 +309,7 @@ class ModelRunner:
                 cudagraph = torch.cuda.CUDAGraph()
                 # attention_mask = torch.empty((batch_size), dtype=torch.long, device=self.device_id)
                 with torch.cuda.graph(cudagraph, stream=self.compute_stream, pool=self.graph_pool):
+                    self.prepare_attention(forward_batch, self.input_ids[:batch_size*draft_tokens_expand].shape[0])
                     output = self.model(
                         self.input_ids[:batch_size*draft_tokens_expand],
                         positions=self.position_ids[:batch_size*draft_tokens_expand],
@@ -332,6 +343,7 @@ class ModelRunner:
                 hidden_states=self.hidden_states_buffer[:token_nums],
             )
 
+        self.prepare_attention(forward_batch, self.input_ids[:token_nums].shape[0])
         self.model(
             self.input_ids[:token_nums],
             positions=self.position_ids[:token_nums],
@@ -351,6 +363,7 @@ class ModelRunner:
                 cudagraph = torch.cuda.CUDAGraph()
 
                 with torch.cuda.graph(cudagraph, stream=self.compute_stream, pool=self.graph_pool):
+                    self.prepare_attention(forward_batch, self.input_ids[:token_nums].shape[0])
                     output = self.model(
                         self.input_ids[:token_nums],
                         positions=self.position_ids[:token_nums],
@@ -401,12 +414,14 @@ class ModelRunner:
             self.cuda_graphs_target_verify[pad_bs_size].replay()
             logits, aux_hidden_states = self.output_logits_target_verify[pad_bs_size]
         else:
+            self.prepare_attention(forward_batch, num_tokens)
             logits, aux_hidden_states = self.model(input_ids=scheduled_batch.input_ids,
                                                    positions=scheduled_batch.position_ids,
                                                    forward_batch=forward_batch)
 
         if self.server_args.enable_debug and not torch.cuda.is_current_stream_capturing():  # print debug log
             # debug mode to compare with non-cuda graph results
+            self.prepare_attention(forward_batch, num_tokens)
             logits_ref, aux_hidden_states_ref = self.model(input_ids=scheduled_batch.input_ids,
                                                            positions=scheduled_batch.position_ids,
                                                            forward_batch=forward_batch)
