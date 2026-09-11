@@ -116,10 +116,8 @@ to use the checkpoint default. The selector top-k stays as configured in the che
 
 For Qwen3.5, `--mamba-ssm-dtype bfloat16` explicitly selects BF16 recurrent
 states. The default uses the model config's SSM dtype, or FP32 if unspecified.
-GDN honors the selected prefill/decode backends; unsupported configurations
-raise an error. For BF16 speculative verification, select
-`--linear-attn-decode-backend triton`; SFLLM's FlashInfer verification path
-requires FP32 states.
+GDN prefill and ordinary decode use their selected backends. BF16 speculative
+verification always uses Triton and needs no backend setting.
 
 ### 2. Test the API
 

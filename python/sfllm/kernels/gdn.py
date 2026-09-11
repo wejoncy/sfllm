@@ -929,7 +929,10 @@ class GatedDeltaNetBackend:
         if ssm_state_indices is not None:
             state_indices = ssm_state_indices
         steps = ssm_output_indices.shape[1] if ssm_output_indices is not None else 1
-        if self.decode_backend == "triton":
+        # BF16 verification has one implementation, independent of ordinary decode.
+        if self.decode_backend == "triton" or (
+            ssm_output_indices is not None and ssm_states.dtype == torch.bfloat16
+        ):
             core = packed_gdn_decode(
                 mixed_qkv=mixed_qkv,
                 a=a,
