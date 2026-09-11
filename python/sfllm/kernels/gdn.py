@@ -2,48 +2,17 @@
 
 from __future__ import annotations
 
-from inspect import signature
 from typing import Tuple
 
 import torch
 import triton
 import triton.language as tl
+from fla.ops.gated_delta_rule.chunk import chunk_gated_delta_rule_fwd
+from flashinfer import gdn_decode
+from flashinfer.gdn_prefill import chunk_gated_delta_rule
 from triton.experimental import gluon as tg
 from triton.experimental.gluon import language as gl
 import sf_kernel
-
-
-def _load_gdn_kernels(prefill_backend: str, decode_backend: str):
-    chunk_gated_delta_rule = None
-    gdn_decode = None
-    if prefill_backend == decode_backend == "triton":
-        return chunk_gated_delta_rule, gdn_decode
-    if torch.version.cuda is None:
-        return chunk_gated_delta_rule, gdn_decode
-    arch = torch.cuda.get_device_capability()[0]
-    if arch < 9:
-        return chunk_gated_delta_rule, gdn_decode
-    if prefill_backend == "flashinfer":
-        try:
-            from flashinfer import gdn_prefill
-
-            prefill = getattr(gdn_prefill, "chunk_gated_delta_rule", None)
-            if (
-                prefill is not None
-                and {"use_cp", "output_state"} <= signature(prefill).parameters.keys()
-                and getattr(gdn_prefill, f"cp_delta_rule_dsl_sm{arch}0", None) is not None
-                # FlashInfer's SM100 CP kernel requires CUDA 13.
-                and (arch != 10 or int(torch.version.cuda.split(".")[0]) >= 13)
-            ):
-                chunk_gated_delta_rule = prefill
-        except (ImportError, RuntimeError):
-            pass
-    if decode_backend == "flashinfer":
-        try:
-            from flashinfer import gdn_decode
-        except (ImportError, RuntimeError):
-            pass
-    return chunk_gated_delta_rule, gdn_decode
 
 
 @tg.jit(
@@ -60,7 +29,7 @@ def _split_l2norm_qkv_gates_kernel(
     num_k_heads: gl.constexpr, num_v_heads: gl.constexpr,
     head_k_dim: gl.constexpr, head_v_dim: gl.constexpr,
     kernel_width: gl.constexpr, block_t: gl.constexpr,
-    block_k: gl.constexpr,
+    block_k: gl.constexpr, log_g: gl.constexpr,
 ):
     # Coalesce convolution loads and state writes along the head dimension.
     layout: gl.constexpr = gl.BlockedLayout([1, 4], [1, 32], [4, 1], [1, 0])
@@ -147,7 +116,8 @@ def _split_l2norm_qkv_gates_kernel(
             softplus = gl.where(softplus_input <= 20.0,
                                 gl.log(1.0 + gl.exp(softplus_input)), softplus_input)
             gate_offset = token * num_v_heads + head
-            gl.store(g + gate_offset, gl.exp(-gl.exp(decay) * softplus), mask=token_mask)
+            gate = -gl.exp(decay) * softplus
+            gl.store(g + gate_offset, gate if log_g else gl.exp(gate), mask=token_mask)
             gl.store(beta + gate_offset, (1.0 / (1.0 + gl.exp(-b_value))).to(b.dtype.element_ty), mask=token_mask)
 
 
@@ -166,6 +136,7 @@ def split_l2norm_qkv_gates(
     conv_states: torch.Tensor,
     query_start_loc: torch.Tensor,
     state_indices: torch.Tensor,
+    log_g: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """Fuse packed prefill convolution, QK normalization and GDN gates."""
     num_tokens = mixed_qkv.shape[0]
@@ -201,6 +172,7 @@ def split_l2norm_qkv_gates(
         head_v_dim=head_v_dim,
         block_t=block_t,
         block_k=triton.next_power_of_2(max(head_k_dim, head_v_dim)),
+        log_g=log_g,
         num_warps=4,
         num_stages=3,
     )
@@ -551,11 +523,11 @@ def _packed_gdn_decode_kernel(
     states,
     state_indices,
     output_indices,
-    stride_qkv,
-    stride_a,
-    stride_b,
-    stride_state,
-    stride_indices,
+    stride_qkv: tl.constexpr,
+    stride_a: tl.constexpr,
+    stride_b: tl.constexpr,
+    stride_state: tl.constexpr,
+    stride_indices: tl.constexpr,
     scale,
     num_k_heads: tl.constexpr,
     num_v_heads: tl.constexpr,
@@ -636,7 +608,12 @@ def _packed_gdn_decode_kernel(
         if output_indices is not None:
             write_slot = tl.load(output_indices + token).to(tl.int64)
             state_ptr = states + write_slot * stride_state + state_offsets
-        tl.store(state_ptr, state, mask=state_mask)
+        # Verification writes several large snapshots; only the accepted one
+        # will be read again. Evict these streaming writes before model weights.
+        tl.store(
+            state_ptr, state, mask=state_mask,
+            cache_modifier=".cs" if steps > 1 and states.dtype.element_ty == tl.bfloat16 else "",
+        )
         # Match the state precision of consecutive single-token decode calls.
         state = state.to(states.dtype.element_ty).to(tl.float32)
 
@@ -662,7 +639,9 @@ def packed_gdn_decode(
         device=mixed_qkv.device,
     )
     block_k = triton.next_power_of_2(head_k_dim)
-    block_v = min(triton.next_power_of_2(head_v_dim), 32)
+    # Smaller tiles reduce register pressure for BF16 multi-token verification.
+    tile_v = 16 if steps > 1 and states.dtype == torch.bfloat16 else 32
+    block_v = min(triton.next_power_of_2(head_v_dim), tile_v)
     _packed_gdn_decode_kernel[(triton.cdiv(head_v_dim, block_v), batch * num_v_heads)](
         mixed_qkv,
         a,
@@ -693,7 +672,7 @@ def packed_gdn_decode(
 
 
 @triton.jit
-def _packed_gdn_prefill_kernel(
+def _packed_gdn_prefill_reference_kernel(
     q,
     k,
     v,
@@ -753,7 +732,7 @@ def _packed_gdn_prefill_kernel(
     tl.store(state_ptr, state, mask=sm)
 
 
-def packed_gdn_prefill(
+def packed_gdn_prefill_reference(
     q: torch.Tensor,
     k: torch.Tensor,
     v: torch.Tensor,
@@ -763,13 +742,17 @@ def packed_gdn_prefill(
     state_indices: torch.Tensor,
     cu_seqlens: torch.Tensor,
 ) -> torch.Tensor:
+    """Serial FP32 recurrence for accuracy checks; g contains decay factors.
+
+    Pass FP32 states to retain the reference's unrounded final state.
+    """
     num_k_heads, head_k_dim = q.shape[-2:]
     num_v_heads, head_v_dim = v.shape[-2:]
     output = torch.empty_like(v)
     block_k = triton.next_power_of_2(head_k_dim)
     block_v = min(triton.next_power_of_2(head_v_dim), 32)
     grid = (triton.cdiv(head_v_dim, block_v), state_indices.shape[0] * num_v_heads)
-    _packed_gdn_prefill_kernel[grid](
+    _packed_gdn_prefill_reference_kernel[grid](
         q,
         k,
         v,
@@ -793,6 +776,31 @@ def packed_gdn_prefill(
     return output
 
 
+def packed_gdn_prefill(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    log_g: torch.Tensor,
+    beta: torch.Tensor,
+    states: torch.Tensor,
+    state_indices: torch.Tensor,
+    cu_seqlens: torch.Tensor,
+) -> torch.Tensor:
+    """FLA chunked prefill from zero state; gates are natural logarithms.
+
+    Intermediates and the state pool both use V-first layout.
+    cu_seqlens must be immutable for the forward; FLA caches its chunk indices.
+    """
+    _, output, _, final_state, _, _ = chunk_gated_delta_rule_fwd(
+        q=q.unsqueeze(0), k=k.unsqueeze(0), v=v.unsqueeze(0),
+        g=log_g.unsqueeze(0), beta=beta.unsqueeze(0), scale=q.shape[-1] ** -0.5,
+        initial_state=None, output_final_state=True,
+        state_v_first=True, cu_seqlens=cu_seqlens,
+    )
+    scatter_recurrent_state(final_state, states, state_indices)
+    return output.squeeze(0)
+
+
 class GatedDeltaNetBackend:
     """Fused GDN execution over model-owned recurrent state buffers."""
 
@@ -802,16 +810,6 @@ class GatedDeltaNetBackend:
             raise ValueError("GDN backends must be one of: flashinfer, triton")
         self.prefill_backend = prefill_backend
         self.decode_backend = decode_backend
-        (
-            self._gdn_prefill,
-            self._gdn_decode,
-        ) = _load_gdn_kernels(prefill_backend, decode_backend)
-        self._gdn_mtp = getattr(self._gdn_decode, "gated_delta_rule_mtp", None)
-        if self._gdn_mtp is not None and (
-            getattr(self._gdn_decode, "get_tile_v_mtp", None) is None
-            or "ssm_state_indices" not in signature(self._gdn_mtp).parameters
-        ):
-            self._gdn_mtp = None
 
     def prefill(
         self,
@@ -833,6 +831,13 @@ class GatedDeltaNetBackend:
         head_v_dim: int,
         ssm_state_indices: torch.Tensor = None,
     ) -> torch.Tensor:
+        use_flashinfer = self.prefill_backend == "flashinfer"
+        if use_flashinfer and not (
+            head_k_dim == head_v_dim == 128
+            and ssm_states.dtype in (torch.float32, torch.bfloat16)
+            and mixed_qkv.dtype in (torch.float16, torch.bfloat16)
+        ):
+            raise ValueError("FlashInfer GDN prefill requires K=V=128, FP16/BF16 inputs and FP32/BF16 states.")
         q, k, v, g, beta = split_l2norm_qkv_gates(
             mixed_qkv,
             a,
@@ -845,17 +850,12 @@ class GatedDeltaNetBackend:
             head_v_dim,
             conv_weight=conv_weight, conv_states=conv_states,
             query_start_loc=query_start_loc, state_indices=state_indices,
+            log_g=not use_flashinfer,
         )
         if ssm_state_indices is not None:
             state_indices = ssm_state_indices
 
-        # The FlashInfer CP prefill API uses 128x128 FP32 states.
-        if (
-            self._gdn_prefill is None
-            or head_k_dim != 128 or head_v_dim != 128
-            or ssm_states.dtype != torch.float32
-            or q.dtype not in (torch.float16, torch.bfloat16)
-        ):
+        if not use_flashinfer:
             return packed_gdn_prefill(
                 q,
                 k,
@@ -864,15 +864,17 @@ class GatedDeltaNetBackend:
                 beta,
                 ssm_states,
                 state_indices,
-                query_start_loc,
+                query_start_loc_i64,
             )
 
         # SFLLM has no prefix cache or chunked prefill, so EXTEND starts from
         # zero state.  Only the final state is materialized for later decode.
-        output_state = ssm_states.new_empty(
+        # CP accumulates in FP32; the final scatter rounds to the cache dtype.
+        output_state = torch.empty(
             (state_indices.shape[0], *ssm_states.shape[1:]),
+            dtype=torch.float32, device=ssm_states.device,
         )
-        output, output_state = self._gdn_prefill(
+        output, output_state = chunk_gated_delta_rule(
             q=q,
             k=k,
             v=v,
@@ -887,32 +889,6 @@ class GatedDeltaNetBackend:
         )
         scatter_recurrent_state(output_state, ssm_states, state_indices)
         return output
-
-    def _decode_kernel(self, qkv, states, dt_bias, state_indices, output_indices):
-        """Select an available implementation using tensor metadata only."""
-        if (
-            self._gdn_decode is None or states.dtype != torch.float32
-            or qkv.dtype not in (torch.float16, torch.bfloat16)
-            or dt_bias.dtype not in (torch.bfloat16, torch.float32)
-        ):
-            return None
-        num_v_heads, head_v_dim, head_k_dim = states.shape[-3:]
-        if head_k_dim < 128 or head_v_dim < 128:
-            return None
-        if output_indices is None:
-            if (
-                getattr(self._gdn_decode, "run_pretranspose_decode", None) is not None
-                and head_v_dim % self._gdn_decode.TILE_V == 0
-            ):
-                return self._gdn_decode.gated_delta_rule_decode_pretranspose
-        elif self._gdn_mtp is not None and output_indices.shape[1] >= 2:
-            tile_v = self._gdn_decode.get_tile_v_mtp(
-                state_indices.shape[0], output_indices.shape[1],
-                num_v_heads=num_v_heads, v_dim=head_v_dim,
-            )
-            if head_v_dim % tile_v == 0:
-                return self._gdn_mtp
-        return None
 
     def decode(
         self,
@@ -946,10 +922,10 @@ class GatedDeltaNetBackend:
         if ssm_state_indices is not None:
             state_indices = ssm_state_indices
         steps = ssm_output_indices.shape[1] if ssm_output_indices is not None else 1
-        recurrent = self._decode_kernel(
-            mixed_qkv, ssm_states, dt_bias, state_indices, ssm_output_indices
-        )
-        if recurrent is None:
+        # BF16 verification has one implementation, independent of ordinary decode.
+        if self.decode_backend == "triton" or (
+            ssm_output_indices is not None and ssm_states.dtype == torch.bfloat16
+        ):
             core = packed_gdn_decode(
                 mixed_qkv=mixed_qkv,
                 a=a,
@@ -962,6 +938,11 @@ class GatedDeltaNetBackend:
                 ssm_output_indices=ssm_output_indices,
             )
         else:
+            recurrent = (
+                gdn_decode.gated_delta_rule_mtp
+                if ssm_output_indices is not None
+                else gdn_decode.gated_delta_rule_decode_pretranspose
+            )
             state_options = (
                 dict(ssm_state_indices=ssm_output_indices, disable_state_update=False)
                 if ssm_output_indices is not None else dict(state=None)
