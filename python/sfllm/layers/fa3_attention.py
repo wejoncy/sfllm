@@ -38,7 +38,7 @@ class FA3AttentionMetadata:
                 num_heads=m["num_heads"], num_heads_k=m["num_kv_heads"],
                 headdim=m["head_dim"], headdim_v=m["v_head_dim"],
                 qkv_dtype=m["dtype"], causal=m["is_causal"],
-                window_size=m["window_size"],
+                window_size=m["window_size"], has_softcap=m["logit_cap"] > 0,
             )
             if params not in scheduler_params:
                 scheduler_params.append(params)
@@ -190,4 +190,5 @@ class FA3AttentionBackend:
             layer.is_causal,
             layer_id=layer.layer_id,
             window_size=layer.window_size,
+            logit_cap=layer.logit_cap,
         )
