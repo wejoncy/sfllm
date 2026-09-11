@@ -7,6 +7,9 @@ from typing import Tuple
 import torch
 import triton
 import triton.language as tl
+from fla.ops.gated_delta_rule.chunk import chunk_gated_delta_rule_fwd
+from flashinfer import gdn_decode
+from flashinfer.gdn_prefill import chunk_gated_delta_rule
 from triton.experimental import gluon as tg
 from triton.experimental.gluon import language as gl
 import sf_kernel
@@ -29,7 +32,7 @@ def _split_l2norm_qkv_gates_kernel(
     block_k: gl.constexpr, log_g: gl.constexpr,
 ):
     # Coalesce convolution loads and state writes along the head dimension.
-    layout: gl.constexpr = gl.BlockedLayout([1, 4], [1, 32], [gl.num_warps(), 1], [1, 0])
+    layout: gl.constexpr = gl.BlockedLayout([1, 4], [1, 32], [4, 1], [1, 0])
     head = gl.program_id(0)
     d = gl.arange(0, block_k, layout=gl.SliceLayout(0, layout))
     if head < num_k_heads:
@@ -142,7 +145,7 @@ def split_l2norm_qkv_gates(
     v = mixed_qkv.new_empty((num_tokens, num_v_heads, head_v_dim))
     g = torch.empty_like(a, dtype=torch.float32)
     beta = torch.empty_like(b, dtype=torch.float32)
-    block_t = 16
+    block_t = 32
     grid = (2 * num_k_heads + num_v_heads, triton.cdiv(num_tokens, block_t) + query_start_loc.shape[0] - 1)
     _split_l2norm_qkv_gates_kernel[grid](
         mixed_qkv,
@@ -170,7 +173,7 @@ def split_l2norm_qkv_gates(
         block_t=block_t,
         block_k=triton.next_power_of_2(max(head_k_dim, head_v_dim)),
         log_g=log_g,
-        num_warps=2,
+        num_warps=4,
         num_stages=3,
     )
     return q, k, v, g, beta
@@ -788,8 +791,6 @@ def packed_gdn_prefill(
     Intermediates and the state pool both use V-first layout.
     cu_seqlens must be immutable for the forward; FLA caches its chunk indices.
     """
-    from fla.ops.gated_delta_rule.chunk import chunk_gated_delta_rule_fwd
-
     _, output, _, final_state, _, _ = chunk_gated_delta_rule_fwd(
         q=q.unsqueeze(0), k=k.unsqueeze(0), v=v.unsqueeze(0),
         g=log_g.unsqueeze(0), beta=beta.unsqueeze(0), scale=q.shape[-1] ** -0.5,
@@ -809,14 +810,6 @@ class GatedDeltaNetBackend:
             raise ValueError("GDN backends must be one of: flashinfer, triton")
         self.prefill_backend = prefill_backend
         self.decode_backend = decode_backend
-        if prefill_backend == "flashinfer":
-            from flashinfer.gdn_prefill import chunk_gated_delta_rule
-
-            self._gdn_prefill = chunk_gated_delta_rule
-        if decode_backend == "flashinfer":
-            from flashinfer import gdn_decode
-
-            self._gdn_decode = gdn_decode
 
     def prefill(
         self,
@@ -881,7 +874,7 @@ class GatedDeltaNetBackend:
             (state_indices.shape[0], *ssm_states.shape[1:]),
             dtype=torch.float32, device=ssm_states.device,
         )
-        output, output_state = self._gdn_prefill(
+        output, output_state = chunk_gated_delta_rule(
             q=q,
             k=k,
             v=v,
@@ -946,9 +939,9 @@ class GatedDeltaNetBackend:
             )
         else:
             recurrent = (
-                self._gdn_decode.gated_delta_rule_mtp
+                gdn_decode.gated_delta_rule_mtp
                 if ssm_output_indices is not None
-                else self._gdn_decode.gated_delta_rule_decode_pretranspose
+                else gdn_decode.gated_delta_rule_decode_pretranspose
             )
             state_options = (
                 dict(ssm_state_indices=ssm_output_indices, disable_state_update=False)
