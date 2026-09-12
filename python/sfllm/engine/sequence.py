@@ -88,7 +88,7 @@ class RequestSequence(RawSequence):
             sampling_params = SamplingParams()
         super().__init__(prompt=prompt, sampling_params=sampling_params)
         self.out_cache_loc = array("q")
-        self.out_cache_loc_spec = []
+        self.out_cache_loc_spec = array("q")
         self.out_cache_loc_lazy = None  # (CUDA source tensor, CUDA [start, end) row range)
         self.request_index = -1
         self.stream = stream
