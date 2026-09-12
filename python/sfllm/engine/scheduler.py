@@ -78,7 +78,7 @@ class Scheduler:
     def swap_req_to_waiting(self, sequence: RequestSequence):
         self.free_sequence_resources(sequence)
         del sequence.out_cache_loc[:]
-        sequence.out_cache_loc_spec = []
+        del sequence.out_cache_loc_spec[:]
         sequence.status = "WAITING"
         sequence.new_tokens = sequence.tokens.copy()
         self.waiting_queue.put(sequence)
