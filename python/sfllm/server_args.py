@@ -31,6 +31,7 @@ class ServerArgs:
     speculative_eagle_topk: int = 4
     speculative_num_steps: int = 4
     speculative_num_draft_tokens: Optional[int] = None
+    speculative_dspark_topk: int = -1
 
     #piecewise for prefill
     enable_piecewise_cuda_graph: bool = False
@@ -183,7 +184,7 @@ class ServerArgs:
             "--speculative-algorithm",
             type=str.lower,
             default=ServerArgs.speculative_algorithm,
-            choices=[None, "eagle3", "dflash2"],
+            choices=[None, "eagle3", "dflash2", "dspark"],
             help="The speculative decoding algorithm to use.",
         )
         parser.add_argument(
@@ -199,6 +200,12 @@ class ServerArgs:
             help="The top-k value for Eagle speculative decoding.",
         )
         parser.add_argument(
+            "--speculative-dspark-topk",
+            type=int,
+            default=ServerArgs.speculative_dspark_topk,
+            help="Restrict vanilla DSpark proposals to unary top-k candidates; -1 uses original DSpark with the full vocabulary.",
+        )
+        parser.add_argument(
             "--speculative-num-steps",
             type=int,
             default=ServerArgs.speculative_num_steps,
@@ -208,7 +215,7 @@ class ServerArgs:
             "--speculative-num-draft-tokens",
             type=int,
             default=ServerArgs.speculative_num_draft_tokens,
-            help="Draft token count: defaults to 8 for Eagle, or the checkpoint block size for DFlash2.",
+            help="Verify token count: defaults to 8 for Eagle, checkpoint block_size for DFlash2, or gamma+1 for DSpark.",
         )
         parser.add_argument(
             "--enable-debug",
@@ -227,7 +234,7 @@ class ServerArgs:
         return cls(**{attr: getattr(args, attr) for attr in attrs})
 
     def __post_init__(self):
-        if self.speculative_num_draft_tokens is None and self.speculative_algorithm != "dflash2":
+        if self.speculative_num_draft_tokens is None and self.speculative_algorithm not in ("dflash2", "dspark"):
             self.speculative_num_draft_tokens = 8
         if self.max_running_requests is None:
             self.max_running_requests = self.cuda_graph_max_bs

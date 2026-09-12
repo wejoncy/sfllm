@@ -21,6 +21,7 @@ except ImportError:
     _flashinfer_top_k = None
 
 from sfllm.engine.forward_params import ForwardBatch
+from sfllm.kernels.dflash2 import dflash2_selector_greedy_walk
 from sfllm.layers.layernorm import RMSNorm
 from sfllm.model_loader.weight_utils import default_weight_loader
 from sfllm.models.qwen3 import Qwen3Attention, Qwen3MLP
@@ -234,11 +235,13 @@ class DFlash2GroupedConv(nn.Module):
 
 
 class DFlash2DecoderLayer(nn.Module):
-    def __init__(self, config, layer_id: int, quant_config=None) -> None:
+    def __init__(
+        self, config, layer_id: int, draft_config, attention_cls, quant_config=None
+    ) -> None:
         super().__init__()
         hidden_size = int(config.hidden_size)
         self.input_layernorm = RMSNorm(hidden_size, eps=float(config.rms_norm_eps))
-        self.self_attn = DFlash2Attention(
+        self.self_attn = attention_cls(
             config,
             layer_id,
             quant_config=quant_config,
@@ -254,14 +257,16 @@ class DFlash2DecoderLayer(nn.Module):
             quant_config=quant_config,
             prefix=f"layers.{layer_id}.mlp",
         )
-        conv_args = (
-            hidden_size,
-            int(config.dflash_config["block_size"]),
-            int(config.dflash_config["conv_kernel_size"]),
-            int(config.dflash_config["conv_group_size"]),
-        )
-        self.attention_conv = DFlash2GroupedConv(*conv_args)
-        self.mlp_conv = DFlash2GroupedConv(*conv_args)
+        self.attention_conv = self.mlp_conv = None
+        if draft_config.conv_kernel_size:
+            conv_args = (
+                hidden_size,
+                draft_config.block_size,
+                draft_config.conv_kernel_size,
+                draft_config.conv_group_size,
+            )
+            self.attention_conv = DFlash2GroupedConv(*conv_args)
+            self.mlp_conv = DFlash2GroupedConv(*conv_args)
 
     def forward(
         self,
@@ -276,16 +281,20 @@ class DFlash2DecoderLayer(nn.Module):
         else:
             hidden_states, residual = self.input_layernorm(hidden_states, residual)
 
-        hidden_states, attention_kernel = self.attention_conv.prepare(hidden_states)
+        if self.attention_conv is not None:
+            hidden_states, attention_kernel = self.attention_conv.prepare(hidden_states)
         hidden_states = self.self_attn(positions, hidden_states, forward_batch)
-        hidden_states = self.attention_conv.finish(hidden_states, attention_kernel)
+        if self.attention_conv is not None:
+            hidden_states = self.attention_conv.finish(hidden_states, attention_kernel)
 
         hidden_states, residual = self.post_attention_layernorm(
             hidden_states, residual
         )
-        hidden_states, mlp_kernel = self.mlp_conv.prepare(hidden_states)
+        if self.mlp_conv is not None:
+            hidden_states, mlp_kernel = self.mlp_conv.prepare(hidden_states)
         hidden_states = self.mlp(hidden_states)
-        hidden_states = self.mlp_conv.finish(hidden_states, mlp_kernel)
+        if self.mlp_conv is not None:
+            hidden_states = self.mlp_conv.finish(hidden_states, mlp_kernel)
         return hidden_states, residual
 
 
@@ -327,23 +336,25 @@ class DFlash2CandidateSelector(nn.Module):
 class DFlash2DraftModel(nn.Module):
     """Qwen3 DFlash2 backbone and low-rank path selector."""
 
+    config_cls = DFlash2Config
+    attention_cls = DFlash2Attention
+
     def __init__(self, config, quant_config=None, prefix: str = "") -> None:
         super().__init__()
         del prefix
         self.config = config
-        self.dflash_config = DFlash2Config.from_hf_config(config)
-        window = (
-            int(config.sliding_window) - 1
-            if "sliding_attention" in config.layer_types else -1
-        )
+        self.dflash_config = self.config_cls.from_hf_config(config)
+        window = int(config.sliding_window) - 1 if "sliding_attention" in config.layer_types else -1
         config.window_size = (
-            window,
-            0 if window >= 0 and DFlash2Attention.attention_is_causal(config, True) else window,
+            window, 0 if window >= 0 and self.attention_cls.attention_is_causal(config, True) else window
         )
         hidden_size = int(config.hidden_size)
         self.layers = nn.ModuleList(
             [
-                DFlash2DecoderLayer(config, layer_id, quant_config=quant_config)
+                DFlash2DecoderLayer(
+                    config, layer_id, self.dflash_config, self.attention_cls,
+                    quant_config=quant_config,
+                )
                 for layer_id in range(int(config.num_hidden_layers))
             ]
         )
@@ -355,13 +366,16 @@ class DFlash2DraftModel(nn.Module):
         )
         self.speculative_hidden_size = self.fc.out_features
         self.hidden_norm = RMSNorm(hidden_size, eps=float(config.rms_norm_eps))
+        self._init_proposal_head()
+        self.register_buffer("_flat_kv_weight_t", None, persistent=False)
+
+    def _init_proposal_head(self) -> None:
         self.candidate_selector = DFlash2CandidateSelector(
-            hidden_size,
-            int(config.vocab_size),
+            int(self.config.hidden_size),
+            int(self.config.vocab_size),
             self.dflash_config.selector_rank,
             self.dflash_config.selector_top_k,
         )
-        self.register_buffer("_flat_kv_weight_t", None, persistent=False)
 
     def forward(
         self,
@@ -385,23 +399,39 @@ class DFlash2DraftModel(nn.Module):
         return hidden_states
 
     def compute_candidates(
-        self, hidden_states: torch.Tensor, target_head_weight: torch.Tensor
+        self, hidden_states: torch.Tensor, target_head_weight: torch.Tensor,
+        top_k: Optional[int] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
+        if top_k is None:
+            top_k = self.dflash_config.selector_top_k
+        shape = (*hidden_states.shape[:-1], top_k)
+        hidden_states = hidden_states.reshape(-1, hidden_states.shape[-1])
         logits = torch.matmul(
             hidden_states.to(target_head_weight.dtype), target_head_weight.T
         )
         if _flashinfer_top_k is None:
             values, ids = torch.topk(
-                logits, self.dflash_config.selector_top_k, dim=-1, sorted=True
+                logits, top_k, dim=-1, sorted=True
             )
         else:
             values, ids = _flashinfer_top_k(
                 logits,
-                self.dflash_config.selector_top_k,
+                top_k,
                 sorted=True,
                 deterministic=True,
             )
-        return ids.to(torch.int64), values.float()
+        return ids.to(torch.int64).view(shape), values.float().view(shape)
+
+    def sample_proposals(self, hidden_states, target_head_weight, anchor_tokens, out):
+        candidate_ids, unary_logits = self.compute_candidates(
+            hidden_states, target_head_weight
+        )
+        pairwise = self.candidate_selector.compute_pairwise_scores(
+            candidate_ids=candidate_ids,
+            hidden_states=hidden_states,
+            anchor_token_ids=anchor_tokens,
+        )
+        dflash2_selector_greedy_walk(candidate_ids, unary_logits, pairwise, out)
 
     def project_target_hidden(self, target_hidden: torch.Tensor) -> torch.Tensor:
         if target_hidden.ndim != 2 or target_hidden.shape[1] != self.fc.in_features:
@@ -481,7 +511,7 @@ class DFlash2DraftModel(nn.Module):
             if name in ignored:
                 continue
             for packed_name, checkpoint_name, shard_id in stacked_params:
-                if f".{checkpoint_name}." not in f".{name}":
+                if not name.startswith("layers.") or f".{checkpoint_name}." not in name:
                     continue
                 mapped_name = name.replace(checkpoint_name, packed_name)
                 if mapped_name not in params:
