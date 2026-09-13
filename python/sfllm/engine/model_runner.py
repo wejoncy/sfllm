@@ -158,6 +158,13 @@ class ModelRunner:
                 device=self.device_id,
             )
 
+    def bind_cuda_graph_logits_buffer(
+        self, forward_batch: ForwardBatch, num_tokens: int
+    ) -> None:
+        self.model.logits_processor.bind_cuda_graph_output_buffer(
+            forward_batch, num_tokens, self.dtype, self.device_id
+        )
+
     def init_capture_cudagraph(self, forward_mode: ForwardMode = ForwardMode.DECODE):
         if self.server_args.disable_cuda_graph is False:
             if forward_mode == ForwardMode.DRAFT_EXTEND:
@@ -236,6 +243,7 @@ class ModelRunner:
         memory_pool = self.block_memory_manager
         batch_size = 1
         forward_batch = ForwardBatch(memory_pool)
+        self.bind_cuda_graph_logits_buffer(forward_batch, max(self.capture_batch_size))
         forward_batch.attn_logits = self.attn_logits
         forward_batch.attn_lse = self.attn_lse
         input_ids = self.input_ids[:batch_size]
@@ -280,6 +288,10 @@ class ModelRunner:
         memory_pool = self.block_memory_manager
         batch_size = 3
         forward_batch = ForwardBatch(memory_pool)
+        self.bind_cuda_graph_logits_buffer(
+            forward_batch,
+            max(self.capture_batch_size) * draft_tokens_expand,
+        )
         forward_batch.forward_mode = ForwardMode.TARGET_VERIFY
         # forward_batch.attn_logits = self.attn_logits
         # forward_batch.attn_lse = self.attn_lse
@@ -330,6 +342,10 @@ class ModelRunner:
         batch_size = 1
         token_nums = batch_size*(1+self.server_args.speculative_num_steps)
         forward_batch = ForwardBatch(memory_pool)
+        self.bind_cuda_graph_logits_buffer(
+            forward_batch,
+            31 * (1 + self.server_args.speculative_num_steps),
+        )
         # forward_batch.attn_logits = self.attn_logits
         # forward_batch.attn_lse = self.attn_lse
         forward_batch.kv_indptr = self.kv_indptr_buffer[: batch_size + 1]

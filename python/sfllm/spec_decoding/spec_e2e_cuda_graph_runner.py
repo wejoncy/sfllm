@@ -50,6 +50,9 @@ class SpeculativeE2ECudaGraphRunner():
         self.graph_pool  = draft_model_runner.graph_pool
         self.graph_outputs = {}
         max_batch_size = int(self.server_args.cuda_graph_max_bs)
+        self.max_target_logits_tokens = (
+            max_batch_size * self.server_args.speculative_num_draft_tokens
+        )
         requested_batch_sizes = self.server_args.cuda_graph_bs
         self.capture_batch_sizes = sorted(
             set(requested_batch_sizes or range(1, max_batch_size + 1))
@@ -110,6 +113,9 @@ class SpeculativeE2ECudaGraphRunner():
         target_forward_batch.max_kv_split = 16
         target_forward_batch.seq_lens_sum = 16
         target_forward_batch.seq_lens = self.seq_lens_buffer[:batch_size]
+        self.target_model_runner.bind_cuda_graph_logits_buffer(
+            target_forward_batch, self.max_target_logits_tokens
+        )
 
         scheduled_batch.forward_batch_spec = spec_forward_batch
         scheduled_batch.forward_batch = target_forward_batch
