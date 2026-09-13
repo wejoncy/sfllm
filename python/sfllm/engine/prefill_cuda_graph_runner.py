@@ -2,6 +2,7 @@ import bisect
 import logging
 
 import torch
+import tqdm
 
 from sfllm.engine.forward_params import ForwardBatch
 from sfllm.engine.schedule_batch import ScheduleBatch
@@ -33,8 +34,9 @@ class PrefillCudaGraphRunner:
         if not pool.can_alloc(self.max_tokens):
             raise ValueError("Insufficient KV cache for prefill CUDA Graph padding.")
         # Padding writes must never alias a live request or another padded token.
+        scratch_locations = pool.persist_alloc_block_from_rear(self.max_tokens)
         self.scratch_locations = torch.tensor(
-            pool.persist_alloc_block_from_rear(self.max_tokens),
+            scratch_locations,
             dtype=torch.int64, device=model_runner.device_id,
         )
         self.input_ids = torch.zeros_like(self.scratch_locations)
@@ -47,7 +49,25 @@ class PrefillCudaGraphRunner:
         self.kv_indices = model_runner.kv_indices_buffer
         self.graphs = {}
         self.outputs = {}
-        self.capture()
+        original_stream = torch.cuda.current_stream()
+        try:
+            self.capture()
+        except RuntimeError as error:
+            # capture_end() can fail before PyTorch restores the current stream.
+            torch.cuda.set_stream(original_stream)
+            # A CUDA execution fault must still stop startup, not enter serving.
+            torch.cuda.synchronize()
+            self.graphs.clear()
+            self.outputs.clear()
+            pool.free_block_ids.extend(scratch_locations)
+            logger.warning(
+                "Prefill CUDA Graph capture failed for model %s "
+                "(attention_backend=%s, linear_attn_prefill_backend=%s, dtype=%s, quantization=%s). "
+                "Falling back to eager prefill: %s",
+                args.model_path, args.attention_backend,
+                args.linear_attn_prefill_backend or args.linear_attn_backend,
+                model_runner.dtype, args.quantization, error, exc_info=True,
+            )
 
     def forward(self, size, batch):
         self.runner.prepare_attention(batch, size)
@@ -61,7 +81,7 @@ class PrefillCudaGraphRunner:
             # Capture has no live requests and must not write their recurrent states.
             runner.model.prepare_batch_state(ScheduleBatch([], pool))
         stream = runner.compute_stream
-        for size in reversed(self.capture_sizes):
+        for size in tqdm.tqdm(list(reversed(self.capture_sizes)), desc="Capturing prefill CUDA Graphs"):
             # One query per dummy request also fits small context limits.
             self.qo_indptr.copy_(torch.arange(
                 self.max_requests + 1, dtype=torch.int32, device=self.input_ids.device,

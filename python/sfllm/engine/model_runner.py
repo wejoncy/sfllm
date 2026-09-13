@@ -182,7 +182,9 @@ class ModelRunner:
 
     def init_prefill_cudagraph(self):
         if self.server_args.enable_prefill_cuda_graph and not self.server_args.disable_cuda_graph:
-            self.prefill_graph_runner = PrefillCudaGraphRunner(self)
+            runner = PrefillCudaGraphRunner(self)
+            if runner.graphs:
+                self.prefill_graph_runner = runner
 
     def get_max_context_length(self):
         return self.model.config.max_position_embeddings
