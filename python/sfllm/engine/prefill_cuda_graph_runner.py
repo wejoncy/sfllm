@@ -2,6 +2,7 @@ import bisect
 import logging
 
 import torch
+import tqdm
 
 from sfllm.engine.forward_params import ForwardBatch
 from sfllm.engine.schedule_batch import ScheduleBatch
@@ -61,7 +62,7 @@ class PrefillCudaGraphRunner:
             # Capture has no live requests and must not write their recurrent states.
             runner.model.prepare_batch_state(ScheduleBatch([], pool))
         stream = runner.compute_stream
-        for size in reversed(self.capture_sizes):
+        for size in tqdm.tqdm(list(reversed(self.capture_sizes)), desc="Capturing prefill CUDA Graphs"):
             # One query per dummy request also fits small context limits.
             self.qo_indptr.copy_(torch.arange(
                 self.max_requests + 1, dtype=torch.int32, device=self.input_ids.device,
