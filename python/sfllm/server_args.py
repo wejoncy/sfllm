@@ -1,6 +1,10 @@
 import dataclasses
 import argparse
+import logging
 from typing import List, Literal, Optional
+
+logger = logging.getLogger(__name__)
+
 
 @dataclasses.dataclass
 class ServerArgs:
@@ -244,6 +248,19 @@ class ServerArgs:
         return cls(**{attr: getattr(args, attr) for attr in attrs})
 
     def __post_init__(self):
+        if self.enable_prefill_cuda_graph:
+            backend = self.linear_attn_prefill_backend or self.linear_attn_backend
+            if self.disable_cuda_graph:
+                logger.warning(
+                    "Model %s: --disable-cuda-graph overrides --enable-prefill-cuda-graph.",
+                    self.model_path,
+                )
+            elif backend != "flashinfer":
+                logger.warning(
+                    "Model %s: prefill CUDA Graphs requested with GDN prefill backend=%s; "
+                    "models with GDN require FlashInfer for full prefill capture.",
+                    self.model_path, backend,
+                )
         if self.speculative_num_draft_tokens is None and self.speculative_algorithm not in ("dflash2", "dspark"):
             self.speculative_num_draft_tokens = 8
         if self.max_running_requests is None:
