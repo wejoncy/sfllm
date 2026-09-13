@@ -73,13 +73,13 @@ class BlockMemoryManager:
 
     def create_physical_memory_pool(self):
         num_pool_layers = len(self.pool_index_layers)
-        kv_buffers = (
+        self.k_buffer, self.v_buffer = (
             torch.zeros((num_pool_layers, self.num_blocks, *self.block_shape),
                 dtype=self.dtype, device="cuda"),
             torch.zeros((num_pool_layers, self.num_blocks, *self.block_shape),
                 dtype=self.dtype, device="cuda"),
         )
-        self.kv_buffers.extend(zip(kv_buffers[0], kv_buffers[1]))
+        self.kv_buffers.extend(zip(self.k_buffer, self.v_buffer))
 
     def _alloc_block_by_id(self, block_id: int, token_id: int, hashv: int) -> BlockMemory:
         """Allocate a block of memory by block ID."""
