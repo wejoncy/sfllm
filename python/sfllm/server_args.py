@@ -35,6 +35,8 @@ class ServerArgs:
 
     #piecewise for prefill
     enable_piecewise_cuda_graph: bool = False
+    enable_prefill_cuda_graph: bool = False
+    prefill_cuda_graph_sizes: Optional[List[int]] = None
     
     # Optimization/debug options
     cuda_graph_max_bs: Optional[int] = 64
@@ -103,6 +105,14 @@ class ServerArgs:
             "--disable-cuda-graph",
             action="store_true",
             help="Disable cuda graph.",
+        )
+        parser.add_argument(
+            "--enable-prefill-cuda-graph", action="store_true",
+            help="Capture full prefill CUDA Graphs; GDN requires FlashInfer.",
+        )
+        parser.add_argument(
+            "--prefill-cuda-graph-sizes", type=int, nargs="+",
+            help="Token capacities for prefill graphs; default steps: 32 through 256, 64 through 512, 128 through 2048. Above 1024 tokens, replay allows at most 16 padding tokens.",
         )
         parser.add_argument(
             "--disable-overlap",

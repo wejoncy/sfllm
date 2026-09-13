@@ -129,6 +129,9 @@ class Qwen3_5GatedDeltaNet(nn.Module):
                 or server_args.linear_attn_backend
             ),
         )
+        if (server_args.enable_prefill_cuda_graph and not server_args.disable_cuda_graph
+                and self.backend.prefill_backend != "flashinfer"):
+            raise ValueError("Full prefill CUDA Graphs currently require FlashInfer GDN.")
 
     def forward(
         self,
@@ -533,9 +536,9 @@ class Qwen3_5Model(nn.Module):
         batch_key = (padded_batch_size, tuple(indices))
         if batch_key == self.prepared_state_batch:
             return
-        indices.extend([-1] * scheduled_batch.forward_batch.padded_token)
+        indices.extend([-1] * (self.state_indices.numel() - batch_size))
         # The pinned allocator retains storage until the async copy completes.
-        self.state_indices[:padded_batch_size].copy_(
+        self.state_indices.copy_(
             torch.tensor(indices, dtype=torch.int32, device="cpu", pin_memory=True),
             non_blocking=True,
         )
