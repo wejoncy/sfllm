@@ -57,6 +57,7 @@ class SpeculativeWorker:
     def init_capture_cudagraph(self) -> None:
         if not self.server_args.disable_cuda_graph:
             self.e2e_runner.init_cuda_graph()
+            self.target_model_runner.init_prefill_cudagraph()
 
     def forward_e2e(self, scheduled_batch: ScheduleBatch) -> BatchResult:
         return self.forward_decode_e2e_post_process(

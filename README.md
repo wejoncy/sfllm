@@ -182,10 +182,30 @@ curl http://localhost:8081/health
 | `--max-context-length` | Maximum context length | 4096 |
 | `--cuda-graph-max-bs` | Max CUDA graph batch size | 32 |
 | `--disable-cuda-graph` | Disable CUDA graphs | False |
+| `--enable-prefill-cuda-graph` | Capture full prefill graphs (Triton or FA3; GDN requires FlashInfer) | False |
+| `--prefill-cuda-graph-sizes` | Total-token capacities for prefill graphs | Steps of 32 through 256, 64 through 512, 128 through 2048 |
 | `--speculative-algorithm` | Speculative decoding algorithm (`eagle3`, `dflash2`, or `dspark`) | None |
 | `--speculative-draft-model-path` | Path to the speculative draft model | None |
 | `--speculative-num-steps` | Number of speculative steps | 4 |
 | `--disable-overlap` | Disable overlap scheduling | False |
+
+Prefill graphs select the smallest captured capacity that fits the batch's total
+new tokens. Above 1024 tokens, replay allows at most 16 extra padding tokens;
+larger gaps use eager execution. Up to 1024 tokens, the existing bucket spacing
+controls padding. Each capacity supports different request counts and unequal
+sequence lengths, up to `--max-running-requests`.
+The 24 default capacities use finer spacing for small prefills: 129 tokens replay
+the 160-token graph (+31), 1034 tokens use eager, and 1136 tokens replay the
+1152-token graph (+16).
+Use `--prefill-cuda-graph-sizes` to override capacities.
+The default 2048-token ceiling limits graph use, not request or context length;
+larger prefills use eager execution. For Qwen3, enable with
+`--attention-backend triton --enable-prefill-cuda-graph`; FA3 is also supported.
+Models with GDN, such as Qwen3.5, additionally require
+`--linear-attn-prefill-backend flashinfer`. Backend and SSM precision settings
+are preserved. Token padding can change GEMM/attention
+rounding and generated tokens, so results are not guaranteed to be bit-identical
+to eager execution.
 
 ## License
 
