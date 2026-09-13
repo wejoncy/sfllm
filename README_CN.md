@@ -110,10 +110,24 @@ curl http://localhost:8081/health
 | `--max-context-length` | 最大上下文长度 | 4096 |
 | `--cuda-graph-max-bs` | CUDA图最大批处理大小 | 32 |
 | `--disable-cuda-graph` | 禁用CUDA图 | False |
+| `--enable-prefill-cuda-graph` | 捕获 prefill 全图（Triton 或 FA3；GDN 需 FlashInfer） | False |
+| `--prefill-cuda-graph-sizes` | prefill 图的总 token 容量档位 | 到 256 步长 32；到 512 步长 64；到 2048 步长 128 |
 | `--speculative-algorithm` | 投机解码算法 (`eagle3`、`dflash2` 或 `dspark`) | None |
 | `--speculative-draft-model-path` | 投机解码草稿模型路径 | None |
 | `--speculative-num-steps` | 投机解码步数 | 4 |
 | `--disable-overlap` | 禁用重叠调度 | False |
+
+prefill 根据 batch 的新增 token 总数选择能容纳它的最小捕获档位。
+超过 1024 tokens 时，最多补 16 tokens，补充量更大则走 eager；1024 以内
+沿用已有档位间距。同一档支持 `--max-running-requests` 范围内的不同请求数
+和不等长序列。默认 24 档在小 token 区间更密：129 tokens 使用 160 档（补 31）；
+1034 tokens 走 eager；1136 tokens 使用 1152 档（补 16）。
+可用 `--prefill-cuda-graph-sizes` 自定义档位。默认上限 2048 仅限制图的使用范围，
+不限制请求或上下文长度；更大的 prefill 使用 eager。Qwen3 可通过
+`--attention-backend triton --enable-prefill-cuda-graph` 启用，也支持 FA3。
+Qwen3.5 等包含 GDN 的模型另外需要 `--linear-attn-prefill-backend flashinfer`。
+不会自动切换 backend 或 SSM 精度。token padding 可能改变 GEMM/attention 的
+浮点舍入及生成 token，因此不保证与 eager 逐位相同。
 
 ## 开源许可
 

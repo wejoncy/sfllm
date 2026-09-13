@@ -85,6 +85,8 @@ def _fwd_kernel(
 
     cur_seq_extend_start_idx = tl.load(qo_indptr + cur_seq)
     cur_seq_len_extend = tl.load(qo_indptr + cur_seq + 1) - cur_seq_extend_start_idx
+    if cur_block_m * BLOCK_M >= cur_seq_len_extend:
+        return
     cur_seq_kv_start_idx = tl.load(kv_indptr + cur_seq)
     cur_seq_len_prefix = tl.load(kv_indptr + cur_seq + 1) - cur_seq_kv_start_idx
     cur_seq_len = cur_seq_len_prefix + cur_seq_len_extend

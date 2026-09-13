@@ -11,6 +11,7 @@ from sfllm.model_loader.model_loader import initialize_model
 from sfllm.engine.schedule_batch import ScheduleBatch,BatchResult
 from sfllm.engine.forward_params import ForwardMode, ForwardBatch
 from sfllm.engine.memory_pool import BlockMemoryManager
+from sfllm.engine.prefill_cuda_graph_runner import PrefillCudaGraphRunner
 from sfllm.layers.radix_attention import collect_attention_metadata, create_attention_backend
 from sfllm.layers.sampler import Sampler
 from sfllm.server_args import ServerArgs
@@ -41,6 +42,7 @@ def freeze_gc(enable_cudagraph_gc: bool):
 class ModelRunner:
     def __init__(self, server_args: ServerArgs, device_id: int = 0, is_draft: bool = False):
         self.is_draft = is_draft
+        self.prefill_graph_runner = None
         if is_draft:
             model_path = server_args.speculative_draft_model_path
         else:
@@ -161,6 +163,8 @@ class ModelRunner:
     def bind_cuda_graph_logits_buffer(
         self, forward_batch: ForwardBatch, num_tokens: int
     ) -> None:
+        if self.server_args.enable_prefill_cuda_graph and not self.is_draft:
+            num_tokens = max(num_tokens, self.server_args.max_running_requests)
         self.model.logits_processor.bind_cuda_graph_output_buffer(
             forward_batch, num_tokens, self.dtype, self.device_id
         )
@@ -173,6 +177,12 @@ class ModelRunner:
                 self.capture_cudagraph_target_verify()
             else:
                 self.capture_cudagraph_decode()
+            if not self.is_draft:
+                self.init_prefill_cudagraph()
+
+    def init_prefill_cudagraph(self):
+        if self.server_args.enable_prefill_cuda_graph and not self.server_args.disable_cuda_graph:
+            self.prefill_graph_runner = PrefillCudaGraphRunner(self)
 
     def get_max_context_length(self):
         return self.model.config.max_position_embeddings
@@ -431,6 +441,10 @@ class ModelRunner:
             self.prepare_replay(scheduled_batch)
             self.cuda_graphs_target_verify[pad_bs_size].replay()
             logits, aux_hidden_states = self.output_logits_target_verify[pad_bs_size]
+        elif (forward_batch.forward_mode == ForwardMode.EXTEND
+              and self.prefill_graph_runner is not None
+              and self.prefill_graph_runner.can_run(scheduled_batch)):
+            logits, aux_hidden_states = self.prefill_graph_runner.replay(scheduled_batch)
         else:
             self.prepare_attention(forward_batch, num_tokens)
             logits, aux_hidden_states = self.model(input_ids=scheduled_batch.input_ids,
