@@ -130,7 +130,8 @@ template <
     uint32_t vec_size,
     uint32_t bdx,
     typename DType,
-    typename IdType>
+    typename IdType,
+    bool batched_kv = false>
 __global__ void BatchQKApplyRotaryPosIdsCosSinCacheEnhancedHeadParallelismKernel(
     DType* q,
     DType* k,
@@ -163,10 +164,23 @@ __global__ void BatchQKApplyRotaryPosIdsCosSinCacheEnhancedHeadParallelismKernel
     size_t k_buffer_stride_h,
     size_t v_buffer_stride_n,
     size_t v_buffer_stride_h,
-    IdType* __restrict__ kv_cache_loc) {
+    IdType* __restrict__ kv_cache_loc,
+    size_t kv_layer_stride,
+    size_t norm_layer_stride,
+    size_t k_buffer_layer_stride,
+    size_t v_buffer_layer_stride) {
   uint32_t bx = blockIdx.x, tx = threadIdx.x, ty = threadIdx.y;
   uint32_t by = blockIdx.y;
   const uint32_t bdy = blockDim.y;
+  if constexpr (batched_kv) {
+    static_assert(apply_qk_norm && save_kv_cache);
+    k += blockIdx.z * kv_layer_stride;
+    v += blockIdx.z * kv_layer_stride;
+    k_rope += blockIdx.z * kv_layer_stride;
+    k_norm_weight += blockIdx.z * norm_layer_stride;
+    k_buffer += blockIdx.z * k_buffer_layer_stride;
+    v_buffer += blockIdx.z * v_buffer_layer_stride;
+  }
 
 #if (defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 900))
   asm volatile("griddepcontrol.wait;");
@@ -455,7 +469,7 @@ cudaError_t BatchQKApplyRotaryPosIdsCosSinCacheEnhanced(
     FLASHINFER_CUDA_CALL(cudaDeviceGetAttribute(&num_sms, cudaDevAttrMultiProcessorCount, dev_id));
   }
 
-#define LAUNCH_KERNEL_RAW(kernel_name)                                \
+#define LAUNCH_KERNEL_RAW(kernel_name, ...)                           \
   do {                                                                \
     cudaLaunchConfig_t config = {};                                   \
     config.gridDim = nblks;                                           \
@@ -502,7 +516,7 @@ cudaError_t BatchQKApplyRotaryPosIdsCosSinCacheEnhanced(
         k_buffer_stride_h,                                            \
         v_buffer_stride_n,                                            \
         v_buffer_stride_h,                                            \
-        kv_cache_loc));                                               \
+        __VA_ARGS__));                                                \
   } while (0)
 
   DISPATCH_APPLY_QK_NORM(apply_qk_norm, APPLY_QK_NORM, {
@@ -537,7 +551,7 @@ cudaError_t BatchQKApplyRotaryPosIdsCosSinCacheEnhanced(
           if ((nnz + bdy - 1) / bdy >= num_ctas_0) {
             dim3 nblks(nblks_x);
             dim3 nthrs(bdx, bdy);
-            LAUNCH_KERNEL_RAW(kernel_0);
+            LAUNCH_KERNEL_RAW(kernel_0, kv_cache_loc);
           } else {
             dim3 nblks(nblks_x, num_qo_heads + num_kv_heads);
             dim3 nthrs(bdx, bdy);
@@ -550,7 +564,7 @@ cudaError_t BatchQKApplyRotaryPosIdsCosSinCacheEnhanced(
                 bdx,
                 DType,
                 IdType>;
-            LAUNCH_KERNEL_RAW(kernel_1);
+            LAUNCH_KERNEL_RAW(kernel_1, kv_cache_loc, size_t(0), size_t(0), size_t(0), size_t(0));
           }
         } else {
           dim3 nblks(nblks_x, num_qo_heads + num_kv_heads);
@@ -564,7 +578,7 @@ cudaError_t BatchQKApplyRotaryPosIdsCosSinCacheEnhanced(
               bdx,
               DType,
               IdType>;
-          LAUNCH_KERNEL_RAW(kernel_1);
+          LAUNCH_KERNEL_RAW(kernel_1, kv_cache_loc, size_t(0), size_t(0), size_t(0), size_t(0));
         }
         });
       });
