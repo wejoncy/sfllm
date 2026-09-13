@@ -7,6 +7,7 @@ loads only its language model here and skips the vision encoder and MTP head.
 
 from __future__ import annotations
 
+import logging
 from typing import Iterable, Optional, Tuple
 
 import torch
@@ -40,6 +41,9 @@ from sfllm.models.interfaces import HasBatchState
 from sfllm.models.qwen2 import Qwen2MLP
 from sfllm.server_args import get_global_server_args
 from sfllm.utils import add_prefix, make_layers_non_pp
+
+logger = logging.getLogger(__name__)
+
 
 class Qwen3_5GatedDeltaNet(nn.Module):
     def __init__(
@@ -131,7 +135,13 @@ class Qwen3_5GatedDeltaNet(nn.Module):
         )
         if (server_args.enable_prefill_cuda_graph and not server_args.disable_cuda_graph
                 and self.backend.prefill_backend != "flashinfer"):
-            raise ValueError("Full prefill CUDA Graphs currently require FlashInfer GDN.")
+            logger.warning(
+                "Prefill CUDA Graphs disabled for model %s: GDN prefill backend=%s "
+                "does not support full capture with dynamic sequence lengths; "
+                "FlashInfer GDN is required. Prefill will run eagerly with the selected backend.",
+                server_args.model_path, self.backend.prefill_backend,
+            )
+            server_args.enable_prefill_cuda_graph = False
 
     def forward(
         self,
