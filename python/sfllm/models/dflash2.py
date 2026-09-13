@@ -420,7 +420,7 @@ class DFlash2DraftModel(nn.Module):
                 sorted=True,
                 deterministic=True,
             )
-        return ids.to(torch.int64).view(shape), values.float().view(shape)
+        return ids.view(shape), values.view(shape)
 
     def sample_proposals(self, hidden_states, target_head_weight, anchor_tokens, out):
         candidate_ids, unary_logits = self.compute_candidates(

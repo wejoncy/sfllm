@@ -75,15 +75,13 @@ def _split_l2norm_qkv_gates_kernel(
         token_mask = token < num_tokens
         # Find each token's packed sequence without constructing a token-to-row map.
         lo = gl.full((block_t,), 0, gl.int32, gl.SliceLayout(1, layout))
-        hi = gl.full((block_t,), num_sequences, gl.int32, gl.SliceLayout(1, layout))
         remaining = num_sequences
-        while remaining > 0:
-            remaining = remaining // 2
-            mid = (lo + hi) // 2
-            end = gl.load(query_start_loc + mid + 1, mask=mid < num_sequences, other=num_tokens)
-            right = token >= end
-            lo = gl.where((lo < hi) & right, mid + 1, lo)
-            hi = gl.where((lo < hi) & ~right, mid, hi)
+        while remaining > 1:
+            half = remaining // 2
+            mid = lo + half
+            start = gl.load(query_start_loc + mid)
+            lo = gl.where(token >= start, mid, lo)
+            remaining -= half
         seq_start = gl.load(query_start_loc + lo, mask=token_mask, other=0)
 
         mask = token_mask[:, None] & (d[None, :] < dim)

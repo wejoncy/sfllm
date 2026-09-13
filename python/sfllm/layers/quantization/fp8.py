@@ -194,6 +194,12 @@ class Fp8LinearMethod(LinearMethodBase):
                 self.scaled_mm = torch_scaled_mm
             elif fp8_scaled_mm is not None:
                 self.scaled_mm = fp8_scaled_mm
+        self.torch_rowwise_gemm = (
+            self.scaled_mm is fp8_scaled_mm
+            and quant_config.activation_scheme == "dynamic"
+            and quant_config.weight_strategy == "channel"
+            and torch.cuda.get_device_capability()[0] == 9
+        )
 
     def create_weights(
         self,
@@ -408,6 +414,25 @@ class Fp8LinearMethod(LinearMethodBase):
 
         if isinstance(x, tuple):
             quantized, scale = x
+            # Hopper's rowwise GEMM helps large rectangular prefill projections
+            # and moderate decode expansions. Decode contractions favor SGL's
+            # tiling.
+            rows = quantized.shape[0]
+            inner, columns = layer.weight.shape
+            if (
+                self.torch_rowwise_gemm
+                and self.scaled_mm is fp8_scaled_mm
+                and columns % 16 == 0
+                and (
+                    (rows >= 1024 and (inner >= 2 * columns or columns >= 2 * inner))
+                    or (64 < rows <= 256 and columns >= 2 * inner)
+                )
+                and layer.params_dtype == torch.bfloat16
+            ):
+                return torch_scaled_mm(
+                    quantized, layer.weight, scale, layer.weight_scale,
+                    layer.params_dtype, bias, use_fast_accum=True,
+                )
             return self.scaled_mm(
                 quantized, layer.weight, scale, layer.weight_scale,
                 layer.params_dtype, bias,

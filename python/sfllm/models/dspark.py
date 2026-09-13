@@ -148,7 +148,7 @@ class DSparkDraftModel(DFlash2DraftModel):
                 top_k=self.proposal_top_k,
             )
             self.markov_head.sample_candidates(
-                ids, unary.to(target_head_weight.dtype), anchor_tokens, out
+                ids, unary, anchor_tokens, out
             )
             return
         # Dropping the anchor leaves gaps between requests. Flatten explicitly
