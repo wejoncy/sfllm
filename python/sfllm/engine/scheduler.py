@@ -1,3 +1,4 @@
+from array import array
 import queue
 import logging
 from collections import deque
@@ -124,9 +125,9 @@ class Scheduler:
             sequence.status = SequenceStatus.RUNNING
             self.scheduler_policy.add_prefill_req(sequence)
             running_sequences.append(sequence)
-            running_sequences[-1].out_cache_loc.extend(self.mem_pool.alloc_block(len(tokens)))
+            running_sequences[-1].out_cache_loc.extend(array("q", self.mem_pool.alloc_block(len(tokens))))
             if not self.spec_algorithm.is_none():
-                running_sequences[-1].out_cache_loc_spec.extend(self.draft_memory_pool.alloc_block(len(tokens)))
+                running_sequences[-1].out_cache_loc_spec.extend(array("q", self.draft_memory_pool.alloc_block(len(tokens))))
             prefill_tokens += len(tokens)
 
         running_batch = ScheduleBatch(running_sequences, self.mem_pool, self.draft_memory_pool)

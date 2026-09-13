@@ -3,7 +3,8 @@ import numpy as np
 import torch
 import itertools
 import bisect
-from typing import List, Optional, Union
+from array import array
+from typing import List, Optional, Sequence, Union
 from contextlib import contextmanager
 
 from sfllm.engine.forward_params import ForwardBatch,ForwardMode
@@ -158,7 +159,7 @@ class ScheduleBatch:
                     cache_sources[0][0].new_empty((self.spec_info.verified_id.numel(), 1)),
                 ).view(-1)
             # self.spec_info.logits = torch.cat([seq.logits for seq in self.sequences])
-    def prepare_decode_for_draft(self, position_ids_list: List[int], is_overlap:bool=False):
+    def prepare_decode_for_draft(self, position_ids_list: Sequence[int], is_overlap:bool=False):
         # prepare position_ids for draft model extend for last verified tokens
         positions_outs = []
         batch_size = len(self.sequences)
@@ -234,9 +235,10 @@ class ScheduleBatch:
 
     def prepare_inputs(self, is_overlap:bool=False):
         cur_seq_lens_list = [0]
-        input_ids_list = []
-        position_ids_list = []
-        out_cache_loc_list = []
+        # Keep per-token inputs as contiguous int64 buffers to avoid scalar conversion.
+        input_ids_buffer = array("q")
+        position_ids_buffer = array("q")
+        out_cache_loc_buffer = array("q")
         kv_indices_parts = []
         prefix_lens_list = [0]
         device = self.device
@@ -262,13 +264,14 @@ class ScheduleBatch:
             if self.forward_batch.forward_mode == ForwardMode.DECODE:
                 # it's posible to decode multiple tokens at once when doing speculative decoding
                 cur_seq_lens_list.append(1)
-                input_ids_list.append(sequence.new_tokens[-1])
+                input_ids_buffer.append(sequence.new_tokens[-1])
                 start_pos = len(sequence.tokens) - 1
+                position_ids_buffer.append(start_pos)
             else:
                 cur_seq_lens_list.append(len(sequence.new_tokens))
-                input_ids_list.extend(sequence.new_tokens)
+                input_ids_buffer.extend(array("q", sequence.new_tokens))
                 start_pos = len(sequence.tokens) - len(sequence.new_tokens)
-            position_ids_list.extend(list(range(start_pos, start_pos+cur_seq_lens_list[-1])))
+                position_ids_buffer.frombytes(np.arange(start_pos, len(sequence.tokens), dtype=np.int64).tobytes())
             prefix_lens_list.append(start_pos)
             # Local views are copied into the batch-owned pinned buffer below.
             cache_locs = torch.from_numpy(np.frombuffer(sequence.out_cache_loc, dtype=np.int64))
@@ -276,23 +279,24 @@ class ScheduleBatch:
                 true_lens = len(sequence.out_cache_loc) - get_global_server_args().speculative_num_draft_tokens
                 prefix_lens_list[-1] = true_lens
                 # target model used for verify, speculative_num_draft_tokens cache loc, different from normal decode
-                out_cache_loc_list.extend(sequence.out_cache_loc[true_lens:])
+                out_cache_loc_buffer.extend(sequence.out_cache_loc[true_lens:])
                 kv_indices_parts.append(cache_locs[:true_lens])
             else:
-                out_cache_loc_list.extend(sequence.out_cache_loc[-len(sequence.new_tokens):])
+                out_cache_loc_buffer.extend(sequence.out_cache_loc[-len(sequence.new_tokens):])
                 kv_indices_parts.append(cache_locs)
 
         if padded_token > 0:
-            input_ids_list.extend([0]*padded_token)
-            position_ids_list.extend([0]*padded_token)
+            input_ids_buffer.extend([0]*padded_token)
+            position_ids_buffer.extend([0]*padded_token)
             cur_seq_lens_list.extend([1]*padded_token)
-            out_cache_loc_list.extend([0]*padded_token)
+            out_cache_loc_buffer.extend([0]*padded_token)
             prefix_lens_list.extend([0]*padded_token)
     
-        input_ids = torch.tensor(input_ids_list, dtype=torch.long, pin_memory=True).to(device, non_blocking=True)
-        position_ids = torch.tensor(position_ids_list, dtype=torch.long, pin_memory=True).to(device, non_blocking=True)
+        # Pinning copies these CPU views into owned storage before asynchronous H2D.
+        input_ids = torch.from_numpy(np.frombuffer(input_ids_buffer, dtype=np.int64)).pin_memory().to(device, non_blocking=True)
+        position_ids = torch.from_numpy(np.frombuffer(position_ids_buffer, dtype=np.int64)).pin_memory().to(device, non_blocking=True)
         cur_seq_lens = torch.tensor(cur_seq_lens_list, dtype=torch.int32, pin_memory=True).to(device, non_blocking=True)
-        out_cache_loc = torch.tensor(out_cache_loc_list, dtype=torch.int64, pin_memory=True).to(device, non_blocking=True)
+        out_cache_loc = torch.from_numpy(np.frombuffer(out_cache_loc_buffer, dtype=np.int64)).pin_memory().to(device, non_blocking=True)
         kv_indices = _pack_cache_indices(kv_indices_parts, padded_token, device)
 
         prefix_lens = torch.tensor(prefix_lens_list, dtype=torch.int32, pin_memory=True).to(device, non_blocking=True)
@@ -319,7 +323,7 @@ class ScheduleBatch:
             if self.forward_batch.forward_mode == ForwardMode.EXTEND:
                 self.prepare_prefill_for_draft()
             else:
-                self.prepare_decode_for_draft(position_ids_list, is_overlap=is_overlap)
+                self.prepare_decode_for_draft(position_ids_buffer, is_overlap=is_overlap)
 
     def prepare_sample(self):
         is_all_greedy = all(
