@@ -110,7 +110,7 @@ curl http://localhost:8081/health
 | `--max-context-length` | 最大上下文长度 | 4096 |
 | `--cuda-graph-max-bs` | CUDA图最大批处理大小 | 32 |
 | `--disable-cuda-graph` | 禁用CUDA图 | False |
-| `--speculative-algorithm` | 投机解码算法 (`eagle3` 或 `dflash2`) | None |
+| `--speculative-algorithm` | 投机解码算法 (`eagle3`、`dflash2` 或 `dspark`) | None |
 | `--speculative-draft-model-path` | 投机解码草稿模型路径 | None |
 | `--speculative-num-steps` | 投机解码步数 | 4 |
 | `--disable-overlap` | 禁用重叠调度 | False |

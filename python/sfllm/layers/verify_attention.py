@@ -58,7 +58,6 @@ def verify_attention(q, k, v, layer, forward_batch, save_kv_cache=True, *, metad
         or layer.qk_head_dim > 256
         or layer.qk_head_dim % 8
         or layer.window_size != (-1, -1)
-        or layer.logit_cap
         or layer.is_cross_attention
     ):
         return None
@@ -71,11 +70,11 @@ def verify_attention(q, k, v, layer, forward_batch, save_kv_cache=True, *, metad
     k_buffer, v_buffer = forward_batch.past_key_values[layer.layer_id]
     prefix_out, prefix_lse, *_ = fa3_attention_fwd(
         query, torch.empty_like(query), k_buffer, v_buffer, prefix_metadata, layer.scaling,
-        False, layer_id=layer.layer_id, return_softmax_lse=True,
+        False, layer_id=layer.layer_id, logit_cap=layer.logit_cap, return_softmax_lse=True,
     )
     suffix_out, suffix_lse, *_ = fa3_attention_fwd(
         query, torch.empty_like(query), k_buffer, v_buffer, suffix_metadata, layer.scaling,
-        False, layer_id=layer.layer_id, return_softmax_lse=True,
+        False, layer_id=layer.layer_id, logit_cap=layer.logit_cap, return_softmax_lse=True,
     )
     output, _ = merge_state_v2(
         prefix_out, prefix_lse.T.contiguous(),
