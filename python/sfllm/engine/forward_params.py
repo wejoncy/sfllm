@@ -33,6 +33,8 @@ class ForwardBatch:
         self.out_cache_loc = None
         self.custom_mask = None
         self.mask_indptr = None
+        # Optional caller-owned storage shared by mutually exclusive CUDA graphs.
+        self.logits_output_buffer = None
         self.max_kv_splits = 16
         self.sampling_batch_info = None
         self.padded_token = 0
