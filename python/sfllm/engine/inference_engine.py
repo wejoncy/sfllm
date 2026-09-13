@@ -13,6 +13,7 @@ from typing import Dict, Any, List, Tuple, Generator
 
 from sfllm.engine.model_worker import ModelWorker
 from sfllm.spec_decoding.dflash2_worker import DFlash2Worker
+from sfllm.spec_decoding.dspark_worker import DSparkWorker
 from sfllm.spec_decoding.eagle_worker import EagleWorker
 from sfllm.engine.scheduler import Scheduler
 from sfllm.engine.sampling_params import SamplingParams
@@ -40,6 +41,8 @@ class InferenceEngine:
             self.model_worker = EagleWorker(server_args)
         elif server_args.speculative_algorithm == "dflash2":
             self.model_worker = DFlash2Worker(server_args)
+        elif server_args.speculative_algorithm == "dspark":
+            self.model_worker = DSparkWorker(server_args)
         else:
             self.model_worker = ModelWorker(server_args)
         self.server_args = server_args

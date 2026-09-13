@@ -82,10 +82,12 @@ def normalize_e4m3fn_to_e4m3fnuz(
         input_scale = input_scale * 2.0
     return weight, weight_scale, input_scale
 
-def torch_scaled_mm(input, weight, input_scale, weight_scale, out_dtype, bias=None):
+def torch_scaled_mm(input, weight, input_scale, weight_scale, out_dtype, bias=None,
+                    *, use_fast_accum=False):
     return torch._scaled_mm(
-        input, weight, scale_a=input_scale, scale_b=weight_scale,
-        out_dtype=out_dtype, bias=bias,
+        input, weight, scale_a=input_scale,
+        scale_b=weight_scale.view(1, -1) if use_fast_accum else weight_scale,
+        out_dtype=out_dtype, bias=bias, use_fast_accum=use_fast_accum,
     )
 
 

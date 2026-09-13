@@ -93,7 +93,7 @@ class TritonAttention:
         is_causal = layer.is_causal
         mask_indptr = forward_batch.mask_indptr
         sm_scale = layer.scaling
-        logit_cap=0.0
+        logit_cap=layer.logit_cap
         skip_prefix_custom_mask=True
         window_size=layer.window_size
         sinks=None
@@ -161,6 +161,7 @@ class TritonAttention:
             forward_batch.num_kv_splits,
             forward_batch.max_kv_splits,
             layer.scaling,
+            logit_cap=layer.logit_cap,
             window_size=layer.window_size,
         )
         return o

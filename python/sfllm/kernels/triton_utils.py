@@ -467,7 +467,10 @@ def split_firstdim_pytorch_reference(
     return output_tensor
 
 
-@triton.jit
+@triton.jit(
+    do_not_specialize=["total_size"],
+    do_not_specialize_on_alignment=["total_size"],
+)
 def compact_accepted_tokens_kernel(
     x_ptr,
     out_ptr,
@@ -692,7 +695,12 @@ def prune_kv_indices_pytorch_reference(
     return kv_indices
 
 
-@triton.jit
+@triton.jit(
+    do_not_specialize=["token_nums", "ind_size", "ind_size_mtd", "ind_size_verify"],
+    do_not_specialize_on_alignment=[
+        "token_nums", "ind_size", "ind_size_mtd", "ind_size_verify",
+    ],
+)
 def update_eagle_inputs_kernel(
     # Dest pointers
     verified_id_ptr, spec_pos_ptr, spec_loc_ptr, 

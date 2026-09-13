@@ -114,6 +114,24 @@ For a compatible Qwen3.5 DFlash2 draft, add:
 The draft token count is configurable (2 to the checkpoint block size); omit it
 to use the checkpoint default. The selector top-k stays as configured in the checkpoint.
 
+For a Qwen3 DSpark draft (`DSparkDraftModel` or `Qwen3DSparkModel`), use:
+
+```bash
+  --attention-backend fa3 \
+  --speculative-algorithm dspark \
+  --speculative-draft-model-path /path/to/dspark-checkpoint \
+  --speculative-num-draft-tokens 6
+```
+
+This example uses 6 draft queries (anchor + 5 masks) to propose 5 tokens from the mask
+positions; the target verifies 6 tokens including the anchor. Omit the token count to use the checkpoint's gamma
+plus one (`dspark_block_size` takes precedence over `block_size`). Qwen3 and Qwen3.5
+targets, vanilla/gated/RNN Markov heads, and mixed sliding/full draft attention are
+supported. Decoding is fixed-width and greedy; confidence-head weights are unused.
+For vanilla Markov heads, `--speculative-dspark-topk 16` restricts draft proposals
+to the top 16 unary candidates and computes their transitions together. This can
+change draft acceptance; every emitted token is still verified by the target.
+The default, `-1`, runs original DSpark and scores the full vocabulary.
 For Qwen3.5, `--mamba-ssm-dtype bfloat16` explicitly selects BF16 recurrent
 states. The default uses the model config's SSM dtype, or FP32 if unspecified.
 GDN prefill and ordinary decode use their selected backends. BF16 speculative
@@ -164,7 +182,7 @@ curl http://localhost:8081/health
 | `--max-context-length` | Maximum context length | 4096 |
 | `--cuda-graph-max-bs` | Max CUDA graph batch size | 32 |
 | `--disable-cuda-graph` | Disable CUDA graphs | False |
-| `--speculative-algorithm` | Speculative decoding algorithm (`eagle3` or `dflash2`) | None |
+| `--speculative-algorithm` | Speculative decoding algorithm (`eagle3`, `dflash2`, or `dspark`) | None |
 | `--speculative-draft-model-path` | Path to the speculative draft model | None |
 | `--speculative-num-steps` | Number of speculative steps | 4 |
 | `--disable-overlap` | Disable overlap scheduling | False |
