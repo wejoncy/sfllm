@@ -37,12 +37,6 @@ class InferenceEngine:
         Initialize the inference worker.
         """
         configure_logger(server_args)
-        if server_args.enable_prefill_cuda_graph and server_args.disable_cuda_graph:
-            logger.warning(
-                "Prefill CUDA Graphs disabled for model %s: --disable-cuda-graph "
-                "overrides --enable-prefill-cuda-graph. Prefill will run eagerly.",
-                server_args.model_path,
-            )
         if server_args.speculative_algorithm == "eagle3":
             self.model_worker = EagleWorker(server_args)
         elif server_args.speculative_algorithm == "dflash2":
