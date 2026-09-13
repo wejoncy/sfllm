@@ -179,7 +179,7 @@ class DFlash2Worker(SpeculativeWorker):
             target_hidden=torch.cat(output.aux_hidden_states, dim=-1),
             positions=batch.position_ids,
             cache_locs=batch.forward_batch_spec.out_cache_loc,
-            kv_buffers=self.draft_mem_pool.kv_buffers,
+            kv_buffers=(self.draft_mem_pool.k_buffer, self.draft_mem_pool.v_buffer),
         )
 
         spec_info = EagleSpecInput(
@@ -236,7 +236,7 @@ class DFlash2Worker(SpeculativeWorker):
             context=spec_info.hidden_states[:count, :hidden_size],
             positions=batch.forward_batch_spec.position_ids_extend[:count],
             cache_locs=safe_cache_locs,
-            kv_buffers=self.draft_mem_pool.kv_buffers,
+            kv_buffers=(self.draft_mem_pool.k_buffer, self.draft_mem_pool.v_buffer),
         )
 
     def proposal(self, batch: ScheduleBatch) -> EagleVerifyInput:

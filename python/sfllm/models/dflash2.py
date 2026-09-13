@@ -139,27 +139,6 @@ class DFlash2Attention(Qwen3Attention):
             not getattr(config, "dflash_config", {}).get("sliding_window_non_causal", False),
         )
 
-    def materialize_kv(
-        self,
-        raw_kv: torch.Tensor,
-        positions: torch.Tensor,
-        cache_locs: torch.Tensor,
-        kv_buffer: Tuple[torch.Tensor, torch.Tensor],
-    ) -> None:
-        k, v = raw_kv.split([self.kv_size, self.kv_size], dim=-1)
-        k = k.view(k.shape[0], self.num_kv_heads, self.head_dim)
-        v = v.view_as(k)
-        # Target KV materialization has no query heads.
-        torch.ops.sfkernels.qk_norm_rope_and_cache(
-            k[:, :0], k, v,
-            self.q_norm.weight, self.k_norm.weight,
-            self.rotary_emb.cos_sin_cache,
-            positions,
-            not self.rotary_emb.is_neox_style,
-            kv_buffer[0], kv_buffer[1], cache_locs,
-            self.k_norm.variance_epsilon,
-        )
-
 
 @torch.compile(dynamic=True)
 def _grouped_conv(
@@ -368,6 +347,7 @@ class DFlash2DraftModel(nn.Module):
         self.hidden_norm = RMSNorm(hidden_size, eps=float(config.rms_norm_eps))
         self._init_proposal_head()
         self.register_buffer("_flat_kv_weight_t", None, persistent=False)
+        self.register_buffer("_kv_norm_weights", None, persistent=False)
 
     def _init_proposal_head(self) -> None:
         self.candidate_selector = DFlash2CandidateSelector(
@@ -451,6 +431,9 @@ class DFlash2DraftModel(nn.Module):
             )
         stacked = torch.stack(kv_weights).reshape(-1, int(self.config.hidden_size))
         self._flat_kv_weight_t = stacked.T.contiguous()
+        self._kv_norm_weights = torch.stack(
+            [layer.self_attn.k_norm.weight for layer in self.layers]
+        )
 
     def materialize_target_kv(
         self,
@@ -480,13 +463,17 @@ class DFlash2DraftModel(nn.Module):
                 "DFlash2 projected context must have shape [N, hidden_size]."
             )
         raw_kv = torch.matmul(context, self._flat_kv_weight_t)
+        attention = self.layers[0].self_attn
         raw_kv = raw_kv.view(
-            context.shape[0], len(self.layers), 2 * self.layers[0].self_attn.kv_size
+            context.shape[0], len(self.layers), 2 * attention.num_kv_heads,
+            attention.head_dim,
         )
-        for layer_id, layer in enumerate(self.layers):
-            layer.self_attn.materialize_kv(
-                raw_kv[:, layer_id], positions, cache_locs, kv_buffers[layer_id]
-            )
+        torch.ops.sfkernels.kv_norm_rope_and_cache(
+            raw_kv, self._kv_norm_weights, attention.rotary_emb.cos_sin_cache,
+            positions, not attention.rotary_emb.is_neox_style,
+            kv_buffers[0], kv_buffers[1], cache_locs,
+            attention.k_norm.variance_epsilon,
+        )
 
     def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]) -> None:
         stacked_params = (

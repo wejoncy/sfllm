@@ -246,6 +246,89 @@ void qk_norm_rope_and_cache(
       &q_norm_weight, &k_norm_weight, epsilon, 0.0);
 }
 
+// raw_kv: [tokens, layers, 2 * kv_heads, head_dim]; caches: [layers, slots, kv_heads, head_dim].
+void kv_norm_rope_and_cache(
+    at::Tensor raw_kv,
+    at::Tensor k_norm_weights,
+    at::Tensor cos_sin_cache,
+    at::Tensor pos_ids,
+    bool interleave,
+    at::Tensor k_buffer,
+    at::Tensor v_buffer,
+    at::Tensor kv_cache_loc,
+    double epsilon) {
+  CHECK_DIM(4, raw_kv);
+  CHECK_DIM(4, k_buffer);
+  CHECK_DIM(4, v_buffer);
+  CHECK_DIM(2, k_norm_weights);
+  CHECK_DIM(2, cos_sin_cache);
+  CHECK_DIM(1, pos_ids);
+  CHECK_DIM(1, kv_cache_loc);
+  for (const auto& tensor : {raw_kv, k_norm_weights, k_buffer, v_buffer}) {
+    CHECK_CUDA(tensor);
+    CHECK_LAST_DIM_CONTIGUOUS(tensor);
+    CHECK_EQ(tensor.device(), raw_kv.device());
+    CHECK_EQ(tensor.scalar_type(), raw_kv.scalar_type());
+  }
+  for (const auto& tensor : {cos_sin_cache, pos_ids, kv_cache_loc}) {
+    CHECK_INPUT(tensor);
+    CHECK_EQ(tensor.device(), raw_kv.device());
+  }
+  CHECK_EQ(cos_sin_cache.scalar_type(), at::kFloat);
+  CHECK_EQ(pos_ids.scalar_type(), at::kLong);
+  CHECK_EQ(kv_cache_loc.scalar_type(), at::kLong);
+  const auto tokens = raw_kv.size(0), layers = raw_kv.size(1);
+  const auto heads = raw_kv.size(2) / 2, head_dim = raw_kv.size(3);
+  const auto rotary_dim = cos_sin_cache.size(1);
+  TORCH_CHECK(layers > 0 && heads > 0 && raw_kv.size(2) % 2 == 0);
+  CHECK_EQ(k_buffer.size(0), layers);
+  CHECK_EQ(k_buffer.size(2), heads);
+  CHECK_EQ(k_buffer.size(3), head_dim);
+  CHECK_EQ(v_buffer.sizes(), k_buffer.sizes());
+  CHECK_EQ(k_norm_weights.size(0), layers);
+  CHECK_EQ(k_norm_weights.size(1), head_dim);
+  CHECK_EQ(pos_ids.numel(), tokens);
+  CHECK_EQ(kv_cache_loc.numel(), tokens);
+  CHECK_GE(head_dim, rotary_dim);
+  const unsigned int vec_size = std::max<unsigned int>(16 / raw_kv.element_size(), head_dim / 32);
+  CHECK_EQ(rotary_dim % vec_size, 0);
+  if (!interleave) {
+    const unsigned int half_rotary_threads = rotary_dim / vec_size / 2;
+    TORCH_CHECK(
+        half_rotary_threads > 0 && (half_rotary_threads & (half_rotary_threads - 1)) == 0,
+        "NeoX partial rotary dimension must map to a power-of-two half warp");
+  }
+  if (tokens == 0) return;
+  const c10::cuda::CUDAGuard device_guard(raw_kv.device());
+  const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+  DISPATCH_PYTORCH_DTYPE_TO_CTYPE_FLOAT_FP16(raw_kv.scalar_type(), DType, [&] {
+    DISPATCH_INTERLEAVE(interleave, INTERLEAVE, {
+      DISPATCH_HEAD_DIM(head_dim, HEAD_DIM, {
+        constexpr uint32_t vec = std::max(16 / sizeof(DType), HEAD_DIM / 32);
+        constexpr uint32_t bdx = HEAD_DIM / vec, bdy = 128 / bdx;
+        auto* k = static_cast<DType*>(raw_kv.data_ptr());
+        auto* v = k + heads * raw_kv.stride(2);
+        auto* weight = static_cast<DType*>(k_norm_weights.data_ptr());
+        auto kernel = BatchQKApplyRotaryPosIdsCosSinCacheEnhancedHeadParallelismKernel<
+            true, true, INTERLEAVE, HEAD_DIM, vec, bdx, DType, int64_t, true>;
+        kernel<<<dim3((tokens + bdy - 1) / bdy, heads, layers), dim3(bdx, bdy), 0, stream>>>(
+            k, k, v, weight, weight, float(epsilon), 0.0f, k, k,
+            static_cast<DType*>(k_buffer.data_ptr()), static_cast<DType*>(v_buffer.data_ptr()),
+            cos_sin_cache.data_ptr<float>(), pos_ids.data_ptr<int64_t>(),
+            tokens, 0, heads, rotary_dim,
+            raw_kv.stride(0), raw_kv.stride(2), raw_kv.stride(0), raw_kv.stride(2),
+            raw_kv.stride(0), raw_kv.stride(2), raw_kv.stride(0), raw_kv.stride(2),
+            raw_kv.stride(0), raw_kv.stride(2),
+            k_buffer.stride(1), k_buffer.stride(2), v_buffer.stride(1), v_buffer.stride(2),
+            kv_cache_loc.data_ptr<int64_t>(), raw_kv.stride(1), k_norm_weights.stride(0),
+            k_buffer.stride(0), v_buffer.stride(0));
+      });
+    });
+    return true;
+  });
+  C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
 void gemma_qk_norm_rope(
     at::Tensor q,
     at::Tensor k,

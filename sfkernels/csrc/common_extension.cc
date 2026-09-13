@@ -58,6 +58,12 @@ TORCH_LIBRARY_FRAGMENT(sfkernels, m) {
   m.impl("qk_norm_rope_and_cache", torch::kCUDA, &qk_norm_rope_and_cache);
 
   m.def(
+      "kv_norm_rope_and_cache(Tensor! raw_kv, Tensor k_norm_weights, Tensor cos_sin_cache, "
+      "Tensor pos_ids, bool interleave, Tensor! k_buffer, Tensor! v_buffer, "
+      "Tensor kv_cache_loc, float epsilon) -> ()");
+  m.impl("kv_norm_rope_and_cache", torch::kCUDA, &kv_norm_rope_and_cache);
+
+  m.def(
       "gemma_qk_norm_rope(Tensor q, Tensor k, Tensor v, Tensor! q_rope, Tensor! k_rope, "
       "Tensor q_norm_weight, Tensor k_norm_weight, Tensor cos_sin_cache, Tensor pos_ids, "
       "Tensor!? k_buffer, Tensor!? v_buffer, Tensor? kv_cache_loc, float epsilon) -> ()");

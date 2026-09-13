@@ -92,6 +92,16 @@ void qk_norm_rope_and_cache(
     at::Tensor v_buffer,
     at::Tensor kv_cache_loc,
     double epsilon);
+void kv_norm_rope_and_cache(
+    at::Tensor raw_kv,
+    at::Tensor k_norm_weights,
+    at::Tensor cos_sin_cache,
+    at::Tensor pos_ids,
+    bool interleave,
+    at::Tensor k_buffer,
+    at::Tensor v_buffer,
+    at::Tensor kv_cache_loc,
+    double epsilon);
 void gemma_qk_norm_rope(
     at::Tensor q,
     at::Tensor k,
