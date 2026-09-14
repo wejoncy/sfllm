@@ -64,6 +64,7 @@ class EngineServer:
             input_ids=request.input_ids,
             stream=request.stream,
             messages=request.messages,
+            chat_template_kwargs=request.chat_template_kwargs,
         )
         self.req_to_state[sequence.sequence_id] = {
             "response": asyncio.Queue(),
@@ -162,6 +163,8 @@ class EngineServer:
                     new_response["status"] = output["status"].name
                     new_response["meta_info"]["prompt_length"] = output["prompt_length"]
                     new_response["meta_info"]["completion_tokens"] = output["completion_tokens"]
+                    if "error" in output:
+                        new_response["error"] = output["error"]
 
                     self.req_to_state[sequence_id]["status"] = output["status"]
                     self.req_to_state[sequence_id]["finished_time"] = time.time()

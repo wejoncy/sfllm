@@ -1,4 +1,4 @@
-"""Inference-only, text-path implementation of dense Qwen3.5.
+"""Inference-only, text-path implementation of dense Qwen3.5 and Qwen3.8.
 
 Qwen3.5 alternates full attention with Gated DeltaNet linear-attention
 blocks.  The public checkpoint is a multimodal wrapper; SFLLM intentionally
@@ -62,6 +62,11 @@ class Qwen3_5GatedDeltaNet(nn.Module):
         self.conv_dim = self.key_dim * 2 + self.value_dim
         self.conv_kernel_size = config.linear_conv_kernel_dim
         self.rms_norm_eps = config.rms_norm_eps
+        # Qwen3.8 names the GDN SiLU gate "swish". Full attention still
+        # uses sigmoid; output_gate_type applies only to this GDN norm.
+        output_gate_type = getattr(config, "output_gate_type", None)
+        if output_gate_type not in (None, "silu", "swish"):
+            raise ValueError(f"Unsupported GDN output gate: {output_gate_type}")
         self.conv_states = conv_states
         self.ssm_states = ssm_states
         self.state_indices = state_indices
@@ -594,7 +599,7 @@ class Qwen3_5Model(nn.Module):
 
 
 class Qwen3_5ForConditionalGeneration(nn.Module, HasBatchState):
-    """Text-only serving view of a dense Qwen3.5 multimodal checkpoint."""
+    """Text-only serving view of a dense Qwen3.5/Qwen3.8 checkpoint."""
 
     remap_prefix = {"model.language_model.": "model."}
     packed_modules_mapping = {

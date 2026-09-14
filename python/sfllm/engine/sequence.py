@@ -83,6 +83,7 @@ class RequestSequence(RawSequence):
         input_ids: List[int] = None,
         stream: bool = False,
         messages: Optional[List[dict]] = None,
+        chat_template_kwargs: Optional[dict] = None,
     ):
         if sampling_params is None:
             sampling_params = SamplingParams()
@@ -93,6 +94,7 @@ class RequestSequence(RawSequence):
         self.request_index = -1
         self.stream = stream
         self.messages = messages
+        self.chat_template_kwargs = dict(chat_template_kwargs or {})
         if input_ids is not None:
             self.tokens = input_ids
             self.prompt_token_len = len(input_ids)
