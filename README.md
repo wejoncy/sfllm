@@ -83,6 +83,27 @@ acceptance length excludes the prefill token. The tested 1.7B draft also needs
 `tie_word_embeddings=false`: its 32000-row output head cannot share the
 151936-row target embedding.
 
+**Qwen3.8-27B (text):**
+
+Qwen3.8-27B shares the dense Qwen3.5 implementation.
+[`qwen3_8.py`](python/sfllm/models/qwen3_8.py) provides a separate registered
+entry class; the official checkpoint loads via its declared
+`Qwen3_5ForConditionalGeneration` architecture. Its GDN `swish`
+output gate is SiLU; full attention continues to use sigmoid gating. SFLLM
+loads the language model and skips the vision encoder and MTP weights.
+
+```bash
+hf download Qwen/Qwen3.8-27B --local-dir /mnt/data/work/Qwen3.8-27B
+python python/sfllm/serving/app.py \
+  --model /mnt/data/work/Qwen3.8-27B --dtype bfloat16 \
+  --attention-backend fa3 --max-running-requests 8 --cuda-graph-max-bs 8 \
+  --port 8081
+```
+
+This BF16 configuration fits an H100 96 GB. It uses FP32 recurrent states
+and FlashInfer GDN by default. See [Qwen3.8 usage](docs/qwen3_8.md) for thinking
+controls and the current support scope.
+
 **Qwen3.5 FP8:**
 
 Export a calibrated Hugging Face checkpoint with NVIDIA ModelOpt's

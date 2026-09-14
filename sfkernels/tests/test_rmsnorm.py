@@ -111,7 +111,7 @@ def test_rmsnorm_strided_qkv_view(with_residual, dtype, gemma_style):
 
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
 @pytest.mark.parametrize("shape", [
-    (24, 32, 128), (1, 1, 1), (3, 7, 127), (3, 3, 129),
+    (24, 32, 128), (3, 48, 128), (1, 1, 1), (3, 7, 127), (3, 3, 129),
     (3, 3, 1024), (3, 3, 1025), (3, 2, 4096),
     (0, 3, 128), (3, 0, 128),
 ])
