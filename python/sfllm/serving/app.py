@@ -128,7 +128,10 @@ def create_app(server_args):
                 async for _v in worker.get_response(request_id):
                     response = _v
             except ValueError as e:
-                    response = {"error": {"message": str(e)}, 'request_id': request_id}
+                response = {"error": {"message": str(e)}, 'request_id': request_id}
+            else:
+                if "error" in response:
+                    raise HTTPException(status_code=400, detail=response["error"])
             if endpoint == "/v1/chat/completions" or endpoint == "/v1/completions":
                 response = format_OPENAI_complete(response)
             return response

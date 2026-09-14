@@ -2,7 +2,8 @@ import logging
 from tokenizers.decoders import DecodeStream
 from transformers import AutoConfig, AutoTokenizer, GenerationConfig
 import torch.multiprocessing as multiprocessing
-from sfllm.engine.sequence import AbortSequence, DecodeSequence, RequestSequence
+from sfllm.engine.sequence import AbortSequence, DecodeSequence, RequestSequence, SequenceStatus
+from jinja2 import TemplateError
 from sfllm.engine.inference_engine import InferenceEngine, OVERLAP_IDLE_WAIT_SECONDS
 from sfllm.serving.req_protocol import ControlRequest
 from sfllm.server_args import set_global_server_args_for_scheduler
@@ -49,6 +50,15 @@ class TokenizerManager:
         if isinstance(generation_eos, int):
             generation_eos = (generation_eos,)
         self.eos_token_ids |= frozenset(generation_eos or ())
+
+    def encode_chat(self, sequence):
+        kwargs = dict(sequence.chat_template_kwargs)
+        # These options define the token sequence consumed by the engine.
+        kwargs.update(
+            tokenize=True, add_generation_prompt=True,
+            return_dict=False, return_tensors=None,
+        )
+        return self.tokenizer.apply_chat_template(sequence.messages, **kwargs)
 
     @staticmethod
     def inferengine_event_run_loop(self):
@@ -120,12 +130,18 @@ class TokenizerManager:
                     if out_sequence.messages is None:
                         out_sequence.init(self.tokenizer)
                     else:
-                        input_ids = self.tokenizer.apply_chat_template(
-                            out_sequence.messages,
-                            tokenize=True,
-                            add_generation_prompt=True,
-                            return_dict=False,
-                        )
+                        try:
+                            input_ids = self.encode_chat(out_sequence)
+                        except (TemplateError, ValueError, TypeError) as exc:
+                            self.tokenizer_output_queue.put({
+                                out_sequence.sequence_id: {
+                                    "text": "", "output_ids": [],
+                                    "prompt_length": 0, "completion_tokens": 0,
+                                    "status": SequenceStatus.FAILED,
+                                    "error": str(exc),
+                                }
+                            })
+                            continue
                         out_sequence.init(input_ids)
                     out_sequence.sampling_params.stop_token_ids |= self.eos_token_ids
                     stop_token_sequences = []

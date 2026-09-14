@@ -203,7 +203,7 @@ def test_qk_norm_rope_and_cache(dtype):
 
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16, torch.float32])
 @pytest.mark.parametrize("shape", [
-    (24, 16, 256), (3, 128, 128), (3, 7, 127), (1, 1, 1),
+    (24, 16, 256), (3, 24, 256), (3, 128, 128), (3, 7, 127), (1, 1, 1),
     (17, 3, 1025), (0, 7, 128), (3, 0, 128),
     (3, 1), (3, 127), (3, 16384),
 ])

@@ -65,6 +65,22 @@ python python/sfllm/serving/app.py \
   --dtype float16
 ```
 
+**Qwen3.8-27B 文本推理：**
+
+```bash
+hf download Qwen/Qwen3.8-27B --local-dir /mnt/data/work/Qwen3.8-27B
+python python/sfllm/serving/app.py \
+  --model /mnt/data/work/Qwen3.8-27B --dtype bfloat16 \
+  --attention-backend fa3 --max-running-requests 8 --cuda-graph-max-bs 8 \
+  --port 8081
+```
+
+独立的 [`qwen3_8.py`](python/sfllm/models/qwen3_8.py) 入口继承 Qwen3.5 实现。
+官方检查点按配置声明的 `Qwen3_5ForConditionalGeneration` 架构加载，
+加载语言模型，跳过视觉编码器和 MTP 权重。
+该 BF16 配置可在 H100 96 GB 上运行，默认使用 FP32 循环状态和 FlashInfer GDN。
+支持通过聊天模板参数控制思考模式，详见 [Qwen3.8 使用说明](docs/qwen3_8.md)。
+
 ### 2. 测试API
 
 **聊天补全（流式）**

@@ -1,5 +1,5 @@
 from pydantic import AliasChoices, BaseModel, Field, RootModel
-from typing import List, Optional, Dict, Union, Literal
+from typing import Any, List, Optional, Dict, Union, Literal
 from dataclasses import dataclass
 from enum import Enum
 
@@ -22,6 +22,9 @@ class MessageContent(RootModel):
 class Message(BaseModel):
     role: str
     content: Union[str, List[ContentItem]]
+    reasoning_content: Optional[str] = Field(
+        None, validation_alias=AliasChoices("reasoning_content", "reasoning")
+    )
 
 class ChatRequest(BaseModel):
     model: str
@@ -33,6 +36,8 @@ class ChatRequest(BaseModel):
     )
     stream: Optional[bool] = False
     stop: Optional[Union[str, List[str]]] = None
+    chat_template_kwargs: Dict[str, Any] = Field(default_factory=dict)
+    reasoning_effort: Optional[str] = None
 
 class CompletionRequest(BaseModel):
     model: str
@@ -50,6 +55,7 @@ class GenerateReqInput:
     # The input prompt. It can be a single prompt or a batch of prompts.
     text: Optional[Union[List[str], str]] = None
     messages: Optional[List[Dict]] = None
+    chat_template_kwargs: Optional[Dict[str, Any]] = None
     # The token ids for text; one can specify either text or input_ids
     input_ids: Optional[Union[List[List[int]], List[int]]] = None
     # The embeddings for input_ids; one can specify either text or input_ids or input_embeds.
@@ -118,6 +124,9 @@ class GenerateReqInput:
                 message.model_dump(exclude_none=True)
                 for message in base_model.messages
             ]
+            obj.chat_template_kwargs = dict(base_model.chat_template_kwargs)
+            if base_model.reasoning_effort is not None:
+                obj.chat_template_kwargs["reasoning_effort"] = base_model.reasoning_effort
         elif isinstance(base_model, CompletionRequest):
             obj.text = base_model.prompt
         return obj
