@@ -7,6 +7,7 @@ loads only its language model here and skips the vision encoder and MTP head.
 
 from __future__ import annotations
 
+import os
 from typing import Iterable, Optional, Tuple
 
 import torch
@@ -18,6 +19,7 @@ from sfllm.kernels.gdn import (
     GatedDeltaNetBackend, gated_rmsnorm, scatter_recurrent_state,
     update_recurrent_state_indices,
 )
+from sfllm.kernels.gdn_journal import replay_gdn_journal
 from sfllm.layers.layernorm import GemmaRMSNorm
 from sfllm.layers.quantization.fp8_kernel import (
     rmsnorm_silu_gate_quant_fp8,
@@ -73,6 +75,7 @@ class Qwen3_5GatedDeltaNet(nn.Module):
         self.intermediate_conv = None
         self.ssm_state_indices = None
         self.ssm_output_indices = None
+        self.ssm_journal = None
         self.fused_in_proj = (
             quant_config is None or quant_config.weight_strategy == "channel"
         )
@@ -186,7 +189,11 @@ class Qwen3_5GatedDeltaNet(nn.Module):
             core, z = self.backend.decode(
                 projected_qkvz, projected_ba,
                 intermediate_conv=self.intermediate_conv[:num_sequences],
-                ssm_output_indices=self.ssm_output_indices[:num_sequences],
+                ssm_output_indices=(
+                    self.ssm_output_indices[:num_sequences]
+                    if self.ssm_output_indices is not None else None
+                ),
+                ssm_journal=self.ssm_journal,
                 **common,
             )
         elif forward_batch.forward_mode == ForwardMode.EXTEND:
@@ -451,6 +458,15 @@ class Qwen3_5Model(nn.Module):
             server_args.speculative_num_draft_tokens
             if server_args.speculative_algorithm in ("dflash2", "dspark") else 0
         )
+        ssm_dtype = {"float32": torch.float32, "bfloat16": torch.bfloat16}[
+            server_args.mamba_ssm_dtype or vars(config).get("mamba_ssm_dtype", "float32")
+        ]
+        # Read once before allocating state and capturing graphs. BF16 keeps its
+        # existing snapshot path: replay did not improve common BF16 block sizes.
+        use_gdn_journal = (
+            bool(spec_steps) and ssm_dtype == torch.float32
+            and os.environ.get("SFLLM_GDN_JOURNAL") == "1"
+        )
         conv_dim = (
             2 * config.linear_num_key_heads * config.linear_key_head_dim
             + config.linear_num_value_heads * config.linear_value_head_dim
@@ -469,14 +485,11 @@ class Qwen3_5Model(nn.Module):
             "ssm_states",
             torch.zeros(
                 len(linear_attention_layer_ids),
-                max_state_rows * (spec_steps + 1) + 1,
+                max_state_rows * (1 if use_gdn_journal else spec_steps + 1) + 1,
                 config.linear_num_value_heads,
                 config.linear_value_head_dim,
                 config.linear_key_head_dim,
-                dtype={"float32": torch.float32, "bfloat16": torch.bfloat16}[
-                    server_args.mamba_ssm_dtype
-                    or vars(config).get("mamba_ssm_dtype", "float32")
-                ],
+                dtype=ssm_dtype,
             ),
             persistent=False,
         )
@@ -507,6 +520,7 @@ class Qwen3_5Model(nn.Module):
         self.norm = GemmaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.layers_to_capture = []
         self.register_buffer("ssm_output_indices", None, persistent=False)
+        self.ssm_journal = None
         if spec_steps:
             self.register_buffer(
                 "intermediate_conv",
@@ -516,23 +530,44 @@ class Qwen3_5Model(nn.Module):
                 )),
                 persistent=False,
             )
-            self.register_buffer(
-                "ssm_current_slots",
-                (torch.arange(max_state_rows + 1, dtype=torch.int32) - 1)
-                * (spec_steps + 1) + 1,
-                persistent=False,
-            )
-            self.register_buffer(
-                "ssm_state_indices", torch.empty_like(self.state_indices), persistent=False,
-            )
-            self.ssm_output_indices = torch.empty(
-                (max_state_rows, spec_steps), dtype=torch.int32
-            )
+            if use_gdn_journal:
+                shape = (
+                    len(linear_attention_layer_ids), max_state_rows,
+                    config.linear_num_value_heads, spec_steps,
+                )
+                for name, tail in (
+                    ("ssm_journal_updates", (config.linear_value_head_dim,)),
+                    ("ssm_journal_keys", (config.linear_key_head_dim,)),
+                    ("ssm_journal_decays", ()),
+                ):
+                    self.register_buffer(
+                        name, torch.empty((*shape, *tail), dtype=torch.float32),
+                        persistent=False,
+                    )
+                self.ssm_journal = (
+                    self.ssm_journal_updates, self.ssm_journal_keys, self.ssm_journal_decays,
+                )
+            else:
+                self.register_buffer(
+                    "ssm_current_slots",
+                    (torch.arange(max_state_rows + 1, dtype=torch.int32) - 1)
+                    * (spec_steps + 1) + 1,
+                    persistent=False,
+                )
+                self.register_buffer(
+                    "ssm_state_indices", torch.empty_like(self.state_indices), persistent=False,
+                )
+                self.ssm_output_indices = torch.empty(
+                    (max_state_rows, spec_steps), dtype=torch.int32
+                )
             for layer_id, state_id in state_layer_ids.items():
                 attn = self.layers[layer_id].linear_attn
                 attn.intermediate_conv = self.intermediate_conv[state_id]
-                attn.ssm_state_indices = self.ssm_state_indices
-                attn.ssm_output_indices = self.ssm_output_indices
+                if use_gdn_journal:
+                    attn.ssm_journal = tuple(t[state_id] for t in self.ssm_journal)
+                else:
+                    attn.ssm_state_indices = self.ssm_state_indices
+                    attn.ssm_output_indices = self.ssm_output_indices
 
     def prepare_batch_state(self, scheduled_batch) -> None:
         batch_size = len(scheduled_batch)
@@ -651,11 +686,16 @@ class Qwen3_5ForConditionalGeneration(nn.Module, HasBatchState):
             self.model.intermediate_conv, self.model.conv_states,
             indices, accepted_steps,
         )
-        update_recurrent_state_indices(
-            self.model.ssm_current_slots, indices,
-            self.model.ssm_state_indices, self.model.ssm_output_indices,
-            accepted_steps=accepted_steps,
-        )
+        if self.model.ssm_journal is not None:
+            replay_gdn_journal(
+                self.model.ssm_states, self.model.ssm_journal, indices, accepted_steps,
+            )
+        else:
+            update_recurrent_state_indices(
+                self.model.ssm_current_slots, indices,
+                self.model.ssm_state_indices, self.model.ssm_output_indices,
+                accepted_steps=accepted_steps,
+            )
 
     def forward(
         self,
