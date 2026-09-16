@@ -158,13 +158,7 @@ states. The default uses the model config's SSM dtype, or FP32 if unspecified.
 GDN prefill and ordinary decode use their selected backends. BF16 speculative
 verification always uses Triton and needs no backend setting.
 
-`SFLLM_GDN_JOURNAL=1` opts Qwen3.5/Qwen3.8 DFlash2 and DSpark verification
-into a Triton computed-update journal for FP32 recurrent states and any
-configured draft block size. Each request replays only its accepted prefix. The flag
-is read at model construction and defaults to off. Prefill and ordinary decode
-keep their selected kernels; BF16 keeps its existing path even with the flag set.
-See [the journal benchmark](docs/gdn-journal.md)
-for performance comparisons and a reproduction command.
+Set `SFLLM_GDN_JOURNAL=1` to enable FP32 GDN speculative verification journals (off by default).
 
 ### 2. Test the API
 
