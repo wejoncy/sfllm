@@ -158,6 +158,8 @@ states. The default uses the model config's SSM dtype, or FP32 if unspecified.
 GDN prefill and ordinary decode use their selected backends. BF16 speculative
 verification always uses Triton and needs no backend setting.
 
+Set `SFLLM_GDN_JOURNAL=1` to enable FP32 GDN speculative verification journals (off by default).
+
 ### 2. Test the API
 
 **Chat Completions (Streaming)**

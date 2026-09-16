@@ -14,6 +14,8 @@ from triton.experimental import gluon as tg
 from triton.experimental.gluon import language as gl
 import sf_kernel
 
+from sfllm.kernels.gdn_journal import GDNJournal, packed_gdn_journal_verify
+
 
 @tg.jit(
     do_not_specialize=["num_tokens", "num_sequences"],
@@ -906,6 +908,7 @@ class GatedDeltaNetBackend:
         intermediate_conv: torch.Tensor = None,
         ssm_state_indices: torch.Tensor = None,
         ssm_output_indices: torch.Tensor = None,
+        ssm_journal: GDNJournal = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         mixed_qkv, z, b, a = fused_qkvzba_conv_decode(
             projected_qkvz,
@@ -920,8 +923,13 @@ class GatedDeltaNetBackend:
         if ssm_state_indices is not None:
             state_indices = ssm_state_indices
         steps = ssm_output_indices.shape[1] if ssm_output_indices is not None else 1
+        if ssm_journal is not None:
+            core = packed_gdn_journal_verify(
+                mixed_qkv, a, b, a_log, dt_bias, ssm_states, state_indices,
+                num_k_heads, ssm_journal,
+            )
         # BF16 verification has one implementation, independent of ordinary decode.
-        if self.decode_backend == "triton" or (
+        elif self.decode_backend == "triton" or (
             ssm_output_indices is not None and ssm_states.dtype == torch.bfloat16
         ):
             core = packed_gdn_decode(
