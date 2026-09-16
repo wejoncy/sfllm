@@ -12,14 +12,15 @@ from typing import Tuple
 import torch
 import triton
 import triton.language as tl
+from triton.experimental import gluon
+from triton.experimental.gluon import language as gl
 
 
 GDNJournal = Tuple[torch.Tensor, torch.Tensor, torch.Tensor]
 
 
-# Keep the arithmetic and tile choices of gdn._packed_gdn_decode_kernel.
 # This separate specialization leaves the existing decode/verify kernels intact.
-@triton.jit
+@gluon.jit
 def _packed_gdn_journal_kernel(
     mixed_qkv,
     a,
@@ -32,42 +33,47 @@ def _packed_gdn_journal_kernel(
     updates,
     keys,
     decays,
-    stride_qkv: tl.constexpr,
-    stride_a: tl.constexpr,
-    stride_b: tl.constexpr,
-    stride_state: tl.constexpr,
-    stride_indices: tl.constexpr,
-    capacity: tl.constexpr,
-    wide_offsets: tl.constexpr,
+    stride_qkv: gl.constexpr,
+    stride_a: gl.constexpr,
+    stride_b: gl.constexpr,
+    stride_state: gl.constexpr,
+    stride_indices: gl.constexpr,
+    capacity: gl.constexpr,
+    wide_offsets: gl.constexpr,
     scale,
-    num_k_heads: tl.constexpr,
-    num_v_heads: tl.constexpr,
-    head_k_dim: tl.constexpr,
-    head_v_dim: tl.constexpr,
-    steps: tl.constexpr,
-    block_k: tl.constexpr,
-    block_v: tl.constexpr,
+    num_k_heads: gl.constexpr,
+    num_v_heads: gl.constexpr,
+    head_k_dim: gl.constexpr,
+    head_v_dim: gl.constexpr,
+    steps: gl.constexpr,
+    block_k: gl.constexpr,
+    block_v: gl.constexpr,
+    layout_warps: gl.constexpr,
 ):
-    value_tile = tl.program_id(0)
-    batch_head = tl.program_id(1)
+    value_tile = gl.program_id(0)
+    batch_head = gl.program_id(1)
     batch = batch_head // num_v_heads
     if wide_offsets:
-        batch = batch.to(tl.int64)
+        batch = batch.to(gl.int64)
     value_head = batch_head % num_v_heads
     key_head = value_head // (num_v_heads // num_k_heads)
 
-    key_offsets = tl.arange(0, block_k)
-    value_offsets = value_tile * block_v + tl.arange(0, block_v)
+    # Map K reductions within groups of eight lanes; warps divide the V rows.
+    layout: gl.constexpr = gl.BlockedLayout([1, 4], [4, 8], [layout_warps, 1], [1, 0])
+    key_offsets = gl.arange(0, block_k, layout=gl.SliceLayout(0, layout))
+    value_offsets = value_tile * block_v + gl.arange(
+        0, block_v, layout=gl.SliceLayout(1, layout)
+    )
     key_mask = key_offsets < head_k_dim
     value_mask = value_offsets < head_v_dim
     state_mask = value_mask[:, None] & key_mask[None, :]
 
-    slot = tl.load(state_indices + batch * stride_indices).to(tl.int64)
+    slot = gl.load(state_indices + batch * stride_indices).to(gl.int64)
     if slot <= 0:
         for step in range(steps):
             token = batch * steps + step
             output_ptr = output + (token * num_v_heads + value_head) * head_v_dim
-            tl.store(output_ptr + value_offsets, 0.0, mask=value_mask)
+            gl.store(output_ptr + value_offsets, 0.0, mask=value_mask)
         return
 
     state_offsets = (
@@ -76,55 +82,55 @@ def _packed_gdn_journal_kernel(
         + key_offsets[None, :]
     )
     state_ptr = states + slot * stride_state + state_offsets
-    state = tl.load(state_ptr, mask=state_mask, other=0.0).to(tl.float32)
+    state = gl.load(state_ptr, mask=state_mask, other=0.0).to(gl.float32)
     for step in range(steps):
         token = batch * steps + step
         qkv_ptr = mixed_qkv + token * stride_qkv
-        q = tl.load(
+        q = gl.load(
             qkv_ptr + key_head * head_k_dim + key_offsets,
             mask=key_mask,
             other=0.0,
-        ).to(tl.float32)
-        k = tl.load(
+        ).to(gl.float32)
+        k = gl.load(
             qkv_ptr + num_k_heads * head_k_dim + key_head * head_k_dim + key_offsets,
             mask=key_mask,
             other=0.0,
-        ).to(tl.float32)
-        v = tl.load(
+        ).to(gl.float32)
+        v = gl.load(
             qkv_ptr
             + 2 * num_k_heads * head_k_dim
             + value_head * head_v_dim
             + value_offsets,
             mask=value_mask,
             other=0.0,
-        ).to(tl.float32)
+        ).to(gl.float32)
 
-        q *= tl.rsqrt(tl.sum(q * q, axis=0) + 1e-6) * scale
-        k *= tl.rsqrt(tl.sum(k * k, axis=0) + 1e-6)
-        gate_a = tl.load(a + token * stride_a + value_head).to(tl.float32)
-        gate_b = tl.load(b + token * stride_b + value_head).to(tl.float32)
-        decay_log = tl.load(a_log + value_head).to(tl.float32)
-        bias = tl.load(dt_bias + value_head).to(tl.float32)
+        q *= gl.rsqrt(gl.sum(q * q, axis=0) + 1e-6) * scale
+        k *= gl.rsqrt(gl.sum(k * k, axis=0) + 1e-6)
+        gate_a = gl.load(a + token * stride_a + value_head).to(gl.float32)
+        gate_b = gl.load(b + token * stride_b + value_head).to(gl.float32)
+        decay_log = gl.load(a_log + value_head).to(gl.float32)
+        bias = gl.load(dt_bias + value_head).to(gl.float32)
         softplus_arg = gate_a + bias
-        softplus = tl.where(
+        softplus = gl.where(
             softplus_arg <= 20.0,
-            tl.log(1.0 + tl.exp(softplus_arg)),
+            gl.log(1.0 + gl.exp(softplus_arg)),
             softplus_arg,
         )
-        decay = tl.exp(-tl.exp(decay_log) * softplus)
+        decay = gl.exp(-gl.exp(decay_log) * softplus)
         state *= decay
-        prediction = tl.sum(state * k[None, :], axis=1)
+        prediction = gl.sum(state * k[None, :], axis=1)
         correction = (v - prediction) * tl.sigmoid(gate_b)
         state += correction[:, None] * k[None, :]
-        result = tl.sum(state * q[None, :], axis=1)
+        result = gl.sum(state * q[None, :], axis=1)
         output_ptr = output + (token * num_v_heads + value_head) * head_v_dim
-        tl.store(output_ptr + value_offsets, result, mask=value_mask)
+        gl.store(output_ptr + value_offsets, result, mask=value_mask)
         # These are computed FP32 operands, not raw projection inputs.
         row = (batch * num_v_heads + value_head) * capacity + step
-        tl.store(updates + row * head_v_dim + value_offsets, correction, mask=value_mask)
+        gl.store(updates + row * head_v_dim + value_offsets, correction, mask=value_mask)
         if value_tile == 0:
-            tl.store(keys + row * head_k_dim + key_offsets, k, mask=key_mask)
-            tl.store(decays + row, decay)
+            gl.store(keys + row * head_k_dim + key_offsets, k, mask=key_mask)
+            gl.store(decays + row, decay)
 
 
 def packed_gdn_journal_verify(
@@ -157,8 +163,10 @@ def packed_gdn_journal_verify(
         raise ValueError("GDN verification requires a nonempty, equal-width block per row")
     steps = num_tokens // batch
     output = mixed_qkv.new_empty((num_tokens, num_v_heads, head_v_dim))
-    # Match the baseline's FP32 reduction layout.
-    block_v = min(triton.next_power_of_2(head_v_dim), 32)
+    # Keep the register footprint small while distributing V rows over two warps.
+    # The resulting FP32 reduction order can differ slightly from snapshot verify.
+    block_v = min(triton.next_power_of_2(head_v_dim), 16)
+    num_warps = 2
     # Keep common blocks' index arithmetic small without imposing a size limit.
     wide_offsets = max(
         num_tokens * max(mixed_qkv.stride(0), a.stride(0), b.stride(0),
@@ -171,8 +179,8 @@ def packed_gdn_journal_verify(
         mixed_qkv.stride(0), a.stride(0), b.stride(0), states.stride(0),
         state_indices.stride(0), capacity, wide_offsets, head_k_dim**-0.5,
         num_k_heads, num_v_heads, head_k_dim, head_v_dim, steps,
-        triton.next_power_of_2(head_k_dim), block_v,
-        num_warps=1, num_stages=3,
+        triton.next_power_of_2(head_k_dim), block_v, layout_warps=num_warps,
+        num_warps=num_warps, num_stages=3,
     )
     return output
 

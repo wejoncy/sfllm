@@ -13,7 +13,16 @@ def assert_bits_equal(actual, expected):
     assert torch.equal(actual.view(bits), expected.view(bits))
 
 
-@pytest.mark.parametrize("steps", [1, 2, 3, 6, 8, 16, 31])
+def assert_output_close(actual, expected):
+    # The explicit thread layout changes FP32 reductions before BF16 rounding.
+    torch.testing.assert_close(actual, expected, rtol=1e-2, atol=1e-6)
+
+
+def assert_state_close(actual, expected):
+    torch.testing.assert_close(actual, expected, rtol=1e-5, atol=2e-7)
+
+
+@pytest.mark.parametrize("steps", [1, 2, 3, 4, 5, 6, 7, 8, 16, 31])
 @pytest.mark.parametrize("geometry", [(2, 4, 128, 128), (3, 6, 48, 80)])
 def test_journal_prefixes_and_successive_rounds(steps, geometry):
     dtype = torch.float32
@@ -65,7 +74,9 @@ def test_journal_prefixes_and_successive_rounds(steps, geometry):
                 x[layer], a[layer], b[layer], a_log[layer], bias[layer], state[layer],
                 indices, h, tuple(t[layer] for t in journal),
             )
-            assert_bits_equal(actual, expected)
+            assert_output_close(actual, expected)
+            assert_bits_equal(actual.view(batch, steps, hv, v)[~valid],
+                              expected.view(batch, steps, hv, v)[~valid])
         assert_bits_equal(state, before)
 
         # On the first round check EVERY possible prefix against stored snapshots.
@@ -80,11 +91,14 @@ def test_journal_prefixes_and_successive_rounds(steps, geometry):
             source_slots = write[rows, accepted[rows].long()].long()
             expected_state[:, destinations] = baseline[:, source_slots]
             replay_gdn_journal(state, journal, indices, accepted)
-            assert_bits_equal(state, expected_state)
+            assert_state_close(state, expected_state)
+            untouched = torch.ones(capacity + 1, device=device, dtype=torch.bool)
+            untouched[destinations] = False
+            assert_bits_equal(state[:, untouched], before[:, untouched])
         update_recurrent_state_indices(current, indices.contiguous(), read, write,
                                         accepted_steps=accepted.contiguous())
-        assert_bits_equal(state[:, indices[valid].long()],
-                          baseline[:, current[indices[valid].long()].long()])
+        assert_state_close(state[:, indices[valid].long()],
+                           baseline[:, current[indices[valid].long()].long()])
         # Reorder requests between rounds; the journal is indexed by batch row.
         indices.copy_(indices.roll(1))
         valid = indices > 0
@@ -135,11 +149,14 @@ def test_journal_cuda_graph_uses_current_indices_and_acceptance():
                             for layer in range(2)]
         graph.replay()
         for actual, expected in zip(outputs, expected_outputs):
-            assert_bits_equal(actual, expected)
+            assert_output_close(actual, expected)
         expected_state = initial.clone()
         rows = torch.arange(batch, device="cuda")[accepted >= 0]
         expected_state[:, indices[rows].long()] = reference[:, write[rows, accepted[rows].long()].long()]
-        assert_bits_equal(state, expected_state)
+        assert_state_close(state, expected_state)
+        untouched = torch.ones(state.shape[1], device="cuda", dtype=torch.bool)
+        untouched[indices[rows].long()] = False
+        assert_bits_equal(state[:, untouched], initial[:, untouched])
 
 
 @pytest.mark.parametrize("steps", [2, 5, 16])
@@ -178,7 +195,7 @@ def test_journal_matches_flashinfer_across_rounds(steps):
         actual = packed_gdn_journal_verify(x, a.view(-1, hv), b.view(-1, hv), a_log,
                                            bias, state[0], indices, h, tuple(t[0] for t in journal))
         # FlashInfer uses a different normalization/FMA order. Check numerical
-        # agreement separately from the bitwise comparisons with current Triton.
+        # agreement with the current FP32 serving backend as well as Triton.
         torch.testing.assert_close(actual.view_as(expected), expected, rtol=1e-2, atol=1e-4)
         accepted = torch.randint(0, steps, (batch,), device="cuda", dtype=torch.int32)
         replay_gdn_journal(state, journal, indices, accepted)
@@ -267,7 +284,10 @@ def test_model_verification_and_commit(monkeypatch, dtype, steps, algorithm):
         before = candidate.model.ssm_states.clone()
         with torch.no_grad():
             outputs = [wrapper.model(inputs, inputs, batch) for wrapper in models]
-        assert_bits_equal(outputs[0], outputs[1])
+        if dtype == "float32":
+            assert_output_close(outputs[0], outputs[1])
+        else:
+            assert_bits_equal(outputs[0], outputs[1])
         assert bool(torch.isfinite(outputs[1]).all())
         if mode == ForwardMode.TARGET_VERIFY:
             if dtype == "float32":
@@ -279,6 +299,13 @@ def test_model_verification_and_commit(monkeypatch, dtype, steps, algorithm):
         baseline_slots = baseline.model.ssm_current_slots[valid].long()
         candidate_slots = (valid if dtype == "float32"
                            else candidate.model.ssm_current_slots[valid].long())
-        assert_bits_equal(candidate.model.ssm_states[:, candidate_slots],
-                          baseline.model.ssm_states[:, baseline_slots])
-        assert_bits_equal(candidate.model.conv_states, baseline.model.conv_states)
+        compare_state = assert_state_close if dtype == "float32" else assert_bits_equal
+        compare_state(candidate.model.ssm_states[:, candidate_slots],
+                      baseline.model.ssm_states[:, baseline_slots])
+        if dtype == "float32":
+            # The first layer has identical inputs; later layers receive the
+            # small output differences from the preceding GDN reductions.
+            assert_bits_equal(candidate.model.conv_states[0], baseline.model.conv_states[0])
+            assert_output_close(candidate.model.conv_states, baseline.model.conv_states)
+        else:
+            assert_bits_equal(candidate.model.conv_states, baseline.model.conv_states)

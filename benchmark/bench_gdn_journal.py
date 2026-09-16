@@ -132,7 +132,7 @@ class Case:
 
     def check(self):
         self.reset()
-        bits = torch.int32 if self.state.dtype == torch.float32 else torch.int16
+        errors = {"output_max_abs": 0.0, "state_max_abs": 0.0}
         for round_id in range(self.rounds):
             self.prepare()
             self.verify("triton")
@@ -141,14 +141,20 @@ class Case:
             self.commit("triton")
             self.commit("journal")
             for expected, actual in zip(self.outputs["triton"], self.outputs["journal"]):
-                if not torch.equal(expected.view(torch.int16), actual.view(torch.int16)):
-                    raise AssertionError(f"Output differs at round {round_id}")
+                torch.testing.assert_close(actual, expected, rtol=1e-2, atol=1e-6,
+                                           msg=f"Output differs at round {round_id}")
+                errors["output_max_abs"] = max(
+                    errors["output_max_abs"], (actual.float() - expected.float()).abs().max().item(),
+                )
             expected = self.state[:, self.current[self.requests.long()].long()]
             actual = self.jstate[:, 1:]
-            if not torch.equal(expected.view(bits), actual.view(bits)):
-                error = (expected.float() - actual.float()).abs().max().item()
-                raise AssertionError(f"Committed state differs at round {round_id}: {error}")
+            torch.testing.assert_close(actual, expected, rtol=1e-5, atol=2e-7,
+                                       msg=f"Committed state differs at round {round_id}")
+            errors["state_max_abs"] = max(
+                errors["state_max_abs"], (actual - expected).abs().max().item(),
+            )
         self.reset()
+        return errors
 
 
 def acceptance_trace(profile, rounds, batch, steps):
@@ -232,9 +238,9 @@ def main():
         for profile in args.profiles:
             trace = acceptance_trace(profile, args.rounds, args.batch, steps)
             case.table.copy_(trace)
-            case.check()
+            errors = case.check()
             record = dict(steps=steps, profile=profile,
-                          output_and_state_bitwise_equal=True,
+                          numerical_errors=errors,
                           replay_counts=(trace + 1).tolist(), timings=measure(case, args.trials))
             result["cases"].append(record)
             args.output.write_text(json.dumps(result, indent=2) + "\n")
