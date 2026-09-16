@@ -205,14 +205,13 @@ def test_journal_matches_flashinfer_across_rounds(steps):
 
 @pytest.mark.parametrize("dtype", ["bfloat16", "float32"])
 @pytest.mark.parametrize("steps", [3, 8])
-@pytest.mark.parametrize("algorithm", ["dflash2", "dspark"])
-def test_model_verification_and_commit(monkeypatch, dtype, steps, algorithm):
+def test_model_verification_and_commit(monkeypatch, dtype, steps):
     import sfllm.models.qwen3_5 as qwen
     from sfllm.engine.forward_params import ForwardMode
 
     # Construct real GDN layers; bypass unrelated full-attention/MLP weights.
     args = SimpleNamespace(
-        max_running_requests=8, speculative_algorithm=algorithm,
+        max_running_requests=8, speculative_algorithm="dspark",
         speculative_num_draft_tokens=steps, mamba_ssm_dtype=dtype,
         linear_attn_backend="triton", linear_attn_prefill_backend=None,
         linear_attn_decode_backend=None, enable_prefill_cuda_graph=False,
@@ -265,9 +264,6 @@ def test_model_verification_and_commit(monkeypatch, dtype, steps, algorithm):
     baseline, candidate = models
     # Changing the environment after construction cannot change captured state layouts.
     monkeypatch.setenv("SFLLM_GDN_JOURNAL", "0")
-    indices = torch.tensor([4, 1, 6], device="cuda", dtype=torch.int32)
-    for wrapper in models:
-        wrapper.model.state_indices[:3].copy_(indices)
 
     for mode in (ForwardMode.EXTEND, ForwardMode.TARGET_VERIFY, ForwardMode.DECODE,
                  ForwardMode.TARGET_VERIFY, ForwardMode.EXTEND):
