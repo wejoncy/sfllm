@@ -38,6 +38,8 @@ def _packed_gdn_journal_kernel(
     stride_b: gl.constexpr,
     stride_state: gl.constexpr,
     stride_indices: gl.constexpr,
+    cu_seqlens,
+    request_order,
     capacity: gl.constexpr,
     wide_offsets: gl.constexpr,
     scale,
@@ -53,10 +55,20 @@ def _packed_gdn_journal_kernel(
     value_tile = gl.program_id(0)
     batch_head = gl.program_id(1)
     batch = batch_head // num_v_heads
+    if request_order is not None:
+        batch = gl.load(request_order + batch)
     if wide_offsets:
         batch = batch.to(gl.int64)
     value_head = batch_head % num_v_heads
     key_head = value_head // (num_v_heads // num_k_heads)
+    if cu_seqlens is not None:
+        begin = gl.load(cu_seqlens + batch)
+        length = gl.load(cu_seqlens + batch + 1) - begin
+        if wide_offsets:
+            begin = begin.to(gl.int64)
+    else:
+        begin = batch * steps
+        length = steps
 
     # Map K reductions within groups of eight lanes; warps divide the V rows.
     layout: gl.constexpr = gl.BlockedLayout([1, 4], [4, 8], [layout_warps, 1], [1, 0])
@@ -70,8 +82,8 @@ def _packed_gdn_journal_kernel(
 
     slot = gl.load(state_indices + batch * stride_indices).to(gl.int64)
     if slot <= 0:
-        for step in range(steps):
-            token = batch * steps + step
+        for step in range(length):
+            token = begin + step
             output_ptr = output + (token * num_v_heads + value_head) * head_v_dim
             gl.store(output_ptr + value_offsets, 0.0, mask=value_mask)
         return
@@ -83,8 +95,8 @@ def _packed_gdn_journal_kernel(
     )
     state_ptr = states + slot * stride_state + state_offsets
     state = gl.load(state_ptr, mask=state_mask, other=0.0).to(gl.float32)
-    for step in range(steps):
-        token = batch * steps + step
+    for step in range(length):
+        token = begin + step
         qkv_ptr = mixed_qkv + token * stride_qkv
         q = gl.load(
             qkv_ptr + key_head * head_k_dim + key_offsets,
@@ -143,13 +155,16 @@ def packed_gdn_journal_verify(
     state_indices: torch.Tensor,
     num_k_heads: int,
     journal: GDNJournal,
+    cu_seqlens: torch.Tensor = None,
+    request_order: torch.Tensor = None,
 ) -> torch.Tensor:
     """Verify a linear block without writing full candidate state snapshots.
 
     Updates/keys are [batch capacity, value heads, block capacity, V/K];
     decays have no final dimension.
     They use batch rows, independent of the request's persistent state slot.
-    Any positive block length up to the allocated capacity is supported.
+    cu_seqlens optionally delimits packed requests, each of length 0..capacity.
+    Without it, all rows have the same positive verification length.
     """
     if states.dtype != torch.float32:
         raise ValueError("GDN journals require FP32 recurrent states")
@@ -158,10 +173,20 @@ def packed_gdn_journal_verify(
     num_tokens = mixed_qkv.shape[0]
     num_v_heads, head_v_dim, head_k_dim = states.shape[-3:]
     capacity = updates.shape[-2]
-    if (batch == 0 or batch > updates.shape[0] or num_tokens % batch
+    if cu_seqlens is not None:
+        if (cu_seqlens.ndim != 1 or cu_seqlens.numel() != batch + 1
+                or not cu_seqlens.is_contiguous()
+                or cu_seqlens.dtype not in (torch.int32, torch.int64)
+                or cu_seqlens.device != mixed_qkv.device
+                or batch == 0 or batch > updates.shape[0]
+                or num_tokens > batch * capacity):
+            raise ValueError("Invalid packed GDN verification metadata or capacity")
+        steps = capacity
+    elif (batch == 0 or batch > updates.shape[0] or num_tokens % batch
             or not 0 < num_tokens // batch <= capacity):
         raise ValueError("GDN verification requires a nonempty, equal-width block per row")
-    steps = num_tokens // batch
+    else:
+        steps = num_tokens // batch
     output = mixed_qkv.new_empty((num_tokens, num_v_heads, head_v_dim))
     # Keep the register footprint small while distributing V rows over two warps.
     # The resulting FP32 reduction order can differ slightly from snapshot verify.
@@ -177,7 +202,7 @@ def packed_gdn_journal_verify(
         mixed_qkv, a, b, a_log, dt_bias, output, states, state_indices,
         updates, keys, decays,
         mixed_qkv.stride(0), a.stride(0), b.stride(0), states.stride(0),
-        state_indices.stride(0), capacity, wide_offsets, head_k_dim**-0.5,
+        state_indices.stride(0), cu_seqlens, request_order, capacity, wide_offsets, head_k_dim**-0.5,
         num_k_heads, num_v_heads, head_k_dim, head_v_dim, steps,
         triton.next_power_of_2(head_k_dim), block_v, layout_warps=num_warps,
         num_warps=num_warps, num_stages=3,

@@ -159,6 +159,7 @@ GDN prefill and ordinary decode use their selected backends. BF16 speculative
 verification always uses Triton and needs no backend setting.
 
 Set `SFLLM_GDN_JOURNAL=1` to enable FP32 GDN speculative verification journals (off by default).
+Set `SFLLM_ENABLE_VARLEN_VERIFY=1` before startup to enable packed variable-length GDN target verification (off by default).
 
 ### 2. Test the API
 

@@ -332,6 +332,7 @@ def _fused_qkvzba_conv_decode_kernel(
     conv_weight,
     state_indices,
     intermediate_conv,
+    cu_seqlens,
     stride_qkvz,
     stride_ba,
     stride_state,
@@ -345,11 +346,24 @@ def _fused_qkvzba_conv_decode_kernel(
     num_state_slots: tl.constexpr,
     kernel_width: tl.constexpr,
     steps: tl.constexpr,
+    cache_steps: tl.constexpr,
     block: tl.constexpr,
 ):
-    token = tl.program_id(0)
-    batch = token // steps
-    step = token % steps
+    if cu_seqlens is not None:
+        batch = tl.program_id(0)
+        step = tl.program_id(2)
+        begin = tl.load(cu_seqlens + batch)
+        end = tl.load(cu_seqlens + batch + 1)
+        token = begin + step
+        if token >= end:
+            return
+        cache_token = batch * cache_steps + step
+    else:
+        token = tl.program_id(0)
+        batch = token // steps
+        step = token % steps
+        begin = batch * steps
+        cache_token = token
     offsets = tl.program_id(1) * block + tl.arange(0, block)
     qkv_mask = offsets < qkv_dim
     x = tl.load(
@@ -371,14 +385,14 @@ def _fused_qkvzba_conv_decode_kernel(
         )
         if intermediate_conv is not None:
             proposed_value = tl.load(
-                projected_qkvz + (batch * steps + history_pos - kernel_width + 1)
+                projected_qkvz + (begin + history_pos - kernel_width + 1)
                 * stride_qkvz + offsets,
                 mask=qkv_mask & valid_slot & (history_pos >= kernel_width - 1),
                 other=0.0,
             )
             state_value = tl.where(history_pos < kernel_width - 1, state_value, proposed_value)
             if pos > 0:
-                tl.store(intermediate_conv + (token * qkv_dim + offsets) * (kernel_width - 1) + pos - 1,
+                tl.store(intermediate_conv + (cache_token * qkv_dim + offsets) * (kernel_width - 1) + pos - 1,
                          state_value, mask=qkv_mask & valid_slot)
         weight_value = tl.load(
             conv_weight + offsets * stride_weight_dim + pos,
@@ -400,7 +414,7 @@ def _fused_qkvzba_conv_decode_kernel(
     )
 
     if intermediate_conv is not None:
-        state = intermediate_conv + (token * qkv_dim + offsets) * (kernel_width - 1)
+        state = intermediate_conv + (cache_token * qkv_dim + offsets) * (kernel_width - 1)
         stride_state_pos = 1
     else:
         for pos in tl.static_range(kernel_width - 2):
@@ -459,6 +473,7 @@ def fused_qkvzba_conv_decode(
     num_v_heads: int,
     head_v_dim: int,
     intermediate_conv: torch.Tensor = None,
+    cu_seqlens: torch.Tensor = None,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """Fuse QKVZ/BA unpacking with indexed causal-Conv1D decode."""
     batch = projected_qkvz.shape[0]
@@ -477,8 +492,15 @@ def fused_qkvzba_conv_decode(
     )
     a = torch.empty_like(b)
     block = 256
+    cache_steps = intermediate_conv.shape[1] if intermediate_conv is not None else 1
+    if cu_seqlens is not None:
+        if intermediate_conv is None:
+            raise ValueError("Packed varlen convolution requires verification snapshots")
+        grid = (state_indices.numel(), triton.cdiv(qkv_dim, block), cache_steps)
+    else:
+        grid = (batch, triton.cdiv(qkv_dim, block))
     _fused_qkvzba_conv_decode_kernel[
-        (batch, triton.cdiv(qkv_dim, block))
+        grid
     ](
         mixed_qkv,
         z,
@@ -490,6 +512,7 @@ def fused_qkvzba_conv_decode(
         conv_weight,
         state_indices,
         intermediate_conv,
+        cu_seqlens,
         projected_qkvz.stride(0),
         projected_ba.stride(0),
         conv_states.stride(0),
@@ -502,7 +525,8 @@ def fused_qkvzba_conv_decode(
         num_v_heads=num_v_heads,
         num_state_slots=conv_states.shape[0],
         kernel_width=conv_weight.shape[1],
-        steps=intermediate_conv.shape[1] if intermediate_conv is not None else 1,
+        steps=cache_steps,
+        cache_steps=cache_steps,
         block=block,
         num_warps=8,
         num_stages=2,
@@ -512,6 +536,28 @@ def fused_qkvzba_conv_decode(
 
 # Adapted from SGLang/FLA's packed recurrent GDN decode kernel.  Keeping the
 # packed QKV input avoids three materialization kernels in every GDN layer.
+@triton.jit
+def _gdn_verify_request_order_kernel(cu_seqlens, order, batch: tl.constexpr, block: tl.constexpr):
+    row = tl.arange(0, block)
+    begin = tl.load(cu_seqlens + row, row < batch, other=0).to(tl.int64)
+    end = tl.load(cu_seqlens + row + 1, row < batch, other=0).to(tl.int64)
+    # Descending length, with original row order as the tie breaker.
+    key = tl.where(row < batch, (end - begin) * block + block - 1 - row, -1)
+    key = tl.sort(key, descending=True)
+    tl.store(order + row, block - 1 - key % block, row < batch)
+
+
+def gdn_verify_request_order(cu_seqlens: torch.Tensor) -> torch.Tensor:
+    """Schedule long recurrences first; share this order across target layers."""
+    batch = cu_seqlens.numel() - 1
+    order = torch.empty(batch, dtype=torch.int32, device=cu_seqlens.device)
+    if batch:
+        _gdn_verify_request_order_kernel[(1,)](
+            cu_seqlens, order, batch, triton.next_power_of_2(batch), num_warps=4,
+        )
+    return order
+
+
 @triton.jit
 def _packed_gdn_decode_kernel(
     mixed_qkv,
@@ -523,6 +569,9 @@ def _packed_gdn_decode_kernel(
     states,
     state_indices,
     output_indices,
+    cu_seqlens,
+    request_order,
+    stride_output_indices: tl.constexpr,
     stride_qkv: tl.constexpr,
     stride_a: tl.constexpr,
     stride_b: tl.constexpr,
@@ -540,8 +589,16 @@ def _packed_gdn_decode_kernel(
     value_tile = tl.program_id(0)
     batch_head = tl.program_id(1)
     batch = batch_head // num_v_heads
+    if request_order is not None:
+        batch = tl.load(request_order + batch)
     value_head = batch_head % num_v_heads
     key_head = value_head // (num_v_heads // num_k_heads)
+    if cu_seqlens is not None:
+        begin = tl.load(cu_seqlens + batch)
+        length = tl.load(cu_seqlens + batch + 1) - begin
+    else:
+        begin = batch * steps
+        length = steps
 
     key_offsets = tl.arange(0, block_k)
     value_offsets = value_tile * block_v + tl.arange(0, block_v)
@@ -551,8 +608,8 @@ def _packed_gdn_decode_kernel(
 
     slot = tl.load(state_indices + batch * stride_indices).to(tl.int64)
     if slot <= 0:
-        for step in range(steps):
-            token = batch * steps + step
+        for step in range(length):
+            token = begin + step
             output_ptr = output + (token * num_v_heads + value_head) * head_v_dim
             tl.store(output_ptr + value_offsets, 0.0, mask=value_mask)
         return
@@ -564,8 +621,8 @@ def _packed_gdn_decode_kernel(
     )
     state_ptr = states + slot * stride_state + state_offsets
     state = tl.load(state_ptr, mask=state_mask, other=0.0).to(tl.float32)
-    for step in range(steps):
-        token = batch * steps + step
+    for step in range(length):
+        token = begin + step
         qkv_ptr = mixed_qkv + token * stride_qkv
         q = tl.load(
             qkv_ptr + key_head * head_k_dim + key_offsets,
@@ -606,7 +663,8 @@ def _packed_gdn_decode_kernel(
         output_ptr = output + (token * num_v_heads + value_head) * head_v_dim
         tl.store(output_ptr + value_offsets, result, mask=value_mask)
         if output_indices is not None:
-            write_slot = tl.load(output_indices + token).to(tl.int64)
+            write_offset = batch * stride_output_indices + step if cu_seqlens is not None else token
+            write_slot = tl.load(output_indices + write_offset).to(tl.int64)
             state_ptr = states + write_slot * stride_state + state_offsets
         # Verification writes several large snapshots; only the accepted one
         # will be read again. Evict these streaming writes before model weights.
@@ -628,10 +686,17 @@ def packed_gdn_decode(
     state_indices: torch.Tensor,
     num_k_heads: int,
     ssm_output_indices: torch.Tensor = None,
+    cu_seqlens: torch.Tensor = None,
+    request_order: torch.Tensor = None,
 ) -> torch.Tensor:
     num_tokens = mixed_qkv.shape[0]
     steps = ssm_output_indices.shape[1] if ssm_output_indices is not None else 1
-    batch = num_tokens // steps
+    if cu_seqlens is not None:
+        if ssm_output_indices is None:
+            raise ValueError("Packed varlen GDN requires verification output slots")
+        batch = state_indices.numel()
+    else:
+        batch = num_tokens // steps
     num_v_heads, head_v_dim, head_k_dim = states.shape[-3:]
     output = torch.empty(
         (num_tokens, num_v_heads, head_v_dim),
@@ -652,6 +717,9 @@ def packed_gdn_decode(
         states,
         state_indices,
         ssm_output_indices,
+        cu_seqlens,
+        request_order,
+        ssm_output_indices.stride(0) if ssm_output_indices is not None else 0,
         mixed_qkv.stride(0),
         a.stride(0),
         b.stride(0),
@@ -811,6 +879,12 @@ class GatedDeltaNetBackend:
         self.prefill_backend = prefill_backend
         self.decode_backend = decode_backend
 
+    @staticmethod
+    def prepare_verify(forward_batch) -> None:
+        # Rebuild once per forward. Graph replay recomputes the order from the
+        # current GPU boundaries; all GDN layers share this captured operation.
+        forward_batch._gdn_verify_order = gdn_verify_request_order(forward_batch.qo_indptr)
+
     def prefill(
         self,
         mixed_qkv: torch.Tensor,
@@ -909,7 +983,13 @@ class GatedDeltaNetBackend:
         ssm_state_indices: torch.Tensor = None,
         ssm_output_indices: torch.Tensor = None,
         ssm_journal: GDNJournal = None,
+        cu_seqlens: torch.Tensor = None,
+        forward_batch=None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
+        request_order = None
+        if cu_seqlens is not None:
+            request_order = (forward_batch._gdn_verify_order if forward_batch is not None
+                             else gdn_verify_request_order(cu_seqlens))
         mixed_qkv, z, b, a = fused_qkvzba_conv_decode(
             projected_qkvz,
             projected_ba,
@@ -919,6 +999,7 @@ class GatedDeltaNetBackend:
             num_v_heads,
             head_v_dim,
             intermediate_conv,
+            cu_seqlens,
         )
         if ssm_state_indices is not None:
             state_indices = ssm_state_indices
@@ -926,10 +1007,10 @@ class GatedDeltaNetBackend:
         if ssm_journal is not None:
             core = packed_gdn_journal_verify(
                 mixed_qkv, a, b, a_log, dt_bias, ssm_states, state_indices,
-                num_k_heads, ssm_journal,
+                num_k_heads, ssm_journal, cu_seqlens, request_order,
             )
         # BF16 verification has one implementation, independent of ordinary decode.
-        elif self.decode_backend == "triton" or (
+        elif cu_seqlens is not None or self.decode_backend == "triton" or (
             ssm_output_indices is not None and ssm_states.dtype == torch.bfloat16
         ):
             core = packed_gdn_decode(
@@ -942,6 +1023,8 @@ class GatedDeltaNetBackend:
                 state_indices=state_indices,
                 num_k_heads=num_k_heads,
                 ssm_output_indices=ssm_output_indices,
+                cu_seqlens=cu_seqlens,
+                request_order=request_order,
             )
         else:
             recurrent = (
