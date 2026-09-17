@@ -12,6 +12,7 @@ from sfllm.engine.schedule_batch import ScheduleBatch,BatchResult
 from sfllm.engine.forward_params import ForwardMode, ForwardBatch
 from sfllm.engine.memory_pool import BlockMemoryManager
 from sfllm.engine.prefill_cuda_graph_runner import PrefillCudaGraphRunner
+from sfllm.kernels.gdn import GatedDeltaNetBackend
 from sfllm.layers.radix_attention import collect_attention_metadata, create_attention_backend
 from sfllm.layers.sampler import Sampler
 from sfllm.server_args import ServerArgs
@@ -98,6 +99,10 @@ class ModelRunner:
 
     def prepare_attention(self, forward_batch: ForwardBatch, num_tokens: int):
         forward_batch.attn_backend = self.attn_backend
+        model = getattr(self.model, "model", self.model)
+        if (forward_batch.forward_mode == ForwardMode.TARGET_VERIFY
+                and getattr(model, "enable_varlen_verify", False)):
+            GatedDeltaNetBackend.prepare_verify(forward_batch)
         return self.attn_backend.prepare(forward_batch, num_tokens)
 
     def init_memory_pool(self, num_blocks: int = None):
