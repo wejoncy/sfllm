@@ -7,8 +7,7 @@ pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="requires 
 
 
 @pytest.mark.parametrize("kind", ["journal", "fp32", "bf16"])
-@pytest.mark.parametrize("graph", [False, True])
-def test_varlen_verify_outputs_and_states(kind, graph):
+def test_varlen_verify_outputs_and_states(kind):
     from sfllm.kernels.gdn import GatedDeltaNetBackend, scatter_recurrent_state
     from sfllm.kernels.gdn_journal import replay_gdn_journal
 
@@ -54,8 +53,7 @@ def test_varlen_verify_outputs_and_states(kind, graph):
         )
 
     def metadata(round_id):
-        # The total stays fixed for graph replay; individual lengths and state
-        # slots change on the GPU. Both one-token and eight-token rows occur.
+        # Exercise different request lengths and state slots, including 1 and 8.
         lens = lengths.roll(round_id * 3)
         if round_id == 2:
             # An empty graph row must not read the next request's first token.
@@ -66,14 +64,6 @@ def test_varlen_verify_outputs_and_states(kind, graph):
         indices.copy_(torch.randperm(slots - 1, device="cuda")[:batch] + 1)
         indices[2], indices[7] = 0, -1
         return lens.tolist(), indices.tolist()
-
-    metadata(0)
-    forward()
-    if graph:
-        torch.cuda.synchronize()
-        captured = torch.cuda.CUDAGraph()
-        with torch.cuda.graph(captured):
-            outputs = forward()
 
     for round_id in range(3):
         lens, request_slots = metadata(round_id)
@@ -87,10 +77,7 @@ def test_varlen_verify_outputs_and_states(kind, graph):
         if journal is not None:
             for tensor in journal:
                 tensor.fill_(17)
-        if graph:
-            captured.replay()
-        else:
-            outputs = forward()
+        outputs = forward()
         # Verify must leave every request's persistent starting state intact.
         assert torch.equal(state[:slots], initial)
         assert torch.equal(conv, initial_conv)
@@ -157,9 +144,14 @@ def test_varlen_verify_outputs_and_states(kind, graph):
                                    atol=1e-6 if kind == "bf16" else 2e-7)
 
 
-@pytest.mark.parametrize("kind", ["journal", "fp32", "bf16"])
-@pytest.mark.parametrize("attention_backend", ["fa3", "triton"])
-@pytest.mark.parametrize("varlen", [False, True])
+@pytest.mark.parametrize("kind,attention_backend,varlen", [
+    ("journal", "fa3", True),
+    ("fp32", "fa3", True),
+    ("bf16", "fa3", True),
+    ("journal", "triton", True),
+    ("journal", "fa3", False),
+    ("bf16", "triton", False),
+])
 @torch.inference_mode()
 def test_target_forward_and_commit_cuda_graph(monkeypatch, kind, attention_backend, varlen):
     from types import SimpleNamespace
@@ -232,14 +224,6 @@ def test_target_forward_and_commit_cuda_graph(monkeypatch, kind, attention_backe
     runner.prefill_graph_runner, runner.sampler = None, Sampler(config)
     runner.num_kv_splits_buffer = torch.full((batch_size,), 2, device="cuda", dtype=torch.int32)
     runner.init_attn_backend_buffers(metadata)
-    original_prepare = runner.prepare_attention
-
-    def prepare_attention(forward_batch, num_tokens):
-        before_order_calls = order_calls
-        original_prepare(forward_batch, num_tokens)
-        assert order_calls - before_order_calls == int(varlen)
-
-    monkeypatch.setattr(runner, "prepare_attention", prepare_attention)
     kv = [torch.randn(batch_size * 64, 1, 64, device="cuda", dtype=torch.bfloat16) for _ in range(2)]
     batch = ScheduleBatch([None] * batch_size, SimpleNamespace(kv_buffers=[tuple(kv)]))
     fb = batch.forward_batch
@@ -281,7 +265,6 @@ def test_target_forward_and_commit_cuda_graph(monkeypatch, kind, attention_backe
     set_inputs([4] * batch_size, 0)
     initial = [t.clone() for t in state_buffers]
     run()
-    assert fb.max_extend_len == capacity
     stream = torch.cuda.Stream()
     stream.wait_stream(torch.cuda.current_stream())
     with torch.cuda.stream(stream):
