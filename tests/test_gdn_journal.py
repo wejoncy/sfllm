@@ -205,9 +205,12 @@ def test_journal_matches_flashinfer_across_rounds(steps):
 
 @pytest.mark.parametrize("dtype", ["bfloat16", "float32"])
 @pytest.mark.parametrize("steps", [3, 8])
-def test_model_verification_and_commit(monkeypatch, dtype, steps):
+@pytest.mark.parametrize("varlen", [False, True])
+def test_model_verification_and_commit(monkeypatch, dtype, steps, varlen):
     import sfllm.models.qwen3_5 as qwen
     from sfllm.engine.forward_params import ForwardMode
+
+    monkeypatch.setenv("SFLLM_ENABLE_VARLEN_VERIFY", "1" if varlen else "0")
 
     # Construct real GDN layers; bypass unrelated full-attention/MLP weights.
     args = SimpleNamespace(
@@ -265,19 +268,24 @@ def test_model_verification_and_commit(monkeypatch, dtype, steps):
     # Changing the environment after construction cannot change captured state layouts.
     monkeypatch.setenv("SFLLM_GDN_JOURNAL", "0")
 
-    for mode in (ForwardMode.EXTEND, ForwardMode.TARGET_VERIFY, ForwardMode.DECODE,
-                 ForwardMode.TARGET_VERIFY, ForwardMode.EXTEND):
-        count = steps if mode == ForwardMode.TARGET_VERIFY else 1
+    for mode, count in ((ForwardMode.EXTEND, 1), (ForwardMode.TARGET_VERIFY, steps),
+                        (ForwardMode.DECODE, 1), (ForwardMode.TARGET_VERIFY, 1 if varlen else steps),
+                        (ForwardMode.EXTEND, 1)):
         if mode == ForwardMode.TARGET_VERIFY:
             indices = torch.tensor([1, 4, -1], device="cuda", dtype=torch.int32)
         elif mode == ForwardMode.EXTEND:
             indices = torch.tensor([4, 1, 6], device="cuda", dtype=torch.int32)
         for wrapper in models:
             wrapper.model.state_indices[:3].copy_(indices)
-        batch = SimpleNamespace(forward_mode=mode, max_extend_len=count,
-                                qo_indptr=torch.arange(4, device="cuda", dtype=torch.int32))
-        inputs = torch.randint(config.vocab_size, (3 * count,), device="cuda")
+        lengths = ([1, count, max(1, count // 2)]
+                   if varlen and mode == ForwardMode.TARGET_VERIFY else [count] * 3)
+        cu = torch.tensor([0, *lengths], device="cuda", dtype=torch.int32).cumsum(0)
+        batch = SimpleNamespace(forward_mode=mode, max_extend_len=count, qo_indptr=cu)
+        inputs = torch.randint(config.vocab_size, (sum(lengths),), device="cuda")
         before = candidate.model.ssm_states.clone()
+        if varlen and mode == ForwardMode.TARGET_VERIFY:
+            # This unit test calls the model directly, without ModelRunner.
+            qwen.GatedDeltaNetBackend.prepare_verify(batch)
         with torch.no_grad():
             outputs = [wrapper.model(inputs, inputs, batch) for wrapper in models]
         if dtype == "float32":
@@ -288,7 +296,7 @@ def test_model_verification_and_commit(monkeypatch, dtype, steps):
         if mode == ForwardMode.TARGET_VERIFY:
             if dtype == "float32":
                 assert_bits_equal(candidate.model.ssm_states, before)
-            accepted = torch.tensor([0, steps - 1, -1], device="cuda", dtype=torch.int32)
+            accepted = torch.tensor([0, count - 1, -1], device="cuda", dtype=torch.int32)
             for wrapper in models:
                 wrapper.commit_speculative_state(accepted)
         valid = indices[indices > 0].long()

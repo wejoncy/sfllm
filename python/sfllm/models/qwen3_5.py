@@ -164,7 +164,10 @@ class Qwen3_5GatedDeltaNet(nn.Module):
         if mode == ForwardMode.EXTEND:
             num_sequences = query_start_loc.shape[0] - 1
         elif mode == ForwardMode.TARGET_VERIFY:
-            num_sequences //= forward_batch.max_extend_len
+            num_sequences = (
+                query_start_loc.numel() - 1 if query_start_loc is not None
+                else num_tokens // forward_batch.max_extend_len
+            )
         state_indices = self.state_indices[:num_sequences]
 
         common = dict(
@@ -194,6 +197,8 @@ class Qwen3_5GatedDeltaNet(nn.Module):
                     if self.ssm_output_indices is not None else None
                 ),
                 ssm_journal=self.ssm_journal,
+                cu_seqlens=query_start_loc,
+                forward_batch=forward_batch,
                 **common,
             )
         elif forward_batch.forward_mode == ForwardMode.EXTEND:
@@ -440,6 +445,7 @@ class Qwen3_5Model(nn.Module):
         self.config = config
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, _freeze=True)
         server_args = get_global_server_args()
+        self.enable_varlen_verify = os.environ.get("SFLLM_ENABLE_VARLEN_VERIFY") == "1"
         linear_attention_layer_ids = [
             i for i, layer_type in enumerate(config.layer_types)
             if layer_type == "linear_attention"
@@ -603,11 +609,19 @@ class Qwen3_5Model(nn.Module):
                     (0, hidden_states.shape[0])
                 )
             query_start_loc_i64 = query_start_loc.to(torch.int64)
+        elif (forward_batch.forward_mode == ForwardMode.TARGET_VERIFY
+              and self.enable_varlen_verify):
+            # Boundaries remain GPU inputs during graph replay. Equal-width and
+            # variable-width requests must use the same captured operations.
+            query_start_loc = forward_batch.qo_indptr
         if self.ssm_output_indices is not None:
             if forward_batch.forward_mode == ForwardMode.EXTEND:
                 batch_size = query_start_loc.shape[0] - 1
             elif forward_batch.forward_mode == ForwardMode.TARGET_VERIFY:
-                batch_size = hidden_states.shape[0] // forward_batch.max_extend_len
+                batch_size = (
+                    query_start_loc.numel() - 1 if query_start_loc is not None
+                    else hidden_states.shape[0] // forward_batch.max_extend_len
+                )
             else:
                 batch_size = hidden_states.shape[0]
             update_recurrent_state_indices(
