@@ -44,7 +44,7 @@ class EagleSpecInput(SpecInput):
 
 
 @dataclass
-class EagleVerifyOutput:
+class SpecVerifyOutput:
     # Draft input batch
     # draft_input: EagleSpecInput
     # Logit outputs from target worker
@@ -62,7 +62,7 @@ def get_cuda_stream() -> int:
 
 
 @dataclass
-class EagleVerifyInput(SpecInput):
+class SpecVerifyInput(SpecInput):
     draft_token: torch.Tensor
     custom_mask: torch.Tensor
     positions: torch.Tensor
@@ -73,6 +73,9 @@ class EagleVerifyInput(SpecInput):
     spec_steps: int
     topk: int
     draft_token_num: int
+    packed_source_indices: Optional[torch.Tensor] = None  # packed logits -> draft slots
+    packed_tokens: Optional[torch.Tensor] = None
+    packed_cu_seqlens: Optional[torch.Tensor] = None
 
     def verify(
         self,
@@ -97,7 +100,10 @@ class EagleVerifyInput(SpecInput):
         candidates = self.draft_token.reshape(bs, self.draft_token_num)
         # sampling_info = batch.sampling_info
 
-        assert logits_output.next_token_logits.shape[0] == bs*self.draft_token_num
+        assert logits_output.next_token_logits.shape[0] == (
+            bs * self.draft_token_num if self.packed_source_indices is None
+            else self.packed_source_indices.numel()
+        )
         # predict_shape = list(logits_output.next_token_logits.shape)[:-1]
         # predict_shape[-1] += 1
         predict_shape = [bs * self.draft_token_num+1]
@@ -111,6 +117,13 @@ class EagleVerifyInput(SpecInput):
         is_all_greedy = True#sampling_info.is_all_greedy
         if is_all_greedy:
             target_predict = logits_argmax(logits_output.next_token_logits)
+            if self.packed_source_indices is not None:
+                unpacked = torch.zeros(
+                    bs * self.draft_token_num, dtype=target_predict.dtype,
+                    device=target_predict.device,
+                )
+                unpacked.index_copy_(0, self.packed_source_indices, target_predict)
+                target_predict = unpacked
             target_predict = target_predict.reshape(bs, self.draft_token_num)
 
             sf_kernel.verify_tree_greedy(
@@ -227,7 +240,7 @@ class EagleVerifyInput(SpecInput):
         #     batch.forward_batch.out_cache_loc = batch.forward_batch.out_cache_loc[
         #         accept_index
         #     ]
-        return EagleVerifyOutput(
+        return SpecVerifyOutput(
             verified_id=verified_id,
             accept_length=accept_length,
             accepted_indices=accept_index,

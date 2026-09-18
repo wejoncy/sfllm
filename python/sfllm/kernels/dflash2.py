@@ -56,14 +56,17 @@ def _selector_greedy_walk_kernel(
     unary_logits,
     pairwise,
     proposals_out,
+    prefix_logprobs_out,
     slots: tl.constexpr,
     top_k: tl.constexpr,
     BLOCK_K: tl.constexpr,
+    WRITE_PREFIX_SCORES: tl.constexpr,
 ):
     row = tl.program_id(0)
     offsets = tl.arange(0, BLOCK_K)
     valid = offsets < top_k
     predecessor = 0
+    prefix_logprob = 0.0
     for slot in range(slots):
         score_offset = ((row * slots + slot) * top_k + predecessor) * top_k
         values = tl.load(
@@ -78,6 +81,9 @@ def _selector_greedy_walk_kernel(
         values = unary + values
         best = tl.max(values, axis=0)
         selected = tl.min(tl.where(values == best, offsets, top_k), axis=0)
+        if WRITE_PREFIX_SCORES:
+            prefix_logprob -= tl.log(tl.sum(tl.exp(values - best), axis=0))
+            tl.store(prefix_logprobs_out + row * slots + slot, prefix_logprob)
         token_offset = (row * slots + slot) * top_k + selected
         tl.store(
             proposals_out + row * slots + slot,
@@ -91,16 +97,24 @@ def dflash2_selector_greedy_walk(
     unary_logits: torch.Tensor,
     pairwise: torch.Tensor,
     proposals_out: torch.Tensor,
+    prefix_logprobs_out: torch.Tensor | None = None,
 ) -> None:
+    """Optionally score selected prefixes within the existing top-k lattice.
+
+    Scores are cumulative log probabilities, not calibrated target acceptance
+    probabilities. Omitting the output compiles out the scoring arithmetic.
+    """
     batch_size, slots, top_k = candidate_ids.shape
     _selector_greedy_walk_kernel[(batch_size,)](
         candidate_ids,
         unary_logits,
         pairwise,
         proposals_out,
+        prefix_logprobs_out,
         slots=slots,
         top_k=top_k,
         BLOCK_K=triton.next_power_of_2(top_k),
+        WRITE_PREFIX_SCORES=prefix_logprobs_out is not None,
         num_warps=1,
     )
 

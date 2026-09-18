@@ -7,7 +7,7 @@ from sfllm.engine.schedule_batch import ScheduleBatch,BatchResult
 from sfllm.engine.forward_params import ForwardMode, ForwardBatch
 from sfllm.server_args import ServerArgs
 from sfllm.spec_decoding.spec_utils import (EagleSpecInput,
-                                            EagleVerifyInput,
+                                            SpecVerifyInput,
                                             select_top_k_tokens,
                                             fast_topk,
                                             organize_draft_results,
@@ -271,7 +271,7 @@ class EagleWorker(SpeculativeWorker):
             self.speculative_num_draft_tokens,
         )
         scheduled_batch.forward_batch = orig_forward_batch
-        return EagleVerifyInput(
+        return SpecVerifyInput(
             draft_token=draft_tokens,
             custom_mask=tree_mask,
             positions=position,
@@ -312,7 +312,7 @@ class EagleWorker(SpeculativeWorker):
 
 
     # why this work???
-    def proposal(self, scheduled_batch:ScheduleBatch) -> EagleVerifyInput:
+    def proposal(self, scheduled_batch:ScheduleBatch) -> SpecVerifyInput:
         #enmulate input tensors
         """
         scheduled_batch.forward_batch_spec as forward_batch:
@@ -435,7 +435,7 @@ class EagleWorker(SpeculativeWorker):
             tree_mask_buf=self.target_model_runner.custom_mask_buffer
         )
         scheduled_batch.forward_batch = orig_forward_batch
-        verify_input = EagleVerifyInput(
+        verify_input = SpecVerifyInput(
             draft_token=draft_tokens,
             custom_mask=tree_mask,
             positions=position,
