@@ -210,12 +210,11 @@ def test_model_verification_and_commit(monkeypatch, dtype, steps, varlen):
     import sfllm.models.qwen3_5 as qwen
     from sfllm.engine.forward_params import ForwardMode
 
-    monkeypatch.setenv("SFLLM_ENABLE_VARLEN_VERIFY", "1" if varlen else "0")
-
     # Construct real GDN layers; bypass unrelated full-attention/MLP weights.
     args = SimpleNamespace(
         max_running_requests=8, speculative_algorithm="dspark",
         speculative_num_draft_tokens=steps, mamba_ssm_dtype=dtype,
+        spec_adaptive_verify=f"d{steps}t1" if varlen else None,
         linear_attn_backend="triton", linear_attn_prefill_backend=None,
         linear_attn_decode_backend=None, enable_prefill_cuda_graph=False,
     )

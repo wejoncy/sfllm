@@ -10,7 +10,7 @@ postprocess, and KV lifetime logic are shared.
 | Shared with Eagle3 | DFlash2-specific |
 | --- | --- |
 | `ScheduleBatch` speculative metadata | DFlash2 checkpoint/model definition |
-| `EagleSpecInput` and `EagleVerifyInput` | target-hidden to draft-KV projection |
+| `EagleSpecInput` and `SpecVerifyInput` | target-hidden to draft-KV projection |
 | target verify and greedy acceptance | fixed masked-block draft forward |
 | accepted-token/KV packing | block-local convolution and candidate selector |
 | overlap placeholders and KV ownership | linear Eagle verify topology adapter |
@@ -31,7 +31,7 @@ For block size `B`, one DFlash2 decode graph performs:
    sublayer, then use the target LM head to form top-k unary candidates, score
    adjacent candidate transitions, and choose one linear path of `B - 1`
    proposals.
-5. Represent `[anchor, proposals...]` as a linear `EagleVerifyInput` and call
+5. Represent `[anchor, proposals...]` as a linear `SpecVerifyInput` and call
    the shared target verify/accept path.
 6. Project the captured target hidden states into the shared Eagle hidden-state
    buffer for the next overlapped step.

@@ -120,6 +120,12 @@ class SpeculativeE2ECudaGraphRunner():
         scheduled_batch.forward_batch_spec = spec_forward_batch
         scheduled_batch.forward_batch = target_forward_batch
         scheduled_batch.spec_info = spec_info
+        if self.server_args.speculative_algorithm in ("dflash2", "dspark"):
+            # Capture needs finite context and valid per-request anchor indices.
+            self.hidden_states_buffer[:token_nums].zero_()
+            boundaries = torch.arange(batch_size + 1, dtype=torch.int32, device=self.device_id) * draft_tokens_expand
+            spec_forward_batch.qo_indptr.copy_(boundaries)
+            target_forward_batch.qo_indptr.copy_(boundaries)
         return scheduled_batch
 
     @torch.inference_mode()

@@ -402,7 +402,8 @@ class DFlash2DraftModel(nn.Module):
             )
         return ids.view(shape), values.view(shape)
 
-    def sample_proposals(self, hidden_states, target_head_weight, anchor_tokens, out):
+    def sample_proposals(self, hidden_states, target_head_weight, anchor_tokens, out,
+                         prefix_logprobs_out=None):
         candidate_ids, unary_logits = self.compute_candidates(
             hidden_states, target_head_weight
         )
@@ -411,7 +412,9 @@ class DFlash2DraftModel(nn.Module):
             hidden_states=hidden_states,
             anchor_token_ids=anchor_tokens,
         )
-        dflash2_selector_greedy_walk(candidate_ids, unary_logits, pairwise, out)
+        dflash2_selector_greedy_walk(
+            candidate_ids, unary_logits, pairwise, out, prefix_logprobs_out
+        )
 
     def project_target_hidden(self, target_hidden: torch.Tensor) -> torch.Tensor:
         if target_hidden.ndim != 2 or target_hidden.shape[1] != self.fc.in_features:
