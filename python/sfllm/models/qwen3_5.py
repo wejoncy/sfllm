@@ -445,7 +445,7 @@ class Qwen3_5Model(nn.Module):
         self.config = config
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, _freeze=True)
         server_args = get_global_server_args()
-        self.enable_varlen_verify = os.environ.get("SFLLM_ENABLE_VARLEN_VERIFY") == "1"
+        self.enable_varlen_verify = server_args.spec_adaptive_verify is not None
         linear_attention_layer_ids = [
             i for i, layer_type in enumerate(config.layer_types)
             if layer_type == "linear_attention"

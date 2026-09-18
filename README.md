@@ -148,7 +148,7 @@ This example uses 6 draft queries (anchor + 5 masks) to propose 5 tokens from th
 positions; the target verifies 6 tokens including the anchor. Omit the token count to use the checkpoint's gamma
 plus one (`dspark_block_size` takes precedence over `block_size`). Qwen3 and Qwen3.5
 targets, vanilla/gated/RNN Markov heads, and mixed sliding/full draft attention are
-supported. Decoding is fixed-width and greedy; confidence-head weights are unused.
+supported. Decoding is fixed-width by default and greedy; confidence-head weights are unused.
 For vanilla Markov heads, `--speculative-dspark-topk 16` restricts draft proposals
 to the top 16 unary candidates and computes their transitions together. This can
 change draft acceptance; every emitted token is still verified by the target.
@@ -159,7 +159,7 @@ GDN prefill and ordinary decode use their selected backends. BF16 speculative
 verification always uses Triton and needs no backend setting.
 
 Set `SFLLM_GDN_JOURNAL=1` to enable FP32 GDN speculative verification journals (off by default).
-Set `SFLLM_ENABLE_VARLEN_VERIFY=1` before startup to enable packed variable-length GDN target verification (off by default).
+Use `--spec-adaptive-verify d8t5` for draft width 8 and a shared verify budget of `round(batch_size * 5)` tokens, both including the anchor (`d6t5` and `d8t4.6` also supported); this overrides `--speculative-num-draft-tokens`. Omit it for unchanged fixed-width verification. DSpark requires positive `--speculative-dspark-topk`.
 
 ### 2. Test the API
 

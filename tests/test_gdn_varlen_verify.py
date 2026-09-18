@@ -170,14 +170,12 @@ def test_target_forward_and_commit_cuda_graph(monkeypatch, kind, attention_backe
 
     monkeypatch.setattr(server_args, "_global_server_args", None)
     monkeypatch.setenv("SFLLM_GDN_JOURNAL", "1" if kind == "journal" else "0")
-    if varlen:
-        monkeypatch.setenv("SFLLM_ENABLE_VARLEN_VERIFY", "1")
-    else:
-        monkeypatch.delenv("SFLLM_ENABLE_VARLEN_VERIFY", raising=False)
     batch_size, total, capacity = 4, 16, 8 if varlen else 4
     args = server_args.ServerArgs(
         model_path="unused", speculative_algorithm="dspark",
         speculative_num_draft_tokens=capacity, max_running_requests=batch_size,
+        spec_adaptive_verify=f"d{capacity}t4" if varlen else None,
+        speculative_dspark_topk=16,
         cuda_graph_max_bs=batch_size, max_context_length=128,
         mamba_ssm_dtype="bfloat16" if kind == "bf16" else "float32",
         attention_backend=attention_backend, linear_attn_backend="triton",
@@ -200,8 +198,8 @@ def test_target_forward_and_commit_cuda_graph(monkeypatch, kind, attention_backe
         param.normal_(0, .1)
     model.set_layers_to_capture([0, 2])
     backbone = model.model
-    # Construction fixes graph dispatch; later environment changes cannot alter it.
-    monkeypatch.setenv("SFLLM_ENABLE_VARLEN_VERIFY", "0" if varlen else "1")
+    # Construction fixes graph dispatch; later argument changes cannot alter it.
+    args.spec_adaptive_verify = None if varlen else "d4t4"
     backbone.ssm_states.normal_(0, .1)
     backbone.conv_states.normal_(0, .1)
 

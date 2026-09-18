@@ -5,11 +5,12 @@ import torch
 from sfllm.engine.forward_params import ForwardBatch, ForwardMode
 from sfllm.engine.schedule_batch import BatchResult, ScheduleBatch
 from sfllm.kernels.dflash2 import prepare_dflash2_block
+from sfllm.kernels.verify_budget import allocate_verify_budget
 from sfllm.models.dflash2 import DFlash2Config
 from sfllm.models.interfaces import HasBatchState
 from sfllm.model_loader.model_config import ModelConfig
 from sfllm.server_args import ServerArgs
-from sfllm.spec_decoding.spec_utils import EagleSpecInput, EagleVerifyInput
+from sfllm.spec_decoding.spec_utils import EagleSpecInput, SpecVerifyInput
 from sfllm.spec_decoding.spec_worker import SpeculativeWorker
 
 
@@ -79,6 +80,11 @@ class DFlash2Worker(SpeculativeWorker):
         server_args.speculative_num_steps = self.block_size - 1
         server_args.speculative_num_draft_tokens = self.block_size
 
+        self.verify_budget = (
+            float(server_args.spec_adaptive_verify.split("t")[1])
+            if server_args.spec_adaptive_verify else 0.0
+        )
+
         super().__init__(server_args)
         self.dflash2_config = self.draft_model_runner.model.dflash_config
         for layer in self.draft_model_runner.model.layers:
@@ -136,6 +142,10 @@ class DFlash2Worker(SpeculativeWorker):
         self._positions = torch.empty_like(self._block_ids)
         self._proposals = torch.empty(
             (max_bs, block - 1), dtype=torch.int64, device=device
+        )
+        self._prefix_logprobs = (
+            torch.empty((max_bs, block - 1), dtype=torch.float32, device=device)
+            if self.verify_budget else None
         )
         self._candidates = torch.empty_like(self._block_ids)
         self._protocol_hidden = torch.empty(
@@ -239,7 +249,7 @@ class DFlash2Worker(SpeculativeWorker):
             kv_buffers=(self.draft_mem_pool.k_buffer, self.draft_mem_pool.v_buffer),
         )
 
-    def proposal(self, batch: ScheduleBatch) -> EagleVerifyInput:
+    def proposal(self, batch: ScheduleBatch) -> SpecVerifyInput:
         """Build one linear DFlash2 proposal block."""
         batch_size = len(batch)
         block = self.block_size
@@ -271,12 +281,14 @@ class DFlash2Worker(SpeculativeWorker):
             self.target_model_runner.model.lm_head.weight,
             self._block_ids[:batch_size, 0],
             self._proposals[:batch_size],
+            prefix_logprobs_out=(self._prefix_logprobs[:batch_size]
+                                if self.verify_budget else None),
         )
 
         candidates = self._candidates[:batch_size]
         candidates[:, 0].copy_(self._block_ids[:batch_size, 0])
         candidates[:, 1:].copy_(self._proposals[:batch_size])
-        return EagleVerifyInput(
+        proposal = SpecVerifyInput(
             draft_token=candidates.reshape(-1),
             custom_mask=None,
             positions=flat_positions,
@@ -288,9 +300,20 @@ class DFlash2Worker(SpeculativeWorker):
             topk=1,
             draft_token_num=block,
         )
+        if self.verify_budget:
+            (lengths, proposal.packed_cu_seqlens, proposal.packed_source_indices,
+             proposal.packed_tokens) = allocate_verify_budget(
+                self._prefix_logprobs[:batch_size], candidates,
+                round(batch_size * self.verify_budget),
+            )
+            proposal.retrive_next_token = torch.where(
+                proposal.retrive_next_token < lengths[:, None], proposal.retrive_next_token, -1
+            )
+        return proposal
 
     def _adapt_verified_hidden_states(
-        self, batch: ScheduleBatch, hidden_states: torch.Tensor
+        self, batch: ScheduleBatch, hidden_states: torch.Tensor,
+        source_indices: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Project target states into DFlash2's next-step context."""
         token_count = len(batch) * self.block_size
@@ -299,7 +322,12 @@ class DFlash2Worker(SpeculativeWorker):
         )
         protocol_hidden = self._protocol_hidden[:token_count]
         protocol_hidden.zero_()
-        protocol_hidden[:, : target_context.shape[1]].copy_(target_context)
+        if source_indices is None:
+            protocol_hidden[:, : target_context.shape[1]].copy_(target_context)
+        else:
+            protocol_hidden[:, : target_context.shape[1]].index_copy_(
+                0, source_indices, target_context
+            )
         return protocol_hidden
 
 

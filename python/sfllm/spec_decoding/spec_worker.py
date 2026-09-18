@@ -11,7 +11,7 @@ from sfllm.server_args import ServerArgs
 from sfllm.spec_decoding.spec_e2e_cuda_graph_runner import (
     SpeculativeE2ECudaGraphRunner,
 )
-from sfllm.spec_decoding.spec_utils import EagleVerifyInput
+from sfllm.spec_decoding.spec_utils import SpecVerifyInput
 
 logger = logging.getLogger(__name__)
 
@@ -69,18 +69,19 @@ class SpeculativeWorker:
         """Advance draft state with the tokens accepted in the previous round."""
         raise NotImplementedError
 
-    def proposal(self, scheduled_batch: ScheduleBatch) -> EagleVerifyInput:
+    def proposal(self, scheduled_batch: ScheduleBatch) -> SpecVerifyInput:
         """Build algorithm-specific candidates in the shared verify format."""
         raise NotImplementedError
 
     def _adapt_verified_hidden_states(
-        self, scheduled_batch: ScheduleBatch, hidden_states: torch.Tensor
+        self, scheduled_batch: ScheduleBatch, hidden_states: torch.Tensor,
+        source_indices: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Adapt target states to the representation kept for the next step."""
         return hidden_states
 
     def verify(
-        self, scheduled_batch: ScheduleBatch, proposal: EagleVerifyInput
+        self, scheduled_batch: ScheduleBatch, proposal: SpecVerifyInput
     ) -> BatchResult:
         """Run the target model for a speculative proposal."""
         scheduled_batch.position_ids = proposal.positions
@@ -88,19 +89,27 @@ class SpeculativeWorker:
         forward_batch = scheduled_batch.forward_batch
         forward_batch.forward_mode = ForwardMode.TARGET_VERIFY
         forward_batch.custom_mask = proposal.custom_mask
+        source = proposal.packed_source_indices
+        if source is not None:
+            original_boundaries, original_locs = forward_batch.qo_indptr, forward_batch.out_cache_loc
+            forward_batch.qo_indptr, forward_batch.out_cache_loc = proposal.packed_cu_seqlens, original_locs[source]
+            scheduled_batch.input_ids, scheduled_batch.position_ids = proposal.packed_tokens, proposal.positions[source]
 
         verification = self.target_model_runner.forward(scheduled_batch)
+        if source is not None:
+            # Accept and KV ownership use the original draft-width indices.
+            forward_batch.qo_indptr, forward_batch.out_cache_loc = original_boundaries, original_locs
         forward_batch.forward_mode = ForwardMode.DECODE
         hidden_states = torch.cat(verification.aux_hidden_states, dim=-1)
         proposal.hidden_states = self._adapt_verified_hidden_states(
-            scheduled_batch, hidden_states
+            scheduled_batch, hidden_states, source
         )
         return verification
 
     def accept(
         self,
         scheduled_batch: ScheduleBatch,
-        proposal: EagleVerifyInput,
+        proposal: SpecVerifyInput,
         verification: BatchResult,
     ):
         """Select the path accepted by the target model."""
@@ -116,7 +125,7 @@ class SpeculativeWorker:
         )
 
     def verify_propose(
-        self, scheduled_batch: ScheduleBatch, proposal: EagleVerifyInput
+        self, scheduled_batch: ScheduleBatch, proposal: SpecVerifyInput
     ):
         """Compatibility wrapper for Eagle's combined verify/accept call."""
         verification = self.verify(scheduled_batch, proposal)
@@ -131,7 +140,7 @@ class SpeculativeWorker:
     def forward_decode_e2e_post_process(
         self,
         scheduled_batch: ScheduleBatch,
-        verify_input: EagleVerifyInput,
+        verify_input: SpecVerifyInput,
         next_token_logits: torch.Tensor,
         accept_index: torch.Tensor,
         accept_length: torch.Tensor,

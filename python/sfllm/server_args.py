@@ -1,6 +1,7 @@
 import dataclasses
 import argparse
 import logging
+import re
 from typing import List, Literal, Optional
 
 logger = logging.getLogger(__name__)
@@ -36,6 +37,7 @@ class ServerArgs:
     speculative_num_steps: int = 4
     speculative_num_draft_tokens: Optional[int] = None
     speculative_dspark_topk: int = -1
+    spec_adaptive_verify: Optional[str] = None
 
     #piecewise for prefill
     enable_piecewise_cuda_graph: bool = False
@@ -232,6 +234,13 @@ class ServerArgs:
             help="Verify token count: defaults to 8 for Eagle, checkpoint block_size for DFlash2, or gamma+1 for DSpark.",
         )
         parser.add_argument(
+            "--spec-adaptive-verify",
+            type=str.lower,
+            default=ServerArgs.spec_adaptive_verify,
+            metavar="dNtM",
+            help="DFlash2/DSpark adaptive verify, e.g. d8t5 or d6t5: draft width N and mean verify budget M per request, both including the anchor. Overrides --speculative-num-draft-tokens; fractional budgets supported. Omit to disable.",
+        )
+        parser.add_argument(
             "--enable-debug",
             action="store_true",
             help="Enable debug mode.",
@@ -248,6 +257,18 @@ class ServerArgs:
         return cls(**{attr: getattr(args, attr) for attr in attrs})
 
     def __post_init__(self):
+        if self.spec_adaptive_verify is not None:
+            match = re.fullmatch(r"d(\d+)t(\d+(?:\.\d+)?)", self.spec_adaptive_verify)
+            if match is None:
+                raise ValueError("--spec-adaptive-verify expects dNtM, e.g. d8t5 or d8t4.6.")
+            width, budget = int(match[1]), float(match[2])
+            if width < 2 or not 1 <= budget <= width:
+                raise ValueError("Adaptive draft width must be >= 2 and verify budget between 1 and that width.")
+            if self.speculative_algorithm not in ("dflash2", "dspark"):
+                raise ValueError("--spec-adaptive-verify requires DFlash2 or DSpark.")
+            if self.speculative_algorithm == "dspark" and self.speculative_dspark_topk <= 0:
+                raise ValueError("--spec-adaptive-verify requires positive --speculative-dspark-topk.")
+            self.speculative_num_draft_tokens = width
         if self.enable_prefill_cuda_graph:
             backend = self.linear_attn_prefill_backend or self.linear_attn_backend
             if self.disable_cuda_graph:

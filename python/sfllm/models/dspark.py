@@ -89,7 +89,8 @@ class DSparkMarkovHead(nn.Module):
         elif head_type != "vanilla":
             raise ValueError(f"Unsupported DSpark Markov head: {head_type}.")
 
-    def sample_candidates(self, candidate_ids, unary_logits, anchor_tokens, out):
+    def sample_candidates(self, candidate_ids, unary_logits, anchor_tokens, out,
+                          prefix_logprobs_out=None):
         """Build all top-k Markov edges together, then walk the small lattice."""
         if self.head_type != "vanilla":
             raise ValueError("DSpark top-k proposals require a vanilla Markov head.")
@@ -103,7 +104,9 @@ class DSparkMarkovHead(nn.Module):
         transitions = torch.einsum(
             "blpr,blcr->blpc", predecessor_latent, successor_latent
         )
-        dflash2_selector_greedy_walk(candidate_ids, unary_logits, transitions, out)
+        dflash2_selector_greedy_walk(
+            candidate_ids, unary_logits, transitions, out, prefix_logprobs_out
+        )
 
     def sample(self, base_logits, hidden_states, anchor_tokens, out):
         previous = anchor_tokens
@@ -141,14 +144,15 @@ class DSparkDraftModel(DFlash2DraftModel):
             self.dflash_config.markov_rank, self.dflash_config.markov_head_type,
         )
 
-    def sample_proposals(self, hidden_states, target_head_weight, anchor_tokens, out):
+    def sample_proposals(self, hidden_states, target_head_weight, anchor_tokens, out,
+                         prefix_logprobs_out=None):
         if self.proposal_top_k > 0:
             ids, unary = self.compute_candidates(
                 hidden_states, target_head_weight,
                 top_k=self.proposal_top_k,
             )
             self.markov_head.sample_candidates(
-                ids, unary, anchor_tokens, out
+                ids, unary, anchor_tokens, out, prefix_logprobs_out
             )
             return
         # Dropping the anchor leaves gaps between requests. Flatten explicitly
