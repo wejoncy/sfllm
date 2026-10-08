@@ -23,6 +23,9 @@ except ImportError:
 from sfllm.engine.forward_params import ForwardBatch
 from sfllm.kernels.dflash2 import dflash2_selector_greedy_walk
 from sfllm.layers.layernorm import RMSNorm
+from sfllm.layers.linear import ReplicatedLinear
+from sfllm.layers.quantization.fp8 import Fp8Config, Fp8LinearMethod
+from sfllm.layers.quantization.fp8_kernel import triton_scaled_mm
 from sfllm.model_loader.weight_utils import default_weight_loader
 from sfllm.models.qwen3 import Qwen3Attention, Qwen3MLP
 
@@ -338,6 +341,7 @@ class DFlash2DraftModel(nn.Module):
             ]
         )
         self.norm = RMSNorm(hidden_size, eps=float(config.rms_norm_eps))
+        self.draft_lm_head = None
         self.fc = nn.Linear(
             len(self.dflash_config.target_layer_ids) * hidden_size,
             hidden_size,
@@ -357,13 +361,49 @@ class DFlash2DraftModel(nn.Module):
             self.dflash_config.selector_top_k,
         )
 
+    @torch.inference_mode()
+    def enable_fp8(self, target_head_weight: torch.Tensor) -> None:
+        """Convert only projections with an existing fused quantization producer."""
+        # KV materialization keeps the original BF16/FP16 projection assembled
+        # during load_weights, before any draft QKV weights are converted.
+        projections = []
+        for layer in self.layers:
+            if layer.attention_conv is None:
+                projections.append((layer.self_attn.qkv_proj, layer.input_layernorm))
+            if layer.mlp_conv is None:
+                projections.append((layer.mlp.gate_up_proj, layer.post_attention_layernorm))
+        # O has no fused producer. Down stays in native precision because its
+        # small contraction GEMMs were slower with FP8 in serving profiles.
+        vocab, hidden = target_head_weight.shape
+        with torch.device("meta"):
+            head = ReplicatedLinear(
+                hidden, vocab, bias=False, params_dtype=target_head_weight.dtype,
+                prefix="draft_lm_head", return_bias=False,
+            )
+        head.weight = nn.Parameter(target_head_weight, requires_grad=False)
+        projections.append((head, self.norm))
+        quant_config = Fp8Config(weight_strategy="channel")
+        for projection, norm in projections:
+            if projection.weight.dtype not in (torch.float16, torch.bfloat16):
+                raise ValueError("Draft FP8 requires FP16/BF16 source weights.")
+            method = Fp8LinearMethod(quant_config)
+            columns, inner = projection.weight.shape
+            # These weights already exist; retain create_weights' alignment fallback.
+            if inner % 16 or columns % 8:
+                method.scaled_mm = triton_scaled_mm
+            method.process_weights_after_loading(projection)
+            projection.quant_method = method
+            norm.output_dtypes = (method.input_dtype,)
+        self.draft_lm_head = head
+        self.norm.output_dtypes = (None, head.quant_method.input_dtype)
+
     def forward(
         self,
         input_ids: torch.Tensor,
         positions: torch.Tensor,
         forward_batch: ForwardBatch,
         input_embeds: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
+    ) -> torch.Tensor | tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
         del input_ids
         if input_embeds is None:
             raise ValueError("DFlash2 must receive embeddings from the target model.")
@@ -380,15 +420,12 @@ class DFlash2DraftModel(nn.Module):
 
     def compute_candidates(
         self, hidden_states: torch.Tensor, target_head_weight: torch.Tensor,
-        top_k: Optional[int] = None,
+        top_k: Optional[int] = None, quantized_hidden=None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         if top_k is None:
             top_k = self.dflash_config.selector_top_k
         shape = (*hidden_states.shape[:-1], top_k)
-        hidden_states = hidden_states.reshape(-1, hidden_states.shape[-1])
-        logits = torch.matmul(
-            hidden_states.to(target_head_weight.dtype), target_head_weight.T
-        )
+        logits = self.compute_logits(hidden_states, target_head_weight, quantized_hidden)
         if _flashinfer_top_k is None:
             values, ids = torch.topk(
                 logits, top_k, dim=-1, sorted=True
@@ -402,10 +439,18 @@ class DFlash2DraftModel(nn.Module):
             )
         return ids.view(shape), values.view(shape)
 
+    def compute_logits(self, hidden_states, target_head_weight, quantized_hidden=None):
+        if self.draft_lm_head is not None:
+            if quantized_hidden is None:
+                raise ValueError("FP8 draft head requires quantized activations and scales.")
+            return self.draft_lm_head(quantized_hidden)
+        hidden_states = hidden_states.reshape(-1, hidden_states.shape[-1])
+        return torch.matmul(hidden_states.to(target_head_weight.dtype), target_head_weight.T)
+
     def sample_proposals(self, hidden_states, target_head_weight, anchor_tokens, out,
-                         prefix_logprobs_out=None):
+                         prefix_logprobs_out=None, quantized_hidden=None):
         candidate_ids, unary_logits = self.compute_candidates(
-            hidden_states, target_head_weight
+            hidden_states, target_head_weight, quantized_hidden=quantized_hidden
         )
         pairwise = self.candidate_selector.compute_pairwise_scores(
             candidate_ids=candidate_ids,
