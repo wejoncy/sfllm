@@ -190,6 +190,8 @@ verification always uses Triton and needs no backend setting.
 Set `SFLLM_GDN_JOURNAL=1` to enable FP32 GDN speculative verification journals (off by default).
 Use `--spec-adaptive-verify d8t5` for draft width 8 and a shared verify budget of `round(batch_size * 5)` tokens, both including the anchor (`d6t5` and `d8t4.6` also supported); this overrides `--speculative-num-draft-tokens`. Omit it for unchanged fixed-width verification. DSpark requires positive `--speculative-dspark-topk`.
 
+Use `--speculative-draft-quantization fp8` to enable fused FP8 for eligible DFlash2/DSpark draft projections; target and SSM state precision remain unchanged. Omit it to keep the existing draft path.
+
 ### 2. Test the API
 
 **Chat Completions (Streaming)**

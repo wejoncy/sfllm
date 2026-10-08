@@ -17,6 +17,7 @@ from sfllm.utils import get_tensor_model_parallel_world_size,get_tensor_model_pa
 
 from sfllm.layers.quantization.fp8_kernel import (
     fp8_dtype,
+    sglang_per_token_quant_fp8,
     triton_scaled_mm,
 )
 from sfllm.layers.quantization.fp8_utils import (
@@ -342,7 +343,12 @@ class Fp8LinearMethod(LinearMethodBase):
 
             # If checkpoint not serialized fp8, quantize the weights.
             if not self.quant_config.is_checkpoint_fp8_serialized:
-                qweight, weight_scale = input_to_float8(layer.weight)
+                if self.quant_config.weight_strategy == "channel":
+                    qweight, weight_scale = sglang_per_token_quant_fp8(
+                        layer.weight.data.contiguous()
+                    )
+                else:
+                    qweight, weight_scale = input_to_float8(layer.weight)
 
                 # Update the layer with the new values.
                 layer.weight = Parameter(qweight.t(), requires_grad=False)

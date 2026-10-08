@@ -101,6 +101,8 @@ class DFlash2Worker(SpeculativeWorker):
         target_model.set_layers_to_capture(
             list(self.dflash2_config.target_layer_ids)
         )
+        if server_args.speculative_draft_quantization == "fp8":
+            self.draft_model_runner.model.enable_fp8(target_model.lm_head.weight)
 
         self._profile_models()
         self.init_memory_pools()
@@ -274,7 +276,15 @@ class DFlash2Worker(SpeculativeWorker):
             positions=flat_positions,
             forward_batch=forward_batch,
             input_embeds=embeddings,
-        ).view(batch_size, block, -1)
+        )
+        quantized_hidden = None
+        if isinstance(draft_hidden, tuple):
+            draft_hidden, quantized_hidden = draft_hidden
+            quantized_hidden = tuple(
+                t.view(batch_size, block, -1)[:, 1:].reshape(-1, t.shape[-1])
+                for t in quantized_hidden
+            )
+        draft_hidden = draft_hidden.view(batch_size, block, -1)
 
         self.draft_model_runner.model.sample_proposals(
             draft_hidden[:, 1:],
@@ -283,6 +293,7 @@ class DFlash2Worker(SpeculativeWorker):
             self._proposals[:batch_size],
             prefix_logprobs_out=(self._prefix_logprobs[:batch_size]
                                 if self.verify_budget else None),
+            quantized_hidden=quantized_hidden,
         )
 
         candidates = self._candidates[:batch_size]

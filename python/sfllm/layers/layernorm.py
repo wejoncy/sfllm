@@ -26,7 +26,10 @@ except ImportError:
     _flashinfer_norm = None
 
 from sfllm.layers.op_base import CustomOp
-from sfllm.layers.quantization.fp8_kernel import gemma_rmsnorm_quant_fp8
+from sfllm.layers.quantization.fp8_kernel import (
+    _launch_fp8_kernel,
+    gemma_rmsnorm_quant_fp8,
+)
 logger = logging.getLogger(__name__)
 
 class RMSNorm(CustomOp):
@@ -50,6 +53,7 @@ class RMSNorm(CustomOp):
         self.variance_size_override = (
             None if var_hidden_size == hidden_size else var_hidden_size
         )
+        self.output_dtypes = ()
 
     def forward_native(
         self,
@@ -99,6 +103,16 @@ class RMSNorm(CustomOp):
             return x, residual
     
     def forward_cuda(self, x: torch.Tensor, residual: Optional[torch.Tensor] = None):
+        if self.output_dtypes:
+            if (self.variance_size_override is not None or self.cast_x_before_out_mul
+                    or self.fp32_residual or self.override_orig_dtype is not None):
+                raise ValueError("Fused FP8 requires standard RMSNorm semantics.")
+            output = _launch_fp8_kernel(
+                x, weight=self.weight, residual=residual, eps=self.variance_epsilon,
+                output_dtypes=self.output_dtypes,
+                input_scales=(None,) * len(self.output_dtypes),
+            )
+            return output if residual is None else (output, residual)
         if (
             self.variance_size_override is not None
             or self.cast_x_before_out_mul
