@@ -887,6 +887,16 @@ def update_eagle_inputs(
     ind_size, ind_size_mtd, ind_size_verify,
     draft_tokens_expand, hidden_size
 ):
+    for name, size, buffer in (
+        ("spec_kv_indices", ind_size, spec_kv_indices),
+        ("spec_kv_indices_mtd", ind_size_mtd, spec_kv_indices_mtd),
+        ("kv_indices", ind_size_verify, kv_indices),
+    ):
+        if size > buffer.numel():
+            raise ValueError(
+                f"CUDA Graph {name} needs {size} entries, "
+                f"but its buffer has capacity {buffer.numel()}"
+            )
     grid = (128, )
     BLOCK_SIZE = 256
     
