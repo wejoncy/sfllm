@@ -8,8 +8,13 @@ import torch
 import triton
 import triton.language as tl
 from fla.ops.gated_delta_rule.chunk import chunk_gated_delta_rule_fwd
-from flashinfer import gdn_decode
-from flashinfer.gdn_prefill import chunk_gated_delta_rule
+try:
+    from flashinfer import gdn_decode
+    from flashinfer.gdn_prefill import chunk_gated_delta_rule
+except ModuleNotFoundError as exc:
+    if exc.name != "flashinfer":
+        raise
+    gdn_decode = chunk_gated_delta_rule = None
 from triton.experimental import gluon as tg
 from triton.experimental.gluon import language as gl
 import sf_kernel
@@ -876,6 +881,11 @@ class GatedDeltaNetBackend:
         supported = {"flashinfer", "triton"}
         if prefill_backend not in supported or decode_backend not in supported:
             raise ValueError("GDN backends must be one of: flashinfer, triton")
+        if "flashinfer" in (prefill_backend, decode_backend) and gdn_decode is None:
+            raise ImportError(
+                "FlashInfer GDN requires sfllm[flashinfer]; without FlashInfer, "
+                "select --linear-attn-backend triton."
+            )
         self.prefill_backend = prefill_backend
         self.decode_backend = decode_backend
 

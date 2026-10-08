@@ -26,6 +26,7 @@ class ServerArgs:
     max_running_requests: Optional[int] = None
     disable_overlap: bool = False
     attention_backend: Literal["triton", "fa3"] = "triton"
+    moe_runner_backend: Literal["auto", "flashinfer_cutlass", "triton_kernel"] = "auto"
     linear_attn_backend: Literal["triton", "flashinfer"] = "flashinfer"
     linear_attn_prefill_backend: Optional[Literal["triton", "flashinfer"]] = None
     linear_attn_decode_backend: Optional[Literal["triton", "flashinfer"]] = None
@@ -55,6 +56,11 @@ class ServerArgs:
 
     @staticmethod
     def add_cli_args(parser: argparse.ArgumentParser):
+        parser.add_argument(
+            "--moe-runner-backend", choices=["auto", "flashinfer_cutlass", "triton_kernel"],
+            default=ServerArgs.moe_runner_backend,
+            help="MoE backend; auto uses fused CUTLASS on Hopper when installed, otherwise bundled Triton kernels.",
+        )
         # Model and tokenizer
         parser.add_argument(
             "--model-path",

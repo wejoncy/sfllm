@@ -388,12 +388,8 @@ class Qwen3_5DecoderLayer(nn.Module):
             )
         else:
             raise ValueError(f"Unsupported Qwen3.5 layer type: {layer_type}")
-        self.mlp = Qwen2MLP(
-            config.hidden_size,
-            config.intermediate_size,
-            config.hidden_act,
-            quant_config,
-            add_prefix("mlp", prefix),
+        self.mlp, mlp_quant_methods = self.build_mlp(
+            config, quant_config, add_prefix("mlp", prefix),
         )
         self.input_layernorm = GemmaRMSNorm(
             config.hidden_size, eps=config.rms_norm_eps,
@@ -401,8 +397,15 @@ class Qwen3_5DecoderLayer(nn.Module):
         )
         self.post_attention_layernorm = GemmaRMSNorm(
             config.hidden_size, eps=config.rms_norm_eps,
-            quant_methods=(self.mlp.gate_up_proj.quant_method,),
+            quant_methods=mlp_quant_methods,
         )
+
+    def build_mlp(self, config, quant_config, prefix):
+        mlp = Qwen2MLP(
+            config.hidden_size, config.intermediate_size, config.hidden_act,
+            quant_config, prefix,
+        )
+        return mlp, (mlp.gate_up_proj.quant_method,)
 
     def forward(
         self,
@@ -435,6 +438,8 @@ class Qwen3_5DecoderLayer(nn.Module):
 
 
 class Qwen3_5Model(nn.Module):
+    decoder_layer_class = Qwen3_5DecoderLayer
+
     def __init__(
         self,
         config,
@@ -512,7 +517,7 @@ class Qwen3_5Model(nn.Module):
         )
         self.layers, self.start_layer, self.end_layer = make_layers_non_pp(
             config.num_hidden_layers,
-            lambda idx, prefix: Qwen3_5DecoderLayer(
+            lambda idx, prefix: self.decoder_layer_class(
                 config,
                 idx,
                 cache_layer_ids.get(idx),
@@ -650,6 +655,7 @@ class Qwen3_5Model(nn.Module):
 class Qwen3_5ForConditionalGeneration(nn.Module, HasBatchState):
     """Text-only serving view of a dense Qwen3.5/Qwen3.8 checkpoint."""
 
+    model_class = Qwen3_5Model
     remap_prefix = {"model.language_model.": "model."}
     packed_modules_mapping = {
         "qkv_proj": ["q_proj", "k_proj", "v_proj"],
@@ -678,7 +684,7 @@ class Qwen3_5ForConditionalGeneration(nn.Module, HasBatchState):
         text_config = config.text_config
         self.config = text_config
         self.quant_config = quant_config
-        self.model = Qwen3_5Model(text_config, quant_config, add_prefix("model", prefix))
+        self.model = self.model_class(text_config, quant_config, add_prefix("model", prefix))
         self.lm_head = self.model.embed_tokens if text_config.tie_word_embeddings else ReplicatedLinear(
             text_config.hidden_size, text_config.vocab_size, bias=False
         )
@@ -776,7 +782,7 @@ class Qwen3_5ForConditionalGeneration(nn.Module, HasBatchState):
                     ("gate_up_proj", "up_proj", 1),
                 ]
                 for packed_name, shard_name, shard_id in stacked:
-                    if shard_name in name:
+                    if f".{shard_name}." in name:
                         mappings = [(name.replace(shard_name, packed_name), loaded_weight, shard_id)]
                         break
                 if not mappings:

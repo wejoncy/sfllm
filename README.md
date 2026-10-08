@@ -46,6 +46,11 @@ pip install -r requirements.txt
 pip install -e .
 ```
 
+For FlashInfer GDN, FA3 and the Hopper CUTLASS MoE fast path, install
+`pip install -e '.[flashinfer]'`. Without these optional packages, Qwen3.5/3.8
+GDN models require `--linear-attn-backend triton`; Qwen3.5 MoE also supports
+`--moe-runner-backend triton_kernel` using the bundled source.
+
 ## Quick Start
 
 ### 1. Start the Server
@@ -104,7 +109,31 @@ This BF16 configuration fits an H100 96 GB. It uses FP32 recurrent states
 and FlashInfer GDN by default. See [Qwen3.8 usage](docs/qwen3_8.md) for thinking
 controls and the current support scope.
 
-**Qwen3.5 FP8:**
+**Qwen3.5-35B-A3B (MoE, text):**
+
+[`qwen3_5_moe.py`](python/sfllm/models/qwen3_5_moe.py) adds the checkpoint's
+registered MoE architecture, reusing Qwen3.5 attention and recurrent states.
+The BF16 text model runs on one H100 NVL with GPU-resident routed and shared
+experts; vision and MTP weights are skipped. On Hopper, the default calls
+FlashInfer's tuned fused CUTLASS MoE, including the shared expert.
+`--moe-runner-backend triton_kernel` selects the vendored Triton v3.7.1 grouped
+GEMM implementation. With `--linear-attn-backend triton --attention-backend triton`,
+the model also runs without FlashInfer or `sglang-kernel`. The FlashInfer fast
+path retains its top-k GPU kernel, fused expert computation and tuning.
+
+```bash
+pip install -e '.[flashinfer]'
+hf download Qwen/Qwen3.5-35B-A3B --local-dir /mnt/data/work/Qwen3.5-35B-A3B
+python python/sfllm/serving/app.py \
+  --model /mnt/data/work/Qwen3.5-35B-A3B --dtype bfloat16 \
+  --attention-backend fa3 --max-running-requests 16 --cuda-graph-max-bs 16 \
+  --max-context-length 16384 --port 8084
+```
+
+See [Qwen3.5 MoE usage](docs/qwen3_5_moe.md) for memory measurements,
+thinking controls and validation scope. MoE quantization is not yet supported.
+
+**Qwen3.5 dense FP8:**
 
 Export a calibrated Hugging Face checkpoint with NVIDIA ModelOpt's
 `FP8_DEFAULT_CFG` and `export_hf_checkpoint`, then serve it with:

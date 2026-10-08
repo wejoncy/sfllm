@@ -215,7 +215,7 @@ def create_app(server_args):
 
     return app
 
-if __name__ == "__main__":
+def main():
     mp.set_start_method("spawn", force=True)
     # Parse command line arguments
     parser = argparse.ArgumentParser()
@@ -225,3 +225,7 @@ if __name__ == "__main__":
     server_args = ServerArgs.from_cli_args(args)
     app = create_app(server_args)
     uvicorn.run(app, host="0.0.0.0", port=args.port, reload=False)
+
+
+if __name__ == "__main__":
+    main()
