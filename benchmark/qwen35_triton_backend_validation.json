@@ -1,0 +1,583 @@
+{
+  "date": "2026-09-15",
+  "status": "Validated two-file MoE source extraction.",
+  "gpu": "NVIDIA H100 NVL, 95830 MiB",
+  "model": "/mnt/data/work/Qwen3.5-35B-A3B",
+  "model_revision": "59d61f3ce65a6d9863b86d2e96597125219dc754",
+  "precision": {
+    "weights": "BF16",
+    "activations": "BF16",
+    "recurrent_states": "FP32",
+    "quantization": null,
+    "expert_accumulation": "FP32",
+    "component_test_dtypes": [
+      "BF16",
+      "FP16"
+    ]
+  },
+  "source_files_sha256": {
+    "python/sfllm/kernels/moe.py": "300234ffb7b6a79b0d41355572b6da3fc080bcd88e0570d2823cf7b39042830e",
+    "python/sfllm/kernels/gdn.py": "f49bfb065a84574b08a75b3171be4208a3d6234b20583ce5254cd097ce207351",
+    "python/sfllm/layers/moe.py": "a407e1734a2b2a8224523f5b99ea49204557ef20a9412429030bc63322790079",
+    "python/sfllm/models/qwen3_5.py": "7aa523009ee2a19f83a3d9aac3d1286e11b5a55483974b9223431176cf166635",
+    "python/sfllm/models/qwen3_5_moe.py": "f79eb97ebeb07a47734de34ec40dd75b5ddcc1465550ed64d6b3a42ccb455bde",
+    "python/sfllm/server_args.py": "dd09f056ec3d2bfec243cb586fc0241fe9d70a3886928764378d5ff5f61482be",
+    "requirements.txt": "99d3949efca179d5f4dbf5d9a2d11fcc257ce88520f02057dfe03a50f1237b7a",
+    "pyproject.toml": "c7eb63ebfd77fd29469f9bb17a10f0a626891166453a3aeaad9021b27ce4dfa0",
+    "setup.py": "19648e1c1bb67d1a6f612d925a4a4610e1c7023870243d441820d41013b06e02",
+    "tests/test_optional_triton_backends.py": "8c6f7631028fcefac4ba785342f0097ff9044f05fdbd9de2f3a1610ce9aa0000",
+    "tests/test_qwen3_5_moe.py": "4ec21af80bfede54e6772b5ec597060e0ac0ee6f835d8fc71dba1e54f920c633",
+    "python/sfllm/kernels/moe_triton/__init__.py": "d0e5c5caebc3679bd5dbaead5d87e7896474ea162efe82c47fe2732758c1ec63",
+    "python/sfllm/kernels/moe_triton/matmul.py": "a6652fba4ec3deb76631d87207a4bb93395c1c1faf9add30731cca59adfaebe3"
+  },
+  "source_extraction": {
+    "python_file_count": 2,
+    "source_lines": 1221,
+    "unchanged_topk_function_count": 7,
+    "package_discovery_and_license": true,
+    "manifest_hashes_match": true,
+    "before_python_files": 40,
+    "before_source_lines": 5893,
+    "files": {
+      "python/sfllm/kernels/moe_triton/__init__.py": "Top-k routing, expert metadata and sequential FP32 reduction.",
+      "python/sfllm/kernels/moe_triton/matmul.py": "Unquantized gather/scatter grouped GEMM, persistent TMA and launch heuristics."
+    },
+    "runtime_sources_unchanged_during_benchmarks": true
+  },
+  "source_manifest": "python/sfllm/kernels/moe_triton/SOURCE.json",
+  "tests": {
+    "passed": 72,
+    "failed": 0,
+    "skipped": 0,
+    "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /workspace/sglang/.venv/bin/python -m pytest /tmp/qwen35-moe-extracted-equivalence-test.py tests/test_qwen3_5_moe.py tests/test_qwen3_8.py tests/test_optional_triton_backends.py -q --junitxml=/tmp/qwen35-moe-two-tests.xml",
+    "repo_tests": 56,
+    "migration_audit_cases": 16,
+    "component_equivalence": [
+      {
+        "dtype": "torch.bfloat16",
+        "tokens": 1,
+        "experts": 256,
+        "hidden": 2048,
+        "intermediate": 512,
+        "bit_identical": true,
+        "old_ms": [
+          0.07714056102887079,
+          0.07710810322915354,
+          0.07737666213544041
+        ],
+        "new_ms": [
+          0.077223047675303,
+          0.07729265136246341,
+          0.07730067642555359
+        ]
+      },
+      {
+        "dtype": "torch.bfloat16",
+        "tokens": 16,
+        "experts": 256,
+        "hidden": 2048,
+        "intermediate": 512,
+        "bit_identical": true,
+        "old_ms": [
+          0.2290235489513433,
+          0.23056142234211735,
+          0.23048708863053585
+        ],
+        "new_ms": [
+          0.23630246891084036,
+          0.23616576875959125,
+          0.23678688465465197
+        ]
+      },
+      {
+        "dtype": "torch.bfloat16",
+        "tokens": 37,
+        "experts": 7,
+        "hidden": 144,
+        "intermediate": 80,
+        "bit_identical": true
+      },
+      {
+        "dtype": "torch.bfloat16",
+        "tokens": 65,
+        "experts": 4,
+        "hidden": 256,
+        "intermediate": 128,
+        "bit_identical": true
+      },
+      {
+        "dtype": "torch.bfloat16",
+        "tokens": 4103,
+        "experts": 7,
+        "hidden": 128,
+        "intermediate": 64,
+        "bit_identical": true
+      },
+      {
+        "dtype": "torch.bfloat16",
+        "tokens": 4103,
+        "experts": 256,
+        "hidden": 2048,
+        "intermediate": 512,
+        "bit_identical": true,
+        "old_ms": [
+          1.299921923828125,
+          1.3022516384930678,
+          1.309182067311138
+        ],
+        "new_ms": [
+          1.2903120763769977,
+          1.2975558962140765,
+          1.3147311801824095
+        ]
+      },
+      {
+        "dtype": "torch.float16",
+        "tokens": 1,
+        "experts": 256,
+        "hidden": 2048,
+        "intermediate": 512,
+        "bit_identical": true
+      },
+      {
+        "dtype": "torch.float16",
+        "tokens": 16,
+        "experts": 256,
+        "hidden": 2048,
+        "intermediate": 512,
+        "bit_identical": true
+      },
+      {
+        "dtype": "torch.float16",
+        "tokens": 37,
+        "experts": 7,
+        "hidden": 144,
+        "intermediate": 80,
+        "bit_identical": true
+      },
+      {
+        "dtype": "torch.float16",
+        "tokens": 65,
+        "experts": 4,
+        "hidden": 256,
+        "intermediate": 128,
+        "bit_identical": true
+      },
+      {
+        "dtype": "torch.float16",
+        "tokens": 4103,
+        "experts": 7,
+        "hidden": 128,
+        "intermediate": 64,
+        "bit_identical": true
+      },
+      {
+        "dtype": "torch.float16",
+        "tokens": 4103,
+        "experts": 256,
+        "hidden": 2048,
+        "intermediate": 512,
+        "bit_identical": true
+      }
+    ],
+    "atol": 0,
+    "rtol": 0,
+    "launch_heuristics": {
+      "matching_configurations": 5952,
+      "cuda_architectures": [
+        8,
+        9,
+        10
+      ],
+      "amd_architectures": [
+        "gfx942",
+        "gfx950",
+        "gfx1100",
+        "gfx1200"
+      ]
+    },
+    "microbenchmark_note": "Initial complete-expert graph measurements included a 2-3% difference at 16 tokens. Isolated repeated FC1/FC2 timings and full serving results are recorded separately; no tuning changes were made.",
+    "isolated_gemm_ms": {
+      "old_fc1": [
+        0.15178841173050794,
+        0.15242369619399532,
+        0.15272338274613168,
+        0.15294918442087985
+      ],
+      "new_fc1": [
+        0.152361474609375,
+        0.15288858019349946,
+        0.15357854174113222,
+        0.15346916930316246
+      ],
+      "old_fc2": [
+        0.07027512313054761,
+        0.07029383584770296,
+        0.07031106792921486,
+        0.07052613158536788
+      ],
+      "new_fc2": [
+        0.06982257355677399,
+        0.07034395707163889,
+        0.07022530669698432,
+        0.07038267368884116
+      ]
+    },
+    "serving_generated_text_comparison": {
+      "cutlass": {
+        "requests": 500,
+        "identical_generated_texts": 44,
+        "errors_before": 0,
+        "errors_after": 0
+      },
+      "triton": {
+        "requests": 500,
+        "identical_generated_texts": 202,
+        "errors_before": 0,
+        "errors_after": 0
+      }
+    },
+    "serving_comparison_note": "Exact generated text matches across separate asynchronous serving runs are not an accuracy score. The bitwise preservation check uses identical component inputs and routing; it does not assert identical full serving outputs."
+  },
+  "flashinfer_preservation": {
+    "unchanged": "CUTLASS computation, workspace, autotuning options, shared expert packing, model layers and GDN implementation.",
+    "routing": "Local import moved to the two-file package; all seven top-k device function ASTs and kernel launch arguments retained.",
+    "historical_fast_throughput": 783.4869803352907,
+    "warm_repeat_change_vs_historical_percent": -0.0736717742577997
+  },
+  "polaris": {
+    "dataset": "/mnt/data/work/dspark_repro_download/qwe35_dspark_qaa/dspark_repro/data/dashv4_polaris_test_data.jsonl",
+    "sha256": "bf1f5dde36b28e3fd337fb44630201b50906eedef0d98c06dd97be81eef95cc2",
+    "prompts": 500,
+    "total_input_tokens": 2243069,
+    "prompt_transform": "none",
+    "max_concurrency": 16,
+    "temperature": 0,
+    "max_new_tokens": 1000,
+    "ignore_eos": false,
+    "stop_token_ids": [
+      248044
+    ],
+    "warmups": 4,
+    "flush_cache": true,
+    "decode_cuda_graphs": true,
+    "prefill_cuda_graphs": false,
+    "speculation": false,
+    "runs": {
+      "cutlass": {
+        "launch": {
+          "command": [
+            "/workspace/sglang/.venv/bin/python",
+            "python/sfllm/serving/app.py",
+            "--model",
+            "/mnt/data/work/Qwen3.5-35B-A3B",
+            "--dtype",
+            "bfloat16",
+            "--attention-backend",
+            "fa3",
+            "--max-running-requests",
+            "16",
+            "--cuda-graph-max-bs",
+            "16",
+            "--max-context-length",
+            "16384",
+            "--port",
+            "8084",
+            "--moe-runner-backend",
+            "flashinfer_cutlass"
+          ],
+          "cwd": "/workspace/sfllm",
+          "environment": {
+            "FLASHINFER_WORKSPACE_BASE": "/root"
+          }
+        },
+        "before": {
+          "completed": 500,
+          "duration": 144.37009157706052,
+          "total_input_tokens": 2243069,
+          "total_output_tokens": 113408,
+          "output_throughput": 785.5366631769859,
+          "mean_ttft_ms": 177.13331529451534,
+          "mean_tpot_ms": 19.45969916012069,
+          "mean_e2e_latency_ms": 4561.6489331261255,
+          "output_limit_hits": 2
+        },
+        "after": {
+          "completed": 500,
+          "duration": 145.87908351409715,
+          "total_input_tokens": 2243069,
+          "total_output_tokens": 112745,
+          "output_throughput": 772.866111330517,
+          "mean_ttft_ms": 204.5474249594845,
+          "mean_tpot_ms": 19.6767661700924,
+          "mean_e2e_latency_ms": 4622.458127634367,
+          "output_limit_hits": 1
+        },
+        "change_percent": {
+          "output_throughput": -1.6129803280250155,
+          "mean_tpot_ms": 1.1154695053896324,
+          "mean_ttft_ms": 15.476540717023424
+        },
+        "warm_repeat": {
+          "completed": 500,
+          "duration": 145.10356636799406,
+          "total_input_tokens": 2243069,
+          "total_output_tokens": 113603,
+          "output_throughput": 782.9097715757988,
+          "mean_ttft_ms": 176.74392854771577,
+          "mean_tpot_ms": 19.610005337090534,
+          "mean_e2e_latency_ms": 4604.856792046223,
+          "output_limit_hits": 5
+        },
+        "warm_repeat_launch": {
+          "command": [
+            "/workspace/sglang/.venv/bin/python",
+            "python/sfllm/serving/app.py",
+            "--model",
+            "/mnt/data/work/Qwen3.5-35B-A3B",
+            "--dtype",
+            "bfloat16",
+            "--attention-backend",
+            "fa3",
+            "--max-running-requests",
+            "16",
+            "--cuda-graph-max-bs",
+            "16",
+            "--max-context-length",
+            "16384",
+            "--port",
+            "8084",
+            "--moe-runner-backend",
+            "flashinfer_cutlass"
+          ],
+          "cwd": "/workspace/sfllm",
+          "environment": {
+            "FLASHINFER_WORKSPACE_BASE": "/root"
+          }
+        },
+        "warm_repeat_change_percent": {
+          "output_throughput": -0.33440725612513544,
+          "mean_tpot_ms": 0.7723972284107594,
+          "mean_ttft_ms": -0.2198269400378705
+        },
+        "repeat_reason": "The first run after moving the top-k source showed higher initial TTFT and 1.6% lower throughput. Repeated the identical full protocol after caches had warmed, with no code or configuration changes; both results are retained."
+      },
+      "triton": {
+        "launch": {
+          "command": [
+            "/workspace/sglang/.venv/bin/python",
+            "python/sfllm/serving/app.py",
+            "--model",
+            "/mnt/data/work/Qwen3.5-35B-A3B",
+            "--dtype",
+            "bfloat16",
+            "--attention-backend",
+            "fa3",
+            "--max-running-requests",
+            "16",
+            "--cuda-graph-max-bs",
+            "16",
+            "--max-context-length",
+            "16384",
+            "--port",
+            "8084",
+            "--moe-runner-backend",
+            "triton_kernel"
+          ],
+          "cwd": "/workspace/sfllm",
+          "environment": {
+            "FLASHINFER_WORKSPACE_BASE": "/root"
+          }
+        },
+        "before": {
+          "completed": 500,
+          "duration": 154.75110461201984,
+          "total_input_tokens": 2243069,
+          "total_output_tokens": 112695,
+          "output_throughput": 728.2338971507849,
+          "mean_ttft_ms": 176.64718805160373,
+          "mean_tpot_ms": 20.973776903128005,
+          "mean_e2e_latency_ms": 4880.4123561682645,
+          "output_limit_hits": 1
+        },
+        "after": {
+          "completed": 500,
+          "duration": 155.95870207704138,
+          "total_input_tokens": 2243069,
+          "total_output_tokens": 112679,
+          "output_throughput": 722.4925477023922,
+          "mean_ttft_ms": 181.72488925931975,
+          "mean_tpot_ms": 21.130756675789463,
+          "mean_e2e_latency_ms": 4912.60629001935,
+          "output_limit_hits": 0
+        },
+        "change_percent": {
+          "output_throughput": -0.7883936014041137,
+          "mean_tpot_ms": 0.7484573397843697,
+          "mean_ttft_ms": 2.8744874253150643
+        }
+      },
+      "all-triton": {
+        "launch": {
+          "command": [
+            "/workspace/sglang/.venv/bin/python",
+            "/tmp/qwen35-moe-compact-all-triton-server.py",
+            "--model",
+            "/mnt/data/work/Qwen3.5-35B-A3B",
+            "--dtype",
+            "bfloat16",
+            "--attention-backend",
+            "triton",
+            "--max-running-requests",
+            "16",
+            "--cuda-graph-max-bs",
+            "16",
+            "--max-context-length",
+            "16384",
+            "--port",
+            "8084",
+            "--moe-runner-backend",
+            "triton_kernel",
+            "--linear-attn-backend",
+            "triton"
+          ],
+          "cwd": "/workspace/sfllm",
+          "environment": {
+            "FLASHINFER_WORKSPACE_BASE": "/root"
+          }
+        },
+        "before": {
+          "completed": 500,
+          "duration": 202.38288503105287,
+          "total_input_tokens": 2243069,
+          "total_output_tokens": 114626,
+          "output_throughput": 566.3818854169028,
+          "mean_ttft_ms": 204.38727866648696,
+          "mean_tpot_ms": 26.953108575869585,
+          "mean_e2e_latency_ms": 6347.432371911127,
+          "output_limit_hits": 1
+        },
+        "after": {
+          "completed": 500,
+          "duration": 201.8949308389565,
+          "total_input_tokens": 2243069,
+          "total_output_tokens": 114444,
+          "output_throughput": 566.8492989122515,
+          "mean_ttft_ms": 197.76258917921223,
+          "mean_tpot_ms": 26.95401056844814,
+          "mean_e2e_latency_ms": 6331.929225743981,
+          "output_limit_hits": 1
+        },
+        "change_percent": {
+          "output_throughput": 0.082526208444067,
+          "mean_tpot_ms": 0.003346525229241948,
+          "mean_ttft_ms": -3.2412435502332304
+        }
+      }
+    },
+    "interpretation": "One full 500-request serving run per configuration before and after extraction. Generated lengths and timings can vary with request scheduling."
+  },
+  "no_flashinfer_full_model": {
+    "method": "Fresh server and spawned workers with import and discovery blocked for FlashInfer, SGLang, and all modules provided by the optional kernel distribution.",
+    "completed_polaris_requests": 500,
+    "executed": [
+      "Local Triton MoE",
+      "Existing Triton GDN prefill",
+      "Existing Triton GDN decode",
+      "Triton full attention",
+      "Decode CUDA Graphs"
+    ],
+    "log": "/tmp/qwen35-moe-compact-all-triton-server.log"
+  },
+  "software": {
+    "torch": "2.13.0",
+    "triton": "3.7.1",
+    "flashinfer-python": "0.6.18",
+    "fla-core": "0.5.2",
+    "sglang-kernel": "0.4.6.post1"
+  },
+  "previous_record": "/tmp/qwen35-moe-validation-before-two-files.json",
+  "raw_artifacts_sha256": {
+    "/tmp/qwen35-moe-compact-all-triton-bench-polaris-inputs.json": "482578fe8ac894fbf2147db213efaef99606180c766f5bb608d507e7d9f0de8e",
+    "/tmp/qwen35-moe-compact-all-triton-bench-server-info.json": "53be163a84557443d3251f76145b8974c511805dd5d5b25445d52905b9ab4e14",
+    "/tmp/qwen35-moe-compact-all-triton-bench-summary.json": "2c7f1fbe949252d4348461a3566dcd6b3f9c8c7ec02f2320580c804ca7c2a29f",
+    "/tmp/qwen35-moe-compact-all-triton-bench.jsonl": "00b8d79a28041f84f1ed9511e508c97a60d5504ef6dd343a0e90182c37dd98b1",
+    "/tmp/qwen35-moe-compact-all-triton-bench.log": "30668b716e37af4bae761d276496c43bde3d3540c996749f1d9539a31d428b23",
+    "/tmp/qwen35-moe-compact-all-triton-bench.py": "9ac4311791a887ea5943515a34d999fea15e7c1381dbf8066c785b7bc6dcb077",
+    "/tmp/qwen35-moe-compact-all-triton-command.json": "048b5f596b8cbeb92751dc3320a8e185ff4287b9a39138cc87d3182387538239",
+    "/tmp/qwen35-moe-compact-all-triton-gpu.csv": "d16e7710026ae0db97153d7fc170e47fd84969ff7655c80d3653b89ea578b955",
+    "/tmp/qwen35-moe-compact-all-triton-server.log": "e13d3861ab349ddb9700e7358a813c61cffc28bc999187314c0b24f826dcb919",
+    "/tmp/qwen35-moe-compact-all-triton-server.pid": "1b77bbb6a77e0b57a568c01e5b5591abb7ff536df8150ece2405b15fa7052fe5",
+    "/tmp/qwen35-moe-compact-all-triton-server.py": "1491542f0dfa97635aad8d5c8f0f2cdd9d1bd634e3848a7948e948464fa78ecd",
+    "/tmp/qwen35-moe-compact-cutlass-bench-polaris-inputs.json": "482578fe8ac894fbf2147db213efaef99606180c766f5bb608d507e7d9f0de8e",
+    "/tmp/qwen35-moe-compact-cutlass-bench-server-info.json": "53be163a84557443d3251f76145b8974c511805dd5d5b25445d52905b9ab4e14",
+    "/tmp/qwen35-moe-compact-cutlass-bench-summary.json": "f42f260d765cbb673905b27851a4ff6f46bab3d32816e66102c72dbf3fa80224",
+    "/tmp/qwen35-moe-compact-cutlass-bench.jsonl": "f4d39e0b9ad724c6ccae3dbe72d49684720bc0cd5fcc9bf78b20dacb5dc86fa7",
+    "/tmp/qwen35-moe-compact-cutlass-bench.log": "6722c7b7b6bfc897eb120ab2fe3c81e7fe460f82b5ed17a35c98d64271a3704e",
+    "/tmp/qwen35-moe-compact-cutlass-bench.py": "78021b53efc4597f02d4f719968a0d5e5f337b23f631fcbb6adfe23c77f5ac6c",
+    "/tmp/qwen35-moe-compact-cutlass-command.json": "f91a7d3efb7ebbf798d86f3cd4d262871be43fb0ba8606989e72f19fc8119fd1",
+    "/tmp/qwen35-moe-compact-cutlass-gpu.csv": "872990dbb2cbf6c7085970325a3858534aed170f99ab4c2407d41e10cb088b41",
+    "/tmp/qwen35-moe-compact-cutlass-server.log": "beb119ea1bdb46e62e99b769c2dceaef2c8d407fa609a8ac7826d861cd4f0026",
+    "/tmp/qwen35-moe-compact-cutlass-server.pid": "61ac31c031398c5dcfd4013f138eec12d7691752a0d86972c282518d5a3dcf38",
+    "/tmp/qwen35-moe-compact-triton-bench-polaris-inputs.json": "482578fe8ac894fbf2147db213efaef99606180c766f5bb608d507e7d9f0de8e",
+    "/tmp/qwen35-moe-compact-triton-bench-server-info.json": "53be163a84557443d3251f76145b8974c511805dd5d5b25445d52905b9ab4e14",
+    "/tmp/qwen35-moe-compact-triton-bench-summary.json": "5bea2498d8bdf0d9e8bd236cc2c49898b3768e9de711270b22386dea3991b8f8",
+    "/tmp/qwen35-moe-compact-triton-bench.jsonl": "8fa3263cd6413d24f212d9eadd65213f338aebdddd12a82b98e6396f12557ead",
+    "/tmp/qwen35-moe-compact-triton-bench.log": "49511167cea3988e1819b9cf5df6c22be63cd3df7b34d13f3cc3ae53f7a11907",
+    "/tmp/qwen35-moe-compact-triton-bench.py": "fab3d7e2982b9dd949e4c9d2feed51f618669009c85c3e0c7e58631e49c84164",
+    "/tmp/qwen35-moe-compact-triton-command.json": "3d5c03f7e769dc5c2c28852e0253dc9837efc27ef785f6b1805e098aff0605de",
+    "/tmp/qwen35-moe-compact-triton-gpu.csv": "939a5876fcd1465e929f3a9b0db24b893a69b1327176f39e4b34961f656ef474",
+    "/tmp/qwen35-moe-compact-triton-server.log": "f70ea0acb8b2a731d4619d6e80b74e571d24484bc35a24b94d6ba07463fdbfef",
+    "/tmp/qwen35-moe-compact-triton-server.pid": "8118f0c81f32399a403736da4caa7a745be5b06d277110952ea83c682eae0746",
+    "/tmp/qwen35-moe-final-all-triton-bench-polaris-inputs.json": "482578fe8ac894fbf2147db213efaef99606180c766f5bb608d507e7d9f0de8e",
+    "/tmp/qwen35-moe-final-all-triton-bench-server-info.json": "53be163a84557443d3251f76145b8974c511805dd5d5b25445d52905b9ab4e14",
+    "/tmp/qwen35-moe-final-all-triton-bench-summary.json": "ed60fddd40f711d133d16b90a40b218eaa6ecc6bc17b75b0c5f319320022b2ec",
+    "/tmp/qwen35-moe-final-all-triton-bench.jsonl": "ed44bbb539b422d911ecc9113ef5b5b3e26e7c25366237a311abf4d04eac960f",
+    "/tmp/qwen35-moe-final-all-triton-bench.log": "94f8cecffd5a61fbc9b57c9ed3bb725798d29272d935ab75df90e9f3a7129192",
+    "/tmp/qwen35-moe-final-all-triton-bench.py": "e13d4bb8b46158e5d5bc25f4c41980e51d2363d54c4064eb599463af53461caf",
+    "/tmp/qwen35-moe-final-all-triton-command.json": "63a35fe31f1aa32ebd2bc86216ad0835e9aea4a8fb1cb3aab6ff053bdaf9f4ff",
+    "/tmp/qwen35-moe-final-all-triton-gpu.csv": "0f471bf393882e036f4340c0a5a572c7641502c946ae9aba7d2ef490a8278093",
+    "/tmp/qwen35-moe-final-all-triton-server.log": "4bee08b2145bac25be295a2bab1571f9400f5de1d8c643bffcc9996f4cad5665",
+    "/tmp/qwen35-moe-final-all-triton-server.pid": "b5979fa0d461c7156d031fdf2f821f9156e74b0327088b181a2ff629f3239cdb",
+    "/tmp/qwen35-moe-final-all-triton-server.py": "1491542f0dfa97635aad8d5c8f0f2cdd9d1bd634e3848a7948e948464fa78ecd",
+    "/tmp/qwen35-moe-final-cutlass-bench-polaris-inputs.json": "482578fe8ac894fbf2147db213efaef99606180c766f5bb608d507e7d9f0de8e",
+    "/tmp/qwen35-moe-final-cutlass-bench-server-info.json": "53be163a84557443d3251f76145b8974c511805dd5d5b25445d52905b9ab4e14",
+    "/tmp/qwen35-moe-final-cutlass-bench-summary.json": "820b88c2efa74a51dfdef82e952cfad47ecc347d57b48d111d922306c6762eb2",
+    "/tmp/qwen35-moe-final-cutlass-bench.jsonl": "b51b4f343db6d70888b3c503adfa71e99678b9bfcac78ba2bd9b38412db70897",
+    "/tmp/qwen35-moe-final-cutlass-bench.log": "5abc4275718fc3ce7a4a827a8ff373405966c25dbbf844c6463d95a59258d501",
+    "/tmp/qwen35-moe-final-cutlass-bench.py": "40efaad6b693f2e0b625e3b33ca01be71e7eed331beeddd0ff9322ac92996bef",
+    "/tmp/qwen35-moe-final-cutlass-command.json": "f91a7d3efb7ebbf798d86f3cd4d262871be43fb0ba8606989e72f19fc8119fd1",
+    "/tmp/qwen35-moe-final-cutlass-gpu.csv": "fd030b4da710a919610061ee39eb4b326dd747314255cc504adc29a356f2d90a",
+    "/tmp/qwen35-moe-final-cutlass-server.log": "ed459413df46f07a23252265bdbb62c877246488a7df135e2daed6d450d62f4c",
+    "/tmp/qwen35-moe-final-cutlass-server.pid": "2136af9cacba485aae446c376623a599569cb6d9d758512421fab765982c94d8",
+    "/tmp/qwen35-moe-final-triton-bench-polaris-inputs.json": "482578fe8ac894fbf2147db213efaef99606180c766f5bb608d507e7d9f0de8e",
+    "/tmp/qwen35-moe-final-triton-bench-server-info.json": "53be163a84557443d3251f76145b8974c511805dd5d5b25445d52905b9ab4e14",
+    "/tmp/qwen35-moe-final-triton-bench-summary.json": "cad6aba5789ad478c51fb72abbf9e93472c538e5a81da13bafefe0878fe84f3a",
+    "/tmp/qwen35-moe-final-triton-bench.jsonl": "58e5efa7fa676505caf04ed097f13986bc758349402e903d165f534003c744d3",
+    "/tmp/qwen35-moe-final-triton-bench.log": "6c07153c3da84252537a0246359a796be3f22a2c637dbd48b8ecf6866d600175",
+    "/tmp/qwen35-moe-final-triton-bench.py": "aa305f1f54423a85f3814d60f25ac6d5dd3e950e9feb022646fff2997ab7b744",
+    "/tmp/qwen35-moe-final-triton-command.json": "3d5c03f7e769dc5c2c28852e0253dc9837efc27ef785f6b1805e098aff0605de",
+    "/tmp/qwen35-moe-final-triton-gpu.csv": "8aa69082418a843d245105416c604574a691d38df9b87c178bc2b812d1af5b81",
+    "/tmp/qwen35-moe-final-triton-server.log": "d9559cf2722a5060354d47b1269dc2a00e27487c6091550535b2eb294df0c4c6",
+    "/tmp/qwen35-moe-final-triton-server.pid": "c2d3acfafa12a9f5a59fbcf4e37c623fbcf347102b38941b9aa51fdb2f378d0a",
+    "/tmp/qwen35-moe-two-check.json": "8ba5013d0ab6790e5d9654b31c5f01ea1e2b3b035858084dbc2fd57bf29c93e2",
+    "/tmp/qwen35-moe-two-config-check.json": "d5ce8042475339994affe24fc511214063626f3102c8b6d550a9a5726c05a69d",
+    "/tmp/qwen35-moe-two-profile.json": "d5e7503b3f421c7a19f678fc6aa24c798eea457a5173c826209fe2538ef1130e",
+    "/tmp/qwen35-moe-two-serving-output-comparison.json": "753b6be882fde6bab3b77a6648b645453d66194cce9f0f360294d0ff081cbb15",
+    "/tmp/qwen35-moe-two-source-check.json": "5ae6d426891e71b2eee794feae49d3e1be261f3634cc92992f52aede950f36b2",
+    "/tmp/qwen35-moe-two-tests.log": "d6aa5f8422e36f08cbba6a1100e47c956e4d88d005291d3844be480bc9188026",
+    "/tmp/qwen35-moe-two-tests.xml": "4c705d6b35248584b97449e37374a22f9f09d80d7e3684df81cf832e73fdecaa",
+    "/tmp/qwen35-moe-compact-repeat-cutlass-bench.log": "42c5806d5d20cf4f3a2a77d98436f88864f54ca0ccb5eb5f7bca0dec2a366e9f",
+    "/tmp/qwen35-moe-compact-repeat-cutlass-bench.jsonl": "e998206dbf39d1af73f4fdfc530c2c32467052819cc2ede6becfcd3fcc702959",
+    "/tmp/qwen35-moe-compact-repeat-run.py": "885f54452e553399441cea31a9b6d934a37a42a6ddbdcf143d4dc2958a40aa60",
+    "/tmp/qwen35-moe-compact-repeat-cutlass-gpu.csv": "479b47854700e06b3c5422a08fc852e1e282aab780eb277824f1828852ca64ee",
+    "/tmp/qwen35-moe-compact-repeat-run.log": "e45aca9250b99d4a760c1352985cb947ae64a10208dc991ef0ade09c16e745e8",
+    "/tmp/qwen35-moe-compact-repeat-cutlass-bench-summary.json": "8eed4e11f01828c99f307239e90f9abb84e4f18de8e1ccaae948256536f164f2",
+    "/tmp/qwen35-moe-compact-repeat-cutlass-command.json": "f91a7d3efb7ebbf798d86f3cd4d262871be43fb0ba8606989e72f19fc8119fd1",
+    "/tmp/qwen35-moe-compact-repeat-cutlass-bench-server-info.json": "53be163a84557443d3251f76145b8974c511805dd5d5b25445d52905b9ab4e14",
+    "/tmp/qwen35-moe-compact-repeat-cutlass-server.pid": "0f1dd3c597e95a3acc01d3460ee32646a4db362d76149979c615b897a02dc43c",
+    "/tmp/qwen35-moe-compact-repeat-cutlass-bench.py": "c6b990ae300c041d78bb348eef123024078d8d21ce8f281d03064665e29c6418",
+    "/tmp/qwen35-moe-compact-repeat-cutlass-bench-polaris-inputs.json": "482578fe8ac894fbf2147db213efaef99606180c766f5bb608d507e7d9f0de8e",
+    "/tmp/qwen35-moe-compact-repeat-cutlass-server.log": "42a2b4380ee1654c276150158107753d3cdf936a103451cdc66730dea8e5b4de"
+  }
+}

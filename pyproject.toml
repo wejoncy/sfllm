@@ -11,7 +11,7 @@ authors = [
 description = "Multimodal LLM Serving Framework for Gemma 3-4B-IT"
 readme = "README.md"
 license = {text = "MIT"}
-requires-python = ">=3.8"
+requires-python = ">=3.10"
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -19,8 +19,6 @@ classifiers = [
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.8",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
@@ -28,25 +26,11 @@ classifiers = [
 ]
 keywords = ["llm", "serving", "gemma", "multimodal", "inference", "pytorch", "transformers"]
 
-# Use dynamic dependencies to read from requirements.txt
-dynamic = ["dependencies"]
-
-[project.optional-dependencies]
-dev = [
-    "pytest>=7.0.0",
-    "pytest-asyncio>=0.21.0",
-    "black>=22.0.0",
-    "isort>=5.0.0",
-    "flake8>=5.0.0",
-    "mypy>=1.0.0",
-]
-benchmarks = [
-    "matplotlib>=3.5.0",
-    "numpy>=1.21.0",
-]
+# Base dependencies come from requirements.txt; setup.py derives the extras.
+dynamic = ["dependencies", "optional-dependencies"]
 
 [project.scripts]
-sfllm-serve = "sfllm.serving.api:main"
+sfllm-serve = "sfllm.serving.app:main"
 
 [project.urls]
 Homepage = "https://github.com/wejoncy/gemma_serving"
@@ -55,6 +39,7 @@ Issues = "https://github.com/wejoncy/gemma_serving/issues"
 
 [tool.setuptools]
 package-dir = {"" = "python"}
+include-package-data = true
 
 [tool.setuptools.packages.find]
 where = ["python"]
@@ -68,7 +53,7 @@ dependencies = {file = ["requirements.txt"]}
 # Development tools configuration
 [tool.black]
 line-length = 88
-target-version = ['py38']
+target-version = ['py310']
 include = '\.pyi?$'
 extend-exclude = '''
 /(
@@ -99,7 +84,7 @@ testpaths = [
 asyncio_mode = "auto"
 
 [tool.mypy]
-python_version = "3.8"
+python_version = "3.10"
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true

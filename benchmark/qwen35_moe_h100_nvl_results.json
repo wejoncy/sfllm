@@ -1,0 +1,1366 @@
+{
+  "date": "2026-09-14",
+  "gpu": "NVIDIA H100 NVL, 95830 MiB",
+  "sfllm_backend": "flashinfer_cutlass",
+  "sfllm_command": {
+    "command": [
+      "/workspace/sglang/.venv/bin/python",
+      "python/sfllm/serving/app.py",
+      "--model",
+      "/mnt/data/work/Qwen3.5-35B-A3B",
+      "--dtype",
+      "bfloat16",
+      "--attention-backend",
+      "fa3",
+      "--max-running-requests",
+      "16",
+      "--cuda-graph-max-bs",
+      "16",
+      "--max-context-length",
+      "16384",
+      "--port",
+      "8084",
+      "--moe-runner-backend",
+      "flashinfer_cutlass"
+    ],
+    "cwd": "/workspace/sfllm",
+    "environment": {
+      "FLASHINFER_WORKSPACE_BASE": "/root"
+    }
+  },
+  "source_files_sha256": {
+    "python/sfllm/kernels/moe.py": "f2959a604cf14983febcb5a4a64086b017e52b7b641ee9c279c6d56bea1ac989",
+    "python/sfllm/layers/moe.py": "f53259bdbdee3fba2c3d9751d0a76707ceecded4c1ee2b6b07767f1811c2aa55",
+    "python/sfllm/models/qwen3_5_moe.py": "4ce05f5f95a0c62ffb11f0ca8f1327da379a4ee6217d406c6afe2e2cc7c36888",
+    "python/sfllm/models/qwen3_5.py": "7aa523009ee2a19f83a3d9aac3d1286e11b5a55483974b9223431176cf166635",
+    "python/sfllm/server_args.py": "a56f7f3cad6068a75099bb680cdc70878d9596770687b993faeb3980c568485c",
+    "requirements.txt": "24b744057046d80dfd507c9d0df9f98b6ca77d7cd825cc545a5211d1ffa0dc86"
+  },
+  "sfllm": {
+    "backend": "sglang-native",
+    "dataset_name": "polaris",
+    "request_rate": "unlimited",
+    "max_concurrency": 16,
+    "sharegpt_output_len": null,
+    "random_input_len": null,
+    "random_output_len": null,
+    "random_range_ratio": 1.0,
+    "duration": 144.80266149598174,
+    "completed": 500,
+    "total_input_tokens": 2243069,
+    "total_output_tokens": 113451,
+    "total_output_tokens_retokenized": 113746,
+    "request_throughput": 3.452975206632338,
+    "input_throughput": 15490.523287531183,
+    "output_throughput": 783.4869803352907,
+    "mean_e2e_latency_ms": 4578.066286467016,
+    "median_e2e_latency_ms": 4008.8142919703387,
+    "std_e2e_latency_ms": 2385.5010150154562,
+    "p99_e2e_latency_ms": 12678.605104220318,
+    "mean_ttft_ms": 180.76814741268754,
+    "median_ttft_ms": 143.85128999128938,
+    "std_ttft_ms": 132.4428714423235,
+    "p99_ttft_ms": 1034.36599548324,
+    "mean_tpot_ms": 19.50436362647194,
+    "median_tpot_ms": 19.610497085160723,
+    "std_tpot_ms": 1.8071558483463643,
+    "p99_tpot_ms": 23.02646579146486,
+    "mean_itl_ms": 19.4654861039452,
+    "median_itl_ms": 12.646117014810443,
+    "std_itl_ms": 26.731175063346914,
+    "p95_itl_ms": 66.73397304257378,
+    "p99_itl_ms": 133.11177800642326,
+    "concurrency": 15.807949381489983,
+    "accept_length": null,
+    "mean_input_tokens": 4486.138,
+    "mean_output_tokens": 226.902,
+    "output_limit_hits": 1,
+    "peak_gpu_gib": 88.9736328125
+  },
+  "sglang": {
+    "backend": "sglang-native",
+    "dataset_name": "polaris",
+    "request_rate": "unlimited",
+    "max_concurrency": 16,
+    "sharegpt_output_len": null,
+    "random_input_len": null,
+    "random_output_len": null,
+    "random_range_ratio": 1.0,
+    "duration": 161.40646118298173,
+    "completed": 500,
+    "total_input_tokens": 2243069,
+    "total_output_tokens": 115173,
+    "total_output_tokens_retokenized": 115422,
+    "request_throughput": 3.097769422211449,
+    "input_throughput": 13897.021120220827,
+    "output_throughput": 713.5587953287185,
+    "mean_e2e_latency_ms": 5093.279805192957,
+    "median_e2e_latency_ms": 4436.7283990141,
+    "std_e2e_latency_ms": 2783.0722800105277,
+    "p99_e2e_latency_ms": 14854.452436574496,
+    "mean_ttft_ms": 190.40529040363617,
+    "median_ttft_ms": 146.31380751961842,
+    "std_ttft_ms": 177.03397227644223,
+    "p99_ttft_ms": 1001.4278159069345,
+    "mean_tpot_ms": 21.4179473943517,
+    "median_tpot_ms": 21.57036184233231,
+    "std_tpot_ms": 1.9918043222448603,
+    "p99_tpot_ms": 25.3984947115535,
+    "mean_itl_ms": 21.377604863702253,
+    "median_itl_ms": 14.652820071205497,
+    "std_itl_ms": 26.200361352696106,
+    "p95_itl_ms": 71.24986301641911,
+    "p99_itl_ms": 127.78652475681157,
+    "concurrency": 15.777806439293828,
+    "accept_length": null,
+    "mean_input_tokens": 4486.138,
+    "mean_output_tokens": 230.346,
+    "output_limit_hits": 2,
+    "peak_gpu_mib": 89528.0,
+    "peak_gpu_gib": 87.4296875
+  },
+  "sglang_configuration": "qwen35_sglang_h100_nvl.json",
+  "inputs": {
+    "dataset": "/mnt/data/work/dspark_repro_download/qwe35_dspark_qaa/dspark_repro/data/dashv4_polaris_test_data.jsonl",
+    "sha256": "bf1f5dde36b28e3fd337fb44630201b50906eedef0d98c06dd97be81eef95cc2",
+    "count": 500,
+    "prompt_transform": "none"
+  },
+  "all_500_input_lengths_match": true,
+  "sfllm_output_throughput_gain_percent": 9.799919146726799,
+  "validation": {
+    "focused_tests_passed": 54,
+    "smoke_questions_passed": 9,
+    "accuracy_record": "benchmark/qwen35_moe_accuracy.json",
+    "gsm8k_no_thinking": {
+      "correct": 94,
+      "n": 100,
+      "max_new_tokens": 1024,
+      "cap_hits": 3
+    },
+    "gsm8k_thinking": {
+      "correct": 17,
+      "n": 20,
+      "max_new_tokens": 4096,
+      "cap_hits": 2
+    },
+    "restoration_tests": {
+      "passed": 54,
+      "log": "/tmp/qwen35-moe-retained-tests.log",
+      "sha256": "a4687f399613f8437e8ce7687240460de143c37b20d9879fb0ca13d68c698050"
+    },
+    "aime2025_vs_sglang": {
+      "record": "benchmark/qwen35_moe_aime25_accuracy.json",
+      "sfllm_correct": 27,
+      "sglang_correct": 23,
+      "n": 30,
+      "sfllm_cap_hits": 2,
+      "sglang_cap_hits": 6,
+      "sglang_only_correct": 0,
+      "max_new_tokens": 32768,
+      "thinking": true
+    },
+    "triton_backend_migration": {
+      "record": "benchmark/qwen35_triton_backend_validation.json",
+      "note": "Vendored upstream kernels and optional GDN imports; historical baseline metrics and source hashes above remain unchanged."
+    }
+  },
+  "limits": "One full serving run per engine, not an accuracy benchmark. Greedy output lengths may differ. No speculative decoding. The earlier unbucketed sfllm trial was aborted due to repeated routing-kernel compilation; it is not a performance result.",
+  "previous_triton_run": {
+    "sfllm_backend": "triton_kernel",
+    "sfllm_command": {
+      "command": [
+        "/workspace/sglang/.venv/bin/python",
+        "python/sfllm/serving/app.py",
+        "--model",
+        "/mnt/data/work/Qwen3.5-35B-A3B",
+        "--dtype",
+        "bfloat16",
+        "--attention-backend",
+        "fa3",
+        "--max-running-requests",
+        "16",
+        "--cuda-graph-max-bs",
+        "16",
+        "--max-context-length",
+        "16384",
+        "--port",
+        "8084"
+      ],
+      "cwd": "/workspace/sfllm",
+      "environment": {
+        "FLASHINFER_WORKSPACE_BASE": "/root"
+      }
+    },
+    "source_files_sha256": {
+      "python/sfllm/kernels/moe.py": "1c160f9f49051dcdde45d5597fbc87b62eb952972429d47d1967e3e5170a16d7",
+      "python/sfllm/layers/moe.py": "83dbc33d4ddad776f18178b9dc907bec7005a1ee4b50ce4c9b9e15832d010f46",
+      "python/sfllm/models/qwen3_5_moe.py": "dc4c75199dc1130f1fa2fefdcfa32f24274926134d7fcd62dd409722622346f5",
+      "python/sfllm/models/qwen3_5.py": "7aa523009ee2a19f83a3d9aac3d1286e11b5a55483974b9223431176cf166635"
+    },
+    "sfllm": {
+      "backend": "sglang-native",
+      "dataset_name": "polaris",
+      "request_rate": "unlimited",
+      "max_concurrency": 16,
+      "sharegpt_output_len": null,
+      "random_input_len": null,
+      "random_output_len": null,
+      "random_range_ratio": 1.0,
+      "duration": 157.7597656029975,
+      "completed": 500,
+      "total_input_tokens": 2243069,
+      "total_output_tokens": 113135,
+      "total_output_tokens_retokenized": 113408,
+      "request_throughput": 3.1693759057569224,
+      "input_throughput": 14218.25768710055,
+      "output_throughput": 717.1346861956189,
+      "mean_e2e_latency_ms": 4978.397441108944,
+      "median_e2e_latency_ms": 4450.236497446895,
+      "std_e2e_latency_ms": 2507.849712737631,
+      "p99_e2e_latency_ms": 14131.103208321147,
+      "mean_ttft_ms": 206.3660247612279,
+      "median_ttft_ms": 143.34253448760137,
+      "std_ttft_ms": 254.3971080438972,
+      "p99_ttft_ms": 1712.2493215824943,
+      "mean_tpot_ms": 21.227650735802186,
+      "median_tpot_ms": 21.070705115910624,
+      "std_tpot_ms": 2.1817329913534866,
+      "p99_tpot_ms": 27.469662518023306,
+      "mean_itl_ms": 21.183581578063798,
+      "median_itl_ms": 13.897518976591527,
+      "std_itl_ms": 28.66924715115406,
+      "p95_itl_ms": 77.68580883275716,
+      "p99_itl_ms": 112.08235426805935,
+      "concurrency": 15.778412899132604,
+      "accept_length": null,
+      "mean_input_tokens": 4486.138,
+      "mean_output_tokens": 226.27,
+      "output_limit_hits": 1,
+      "peak_gpu_gib": 86.9072265625
+    },
+    "validation": {
+      "focused_tests_passed": 38,
+      "smoke_questions_passed": 9
+    },
+    "source_state": "Historical, before CUTLASS default restoration; backend command relied on the then-default triton_kernel."
+  },
+  "recovery_over_triton_percent": 9.252417351567388,
+  "earlier_removed_cutlass_run": {
+    "backend": "sglang-native",
+    "dataset_name": "polaris",
+    "request_rate": "unlimited",
+    "max_concurrency": 16,
+    "sharegpt_output_len": null,
+    "random_input_len": null,
+    "random_output_len": null,
+    "random_range_ratio": 1.0,
+    "duration": 152.4186954681063,
+    "completed": 500,
+    "total_input_tokens": 2243069,
+    "total_output_tokens": 113905,
+    "total_output_tokens_retokenized": 114136,
+    "request_throughput": 3.280437471692082,
+    "input_throughput": 14716.495198381772,
+    "output_throughput": 747.3164604261731,
+    "mean_e2e_latency_ms": 4822.569707617629,
+    "median_e2e_latency_ms": 4121.715342975222,
+    "std_e2e_latency_ms": 2436.750388605737,
+    "p99_e2e_latency_ms": 13055.04310017102,
+    "mean_ttft_ms": 207.942868048558,
+    "median_ttft_ms": 165.43419245863333,
+    "std_ttft_ms": 181.96027054995287,
+    "p99_ttft_ms": 1355.0468323356472,
+    "mean_tpot_ms": 20.38929309362905,
+    "median_tpot_ms": 20.580789101445617,
+    "std_tpot_ms": 2.231547750707392,
+    "p99_tpot_ms": 24.629843369174885,
+    "mean_itl_ms": 20.34575656731111,
+    "median_itl_ms": 12.52680504694581,
+    "std_itl_ms": 30.45203193882864,
+    "p95_itl_ms": 85.66189301200193,
+    "p99_itl_ms": 155.72207090444846,
+    "concurrency": 15.820138378715997,
+    "accept_length": null,
+    "mean_input_tokens": 4486.138,
+    "mean_output_tokens": 227.81,
+    "output_limit_hits": 0
+  },
+  "sfllm_cutlass_tactics": "qwen35_sfllm_cutlass_h100_nvl.json",
+  "sfllm_cutlass_cache_sha256": "f031c7f79509f31d0552d6038f466742e4c3f32a2ae8add195e5753f3cc5491e",
+  "generation": {
+    "temperature": 0,
+    "max_new_tokens": 1000,
+    "ignore_eos": false,
+    "stop_token_ids": [
+      248044
+    ],
+    "stream": true,
+    "warmup_requests": 4,
+    "flush_cache": true,
+    "speculative_decoding": false
+  },
+  "local_artifacts_prefix": "/tmp/qwen35-moe-aligned",
+  "pre_alignment_run": {
+    "sfllm_backend": "flashinfer_cutlass",
+    "sfllm_command": {
+      "command": [
+        "/workspace/sglang/.venv/bin/python",
+        "python/sfllm/serving/app.py",
+        "--model",
+        "/mnt/data/work/Qwen3.5-35B-A3B",
+        "--dtype",
+        "bfloat16",
+        "--attention-backend",
+        "fa3",
+        "--max-running-requests",
+        "16",
+        "--cuda-graph-max-bs",
+        "16",
+        "--max-context-length",
+        "16384",
+        "--port",
+        "8084",
+        "--moe-runner-backend",
+        "flashinfer_cutlass"
+      ],
+      "cwd": "/workspace/sfllm",
+      "environment": {
+        "FLASHINFER_WORKSPACE_BASE": "/root"
+      }
+    },
+    "source_files_sha256": {
+      "python/sfllm/kernels/moe.py": "03dbf5fb8c0b4b6402989d6f6bdb4d3e6287b229b7cf7bfe8f9dd28e2c5a27fc",
+      "python/sfllm/layers/moe.py": "07560a5287e325eaf3441978b35f8de50260630c772d390a26fff17d7e0f7cae",
+      "python/sfllm/models/qwen3_5_moe.py": "4ce05f5f95a0c62ffb11f0ca8f1327da379a4ee6217d406c6afe2e2cc7c36888",
+      "python/sfllm/models/qwen3_5.py": "7aa523009ee2a19f83a3d9aac3d1286e11b5a55483974b9223431176cf166635",
+      "python/sfllm/server_args.py": "a56f7f3cad6068a75099bb680cdc70878d9596770687b993faeb3980c568485c",
+      "requirements.txt": "24b744057046d80dfd507c9d0df9f98b6ca77d7cd825cc545a5211d1ffa0dc86"
+    },
+    "sfllm": {
+      "backend": "sglang-native",
+      "dataset_name": "polaris",
+      "request_rate": "unlimited",
+      "max_concurrency": 16,
+      "sharegpt_output_len": null,
+      "random_input_len": null,
+      "random_output_len": null,
+      "random_range_ratio": 1.0,
+      "duration": 151.98691842902917,
+      "completed": 500,
+      "total_input_tokens": 2243069,
+      "total_output_tokens": 115881,
+      "total_output_tokens_retokenized": 116188,
+      "request_throughput": 3.2897568104420563,
+      "input_throughput": 14758.303038082906,
+      "output_throughput": 762.4406179016719,
+      "mean_e2e_latency_ms": 4797.5579428034835,
+      "median_e2e_latency_ms": 4146.672915434465,
+      "std_e2e_latency_ms": 2626.138151440978,
+      "p99_e2e_latency_ms": 13151.933877521635,
+      "mean_ttft_ms": 203.9242994512897,
+      "median_ttft_ms": 147.17363857198507,
+      "std_ttft_ms": 233.45834608348898,
+      "p99_ttft_ms": 1597.7389075874817,
+      "mean_tpot_ms": 19.911784723383853,
+      "median_tpot_ms": 19.965280570608208,
+      "std_tpot_ms": 2.0770321042524116,
+      "p99_tpot_ms": 24.3776478133224,
+      "mean_itl_ms": 19.906343962144977,
+      "median_itl_ms": 12.836399022489786,
+      "std_itl_ms": 28.59191630010017,
+      "p95_itl_ms": 71.1137920152396,
+      "p99_itl_ms": 146.0233429679647,
+      "concurrency": 15.78279891582814,
+      "accept_length": null,
+      "mean_input_tokens": 4486.138,
+      "mean_output_tokens": 231.762,
+      "output_limit_hits": 4,
+      "peak_gpu_gib": 88.4677734375
+    },
+    "validation": {
+      "focused_tests_passed": 53,
+      "smoke_questions_passed": 9
+    }
+  },
+  "profiling_launch_command": {
+    "command": [
+      "/workspace/sglang/.venv/bin/python",
+      "/tmp/qwen35-moe-aligned-profile-server.py",
+      "--model",
+      "/mnt/data/work/Qwen3.5-35B-A3B",
+      "--dtype",
+      "bfloat16",
+      "--attention-backend",
+      "fa3",
+      "--max-running-requests",
+      "16",
+      "--cuda-graph-max-bs",
+      "16",
+      "--max-context-length",
+      "16384",
+      "--port",
+      "8084",
+      "--moe-runner-backend",
+      "flashinfer_cutlass"
+    ],
+    "cwd": "/workspace/sfllm",
+    "environment": {
+      "FLASHINFER_WORKSPACE_BASE": "/root"
+    }
+  },
+  "profiling_note": "An untimed 16-request probe captured one decode step. The temporary Python wrapper restored the original ModelRunner.forward before the smoke test and serving warmups.",
+  "alignment_gain_percent": 2.760393654202331,
+  "optimization": {
+    "router_storage_columns": 272,
+    "routed_experts": 256,
+    "shared_experts": 1,
+    "router_output_written_directly_to_bucket": true,
+    "router_microbench": [
+      {
+        "tokens": 1,
+        "router_width": 264,
+        "baseline_ms": 0.025003825384995033,
+        "aligned_ms": 0.0279027312464968
+      },
+      {
+        "tokens": 1,
+        "router_width": 272,
+        "baseline_ms": 0.025003825384995033,
+        "aligned_ms": 0.015255721040474351
+      },
+      {
+        "tokens": 1,
+        "router_width": 288,
+        "baseline_ms": 0.025003825384995033,
+        "aligned_ms": 0.01524533313332182
+      },
+      {
+        "tokens": 1,
+        "router_width": 320,
+        "baseline_ms": 0.025003825384995033,
+        "aligned_ms": 0.015347769155557023
+      },
+      {
+        "tokens": 1,
+        "router_width": 512,
+        "baseline_ms": 0.025003825384995033,
+        "aligned_ms": 0.015397063004722667
+      },
+      {
+        "tokens": 16,
+        "router_width": 264,
+        "baseline_ms": 0.020387324290489083,
+        "aligned_ms": 0.03296570635695107
+      },
+      {
+        "tokens": 16,
+        "router_width": 272,
+        "baseline_ms": 0.020387324290489083,
+        "aligned_ms": 0.015651193726807833
+      },
+      {
+        "tokens": 16,
+        "router_width": 288,
+        "baseline_ms": 0.020387324290489083,
+        "aligned_ms": 0.01571798342854584
+      },
+      {
+        "tokens": 16,
+        "router_width": 320,
+        "baseline_ms": 0.020387324290489083,
+        "aligned_ms": 0.015741734156712036
+      },
+      {
+        "tokens": 16,
+        "router_width": 512,
+        "baseline_ms": 0.020387324290489083,
+        "aligned_ms": 0.01570531709127158
+      },
+      {
+        "tokens": 4096,
+        "router_width": 264,
+        "baseline_ms": 0.11613652402704412,
+        "aligned_ms": 0.04110369022655864
+      },
+      {
+        "tokens": 4096,
+        "router_width": 272,
+        "baseline_ms": 0.11613652402704412,
+        "aligned_ms": 0.022716885782292976
+      },
+      {
+        "tokens": 4096,
+        "router_width": 288,
+        "baseline_ms": 0.11613652402704412,
+        "aligned_ms": 0.022772970689615243
+      },
+      {
+        "tokens": 4096,
+        "router_width": 320,
+        "baseline_ms": 0.11613652402704412,
+        "aligned_ms": 0.021812953037094785
+      },
+      {
+        "tokens": 4096,
+        "router_width": 512,
+        "baseline_ms": 0.11613652402704412,
+        "aligned_ms": 0.026166991213215827
+      },
+      {
+        "tokens": 8192,
+        "router_width": 264,
+        "baseline_ms": 0.20179831877041082,
+        "aligned_ms": 0.04723415063986225
+      },
+      {
+        "tokens": 8192,
+        "router_width": 272,
+        "baseline_ms": 0.20179831877041082,
+        "aligned_ms": 0.03175129206493647
+      },
+      {
+        "tokens": 8192,
+        "router_width": 288,
+        "baseline_ms": 0.20179831877041082,
+        "aligned_ms": 0.030871135044873245
+      },
+      {
+        "tokens": 8192,
+        "router_width": 320,
+        "baseline_ms": 0.20179831877041082,
+        "aligned_ms": 0.03404885545068858
+      },
+      {
+        "tokens": 8192,
+        "router_width": 512,
+        "baseline_ms": 0.20179831877041082,
+        "aligned_ms": 0.042849038493248726
+      }
+    ],
+    "gemm_experiment": "Decode tactic sweep did not establish a stable improvement. PDL trial stalled when moving to prefill; the process was stopped. Production tactics and enable_pdl=False remain unchanged.",
+    "full_model_decode_profile": {
+      "total_kernel_us": 6855.822999999999,
+      "groups_us": {
+        "Other projections, norms and scheduling": 2407.547999999999,
+        "GDN recurrent kernel": 597.259,
+        "MoE top-k and packing": 385.21599999999995,
+        "MoE dispatch and activation": 553.7659999999996,
+        "MoE grouped GEMMs": 2358.267,
+        "Full attention": 553.7669999999999
+      },
+      "kernels": [
+        {
+          "name": "void fused_moe::run_global<fused_moe::Fused_Moe_Kernel_sm80<cutlass::bfloat16_t, cutlass::bfloat16_t, cutlass::bfloat16_t, 32, 128, 64, 4, (fused_moe::Activation_Type)3> >(fused_moe::Fused_Moe_Kernel_sm80<cutlass::bfloat16_t, cutlass::bfloat16_t, cutlass::bfloat16_t, 32, 128, 64, 4, (fused_moe::Activation_Type)3>::Params)",
+          "total_us": 1445.3009999999997,
+          "count": 40
+        },
+        {
+          "name": "_ZN7cutlass13device_kernelINS_4gemm6kernel13GemmUniversalINS1_17GroupProblemShapeIN4cute5tupleIJlllEEEEENS1_10collective13CollectiveMmaINS1_39MainloopSm90ArrayTmaGmmaWarpSpecializedILi12ENS6_IJNS5_1CILi1EEESD_SD_EEENS1_43KernelPtrArrayTmaWarpSpecializedCooperativeEEENS6_IJNSC_ILi128EEENSC_ILi16EEENSC_ILi64EEEEEENS_10bfloat16_tEPNS6_IJlSD_NSC_ILi0EEEEEESL_SO_NS5_8TiledMMAINS5_8MMA_AtomIJNS5_4SM904GMMA27MMA_64x16x16_F32BF16BF16_SSILNSS_5MajorE0ELSU_0ELNSS_7ScaleInE1ELSV_1EEEEEENS5_6LayoutINS6_IJNSC_ILi2EEESD_SD_EEENS6_IJSD_SM_SM_EEEEENS6_IJNS5_10UnderscoreES13_S13_EEEEENS5_13SM90_TMA_LOADENS5_14ComposedLayoutINS5_7SwizzleILi3ELi4ELi3EEENS5_18smem_ptr_flag_bitsILi16EEENSY_INS6_IJNSC_ILi8EEESJ_EEENS6_IJSJ_SD_EEEEEEEvNS5_8identityES16_S1G_vS1H_EENS_8epilogue10collective18CollectiveEpilogueINS1J_30Sm90PtrArrayTmaWarpSpecializedILi1ELi1ELi8ELb0ELb0ELi2EEEJSK_NS6_IJSH_SI_EEEvPNS6_IJSD_lSM_EEEvS1Q_NS1J_6fusion15FusionCallbacksIS1N_NS1R_37ScaledAccPerRowBiasPerColScaleScatterINS_6layout11ColumnMajorESL_fSL_ffLi8ELi8ELNS_15FloatRoundStyleE2EEESK_S1O_JNS17_IS19_S1B_NSY_INS6_IJSJ_S1C_EEENS6_IJSD_SJ_EEEEEEENS5_17SM90_U16x8_STSM_TEEEES16_S21_NS5_17SM75_U16x8_LDSM_TENS5_14SM90_TMA_STOREES21_S22_NS5_9Copy_AtomIJNS5_17SM90_U32x4_STSM_NENS_6half_tEEEEvEEEvvEEEEvNT_6ParamsE",
+          "total_us": 912.9659999999998,
+          "count": 40
+        },
+        {
+          "name": "kernel_cutlass_gdn_decode_kernel_small_batch_pretranspose_TiledCopy_TilerMN411281_TVLayouttiled32441614_CopyAtom_ThrID10_TVLayoutSrc1401_TVLayoutDst1401_Valuetypef32_tensorptrf32gmemalign_0",
+          "total_us": 597.259,
+          "count": 30
+        },
+        {
+          "name": "nvjet_sm90_tst_64x16_64x16_4x1_v_bz_TNT",
+          "total_us": 553.5400000000001,
+          "count": 30
+        },
+        {
+          "name": "void cutlass::device_kernel<flash::enable_sm90_or_later<flash::FlashAttnFwdSm90<flash::CollectiveMainloopFwdSm90<2, cute::tuple<cute::C<1>, cute::C<1>, cute::C<1> >, cute::tuple<cute::C<128>, cute::C<80>, cute::C<256> >, 256, cutlass::bfloat16_t, float, cutlass::arch::Sm90, false, false, false, true, true, false, false, false, true, true, true, true, false, cutlass::bfloat16_t, false, 1>, flash::CollectiveEpilogueFwd<cute::tuple<cute::C<128>, cute::C<256>, cute::C<80> >, cute::tuple<cute::C<1>, cute::C<1>, cute::C<1> >, cutlass::bfloat16_t, cutlass::arch::Sm90, 256, true, true, true, false>, flash::VarlenDynamicPersistentTileScheduler<128, 80, 256, 128, true, true, true, false, true, true> > > >(flash::enable_sm90_or_later<flash::FlashAttnFwdSm90<flash::CollectiveMainloopFwdSm90<2, cute::tuple<cute::C<1>, cute::C<1>, cute::C<1> >, cute::tuple<cute::C<128>, cute::C<80>, cute::C<256> >, 256, cutlass::bfloat16_t, float, cutlass::arch::Sm90, false, false, false, true, true, false, false, false, true, true, true, true, false, cutlass::bfloat16_t, false, 1>, flash::CollectiveEpilogueFwd<cute::tuple<cute::C<128>, cute::C<256>, cute::C<80> >, cute::tuple<cute::C<1>, cute::C<1>, cute::C<1> >, cutlass::bfloat16_t, cutlass::arch::Sm90, 256, true, true, true, false>, flash::VarlenDynamicPersistentTileScheduler<128, 80, 256, 128, true, true, true, false, true, true> > >::Params)",
+          "total_us": 511.88,
+          "count": 10
+        },
+        {
+          "name": "nvjet_sm90_tst_64x16_64x16_4x1_v_bz_splitK_TNT",
+          "total_us": 398.472,
+          "count": 40
+        },
+        {
+          "name": "_topk_forward",
+          "total_us": 321.1509999999999,
+          "count": 40
+        },
+        {
+          "name": "nvjet_sm90_tst_512x16_64x3_2x1_v_bz_TNT",
+          "total_us": 294.084,
+          "count": 1
+        },
+        {
+          "name": "nvjet_sm90_tst_64x8_64x16_4x2_h_bz_TNT",
+          "total_us": 284.25899999999996,
+          "count": 40
+        },
+        {
+          "name": "kernel_cutlass_kernel_flashinfernormkernelsfused_add_rmsnormFusedAddRMSNormKernel_object_at__tensorptrbf16gmemalign128oi64204820481_tensorptrbf16gmemalign128oi64204820481_tensorptrbf16gme_0",
+          "total_us": 265.1840000000001,
+          "count": 80
+        },
+        {
+          "name": "nvjet_sm90_tst_128x16_64x11_4x1_v_bz_TNT",
+          "total_us": 142.69,
+          "count": 10
+        },
+        {
+          "name": "void tensorrt_llm::kernels::cutlass_kernels::computeStridesTmaWarpSpecializedKernel<__nv_bfloat16, __nv_bfloat16, __nv_bfloat16, __nv_bfloat16>(long const*, tensorrt_llm::kernels::cutlass_kernels::TmaWarpSpecializedGroupedGemmInput, tensorrt_llm::kernels::cutlass_kernels::TmaWarpSpecializedGroupedGemmInput, long, long, long, long, long, long, long, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16 const*, float const*, float const*, unsigned char const*, unsigned char const*, tensorrt_llm::kernels::cutlass_kernels::QuantParams, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, __nv_bfloat16*, float const*, int const*)",
+          "total_us": 136.16000000000003,
+          "count": 40
+        },
+        {
+          "name": "void tensorrt_llm::kernels::cutlass_kernels::blockExpertPrefixSumKernel<512>(int const*, int*, int*, long, long, int)",
+          "total_us": 124.545,
+          "count": 40
+        },
+        {
+          "name": "void tensorrt_llm::kernels::cutlass_kernels::expandInputRowsKernel<__nv_bfloat16, __nv_bfloat16, (tensorrt_llm::kernels::cutlass_kernels::TmaWarpSpecializedGroupedGemmInput::FpXBlockScalingType)2, false, false, std::integral_constant<bool, false> >(__nv_bfloat16 const*, __nv_bfloat16*, float const*, float*, int const*, int const*, long, long, long, float const*, bool, long const*, unsigned char*, unsigned char const*, bool, long, __nv_bfloat16 const*, float*, float const*, float const**)",
+          "total_us": 116.67500000000001,
+          "count": 40
+        },
+        {
+          "name": "_fused_qkvzba_conv_decode_kernel",
+          "total_us": 100.00200000000001,
+          "count": 30
+        },
+        {
+          "name": "void cublasLt::splitKreduce_kernel<32, 16, int, float, __nv_bfloat16, float, __nv_bfloat16, false, float, __nv_bfloat16, __nv_bfloat16, true, false, false, false>(cublasLt::cublasSplitKParams<float>, float const*, __nv_bfloat16 const*, float*, __nv_bfloat16*, float const*, float const*, __nv_bfloat16 const*, float const*, __nv_bfloat16*, void*, long, float*, int*, float*, float*, float const*, float const*, float const*, float const*, float const*)",
+          "total_us": 93.985,
+          "count": 40
+        },
+        {
+          "name": "void tensorrt_llm::kernels::cutlass_kernels::globalExpertPrefixSumKernel<512>(int const*, int*, long*, long, long)",
+          "total_us": 92.67200000000003,
+          "count": 40
+        },
+        {
+          "name": "tensorrt_llm::kernels::cutlass_kernels::mergeExpertPrefixSumKernel(int const*, int const*, int const*, int*, int*, int*, int)",
+          "total_us": 83.714,
+          "count": 40
+        },
+        {
+          "name": "void gated_rms_norm_kernel<__nv_bfloat16>(__nv_bfloat16*, __nv_bfloat16 const*, __nv_bfloat16 const*, float const*, float, int, int, long, long, long, long)",
+          "total_us": 81.69300000000003,
+          "count": 30
+        },
+        {
+          "name": "triton_poi_fused__to_copy_cat_sigmoid_1",
+          "total_us": 64.06500000000001,
+          "count": 40
+        },
+        {
+          "name": "triton_poi_fused__to_copy_cat_full_like_0",
+          "total_us": 51.42600000000001,
+          "count": 40
+        },
+        {
+          "name": "memset32",
+          "total_us": 50.11300000000001,
+          "count": 40
+        },
+        {
+          "name": "void cutlass::device_kernel<flash::FlashAttnFwdCombine<cute::tuple<cute::C<8>, cute::C<128> >, 6, 256, 1, false, true, cutlass::bfloat16_t, float, cutlass::arch::Sm90> >(flash::FlashAttnFwdCombine<cute::tuple<cute::C<8>, cute::C<128> >, 6, 256, 1, false, true, cutlass::bfloat16_t, float, cutlass::arch::Sm90>::Params)",
+          "total_us": 41.887,
+          "count": 10
+        },
+        {
+          "name": "void flashinfer::BatchQKApplyRotaryPosIdsCosSinCacheEnhancedHeadParallelismKernel<true, true, false, 256u, 8u, 32u, __nv_bfloat16, long, false>(__nv_bfloat16*, __nv_bfloat16*, __nv_bfloat16*, __nv_bfloat16*, __nv_bfloat16*, float, float, __nv_bfloat16*, __nv_bfloat16*, __nv_bfloat16*, __nv_bfloat16*, float*, long*, unsigned int, unsigned int, unsigned int, unsigned int, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long, long*, unsigned long, unsigned long, unsigned long, unsigned long)",
+          "total_us": 26.080999999999996,
+          "count": 10
+        },
+        {
+          "name": "void fused_sigmoid_mul_kernel<__nv_bfloat16, 8u>(__nv_bfloat16*, __nv_bfloat16 const*, unsigned int, unsigned int, long, long)",
+          "total_us": 20.577999999999996,
+          "count": 10
+        },
+        {
+          "name": "void at::native::reduce_kernel<512, 1, at::native::ReduceOp<c10::BFloat16, at::native::ArgMaxOps<float>, unsigned int, long, 4, 4> >(at::native::ReduceOp<c10::BFloat16, at::native::ArgMaxOps<float>, unsigned int, long, 4, 4>)",
+          "total_us": 18.176,
+          "count": 1
+        },
+        {
+          "name": "void at::native::(anonymous namespace)::indexSelectSmallIndex<c10::BFloat16, long, unsigned int, 2, 2, -2>(at::cuda::detail::TensorInfo<c10::BFloat16, unsigned int>, at::cuda::detail::TensorInfo<c10::BFloat16 const, unsigned int>, at::cuda::detail::TensorInfo<long const, unsigned int>, int, int, unsigned int, long)",
+          "total_us": 9.664,
+          "count": 1
+        },
+        {
+          "name": "_build_page_table_kernel",
+          "total_us": 7.873,
+          "count": 1
+        },
+        {
+          "name": "void flash::prepare_varlen_num_blocks_kernel<1, true>(int, int, int, int const*, int const*, int const*, int const*, int const*, int const*, int, int, int, int, int, cutlass::FastDivmod, cutlass::FastDivmod, int*, int*, int*, int*, int*, bool, bool, bool, int)",
+          "total_us": 4.352,
+          "count": 1
+        },
+        {
+          "name": "kernel_cutlass_kernel_flashinfernormkernelsrmsnormRMSNormKernel_object_at__tensorptrbf16gmemalign128oi64204820481_tensorptrbf16gmemalign16o20481_tensorptrbf16gmemalign128oi64204820481___T_0",
+          "total_us": 2.912,
+          "count": 1
+        },
+        {
+          "name": "void at::native::vectorized_elementwise_kernel<4, at::native::FillFunctor<int>, std::array<char*, 1ul> >(int, at::native::FillFunctor<int>, std::array<char*, 1ul>)",
+          "total_us": 2.464,
+          "count": 2
+        }
+      ]
+    }
+  },
+  "rejected_topk_tuning_run": {
+    "sfllm_command": {
+      "command": [
+        "/workspace/sglang/.venv/bin/python",
+        "python/sfllm/serving/app.py",
+        "--model",
+        "/mnt/data/work/Qwen3.5-35B-A3B",
+        "--dtype",
+        "bfloat16",
+        "--attention-backend",
+        "fa3",
+        "--max-running-requests",
+        "16",
+        "--cuda-graph-max-bs",
+        "16",
+        "--max-context-length",
+        "16384",
+        "--port",
+        "8084",
+        "--moe-runner-backend",
+        "flashinfer_cutlass"
+      ],
+      "cwd": "/workspace/sfllm",
+      "environment": {
+        "FLASHINFER_WORKSPACE_BASE": "/root"
+      }
+    },
+    "source_files_sha256": {
+      "python/sfllm/kernels/moe.py": "e0ef8afe8e3df43e9ed380d878b375cee1ac12f8a81d133b9a5c43bdf7139079",
+      "python/sfllm/layers/moe.py": "f53259bdbdee3fba2c3d9751d0a76707ceecded4c1ee2b6b07767f1811c2aa55",
+      "python/sfllm/models/qwen3_5_moe.py": "4ce05f5f95a0c62ffb11f0ca8f1327da379a4ee6217d406c6afe2e2cc7c36888",
+      "python/sfllm/models/qwen3_5.py": "7aa523009ee2a19f83a3d9aac3d1286e11b5a55483974b9223431176cf166635",
+      "python/sfllm/server_args.py": "a56f7f3cad6068a75099bb680cdc70878d9596770687b993faeb3980c568485c",
+      "requirements.txt": "24b744057046d80dfd507c9d0df9f98b6ca77d7cd825cc545a5211d1ffa0dc86",
+      "tests/test_qwen3_5_moe.py": "42c37cb6f31b2706e1d584b849972c06b9f622273ddfd767d8f970260d784526"
+    },
+    "sfllm": {
+      "backend": "sglang-native",
+      "dataset_name": "polaris",
+      "request_rate": "unlimited",
+      "max_concurrency": 16,
+      "sharegpt_output_len": null,
+      "random_input_len": null,
+      "random_output_len": null,
+      "random_range_ratio": 1.0,
+      "duration": 141.5143626279896,
+      "completed": 500,
+      "total_input_tokens": 2243069,
+      "total_output_tokens": 111047,
+      "total_output_tokens_retokenized": 111192,
+      "request_throughput": 3.5332102743125158,
+      "input_throughput": 15850.4688735838,
+      "output_throughput": 784.7048026631638,
+      "mean_e2e_latency_ms": 4483.304441339336,
+      "median_e2e_latency_ms": 3894.340915430803,
+      "std_e2e_latency_ms": 2249.489423706665,
+      "p99_e2e_latency_ms": 12385.691851082955,
+      "mean_ttft_ms": 175.45918870228343,
+      "median_ttft_ms": 141.47058554226533,
+      "std_ttft_ms": 130.7941075248154,
+      "p99_ttft_ms": 958.2214718591422,
+      "mean_tpot_ms": 19.518067926141256,
+      "median_tpot_ms": 19.685505787444473,
+      "std_tpot_ms": 1.9062903512892118,
+      "p99_tpot_ms": 23.252188570087245,
+      "mean_itl_ms": 19.484198085783238,
+      "median_itl_ms": 12.449737987481058,
+      "std_itl_ms": 26.620737988072786,
+      "p95_itl_ms": 69.35242678737265,
+      "p99_itl_ms": 146.0692215012348,
+      "concurrency": 15.840457315011076,
+      "accept_length": null,
+      "mean_input_tokens": 4486.138,
+      "mean_output_tokens": 222.094,
+      "output_limit_hits": 0,
+      "peak_gpu_gib": 88.4580078125
+    },
+    "validation": {
+      "focused_tests_passed": 67,
+      "smoke_questions_passed": 9,
+      "accuracy_record": "benchmark/qwen35_moe_accuracy.json",
+      "accuracy": {
+        "before_alignment/no_thinking": {
+          "n": 100,
+          "correct": 92,
+          "cap_hits": 6,
+          "unparsed": 6
+        },
+        "before_alignment/thinking": {
+          "n": 20,
+          "correct": 15,
+          "cap_hits": 4,
+          "unparsed": 4
+        },
+        "aligned/no_thinking": {
+          "n": 100,
+          "correct": 94,
+          "cap_hits": 3,
+          "unparsed": 3
+        },
+        "aligned/thinking": {
+          "n": 20,
+          "correct": 17,
+          "cap_hits": 2,
+          "unparsed": 2
+        },
+        "cuda_topk/no_thinking": {
+          "n": 100,
+          "correct": 91,
+          "cap_hits": 6,
+          "unparsed": 6
+        },
+        "cuda_topk/thinking": {
+          "n": 20,
+          "correct": 18,
+          "cap_hits": 1,
+          "unparsed": 1
+        },
+        "tuned_triton/no_thinking": {
+          "n": 100,
+          "correct": 95,
+          "cap_hits": 1,
+          "unparsed": 1
+        },
+        "tuned_triton/thinking": {
+          "n": 20,
+          "correct": 16,
+          "cap_hits": 3,
+          "unparsed": 3
+        }
+      }
+    },
+    "profiling_note": "Normal server launch, without an external profiling wrapper or profile probe. Nine smoke checks precede the four serving warmups and cache reset.",
+    "topk_tuning_gain_percent": 0.155436192105185,
+    "local_artifacts_prefix": "/tmp/qwen35-moe-tuned-triton",
+    "optimization": {
+      "library_primitive": "upstream Triton expert top-k",
+      "original_tile": [
+        32,
+        32
+      ],
+      "small_batch_tile": [
+        1,
+        256
+      ],
+      "small_batch_max_tokens": 32,
+      "medium_batch_tile": [
+        4,
+        256
+      ],
+      "medium_batch_max_tokens": 1024,
+      "num_warps": 4,
+      "routed_experts": 256,
+      "top_k": 8,
+      "larger_prefills": "Original public wrapper",
+      "sweep": [
+        {
+          "tokens": 16,
+          "baseline_ms": 0.014545691835469212,
+          "trials": [
+            {
+              "config": [
+                1,
+                64,
+                4
+              ],
+              "exact": true,
+              "ms": 0.01184842060699924
+            },
+            {
+              "config": [
+                1,
+                256,
+                4
+              ],
+              "exact": true,
+              "ms": 0.01067765218535034
+            },
+            {
+              "config": [
+                4,
+                64,
+                4
+              ],
+              "exact": true,
+              "ms": 0.011833545245797971
+            },
+            {
+              "config": [
+                4,
+                256,
+                4
+              ],
+              "exact": true,
+              "ms": 0.010834150718825871
+            },
+            {
+              "config": [
+                8,
+                64,
+                4
+              ],
+              "exact": true,
+              "ms": 0.012029881211247739
+            },
+            {
+              "config": [
+                8,
+                256,
+                4
+              ],
+              "exact": true,
+              "ms": 0.011551361999054184
+            },
+            {
+              "config": [
+                16,
+                64,
+                4
+              ],
+              "exact": true,
+              "ms": 0.012528564327679051
+            },
+            {
+              "config": [
+                16,
+                256,
+                4
+              ],
+              "exact": true,
+              "ms": 0.013532961834044684
+            },
+            {
+              "config": [
+                32,
+                64,
+                4
+              ],
+              "exact": true,
+              "ms": 0.014541952241034734
+            },
+            {
+              "config": [
+                32,
+                256,
+                4
+              ],
+              "exact": true,
+              "ms": 0.018754938534117995
+            }
+          ]
+        },
+        {
+          "tokens": 1,
+          "baseline_ms": 0.015406994974367035,
+          "trials": [
+            {
+              "config": [
+                1,
+                64,
+                4
+              ],
+              "exact": true,
+              "ms": 0.011342945901822832
+            },
+            {
+              "config": [
+                1,
+                256,
+                4
+              ],
+              "exact": true,
+              "ms": 0.01026124260267538
+            },
+            {
+              "config": [
+                4,
+                64,
+                4
+              ],
+              "exact": true,
+              "ms": 0.011494679253827923
+            },
+            {
+              "config": [
+                4,
+                256,
+                4
+              ],
+              "exact": true,
+              "ms": 0.010463163013089818
+            },
+            {
+              "config": [
+                8,
+                64,
+                4
+              ],
+              "exact": true,
+              "ms": 0.011831954162045301
+            },
+            {
+              "config": [
+                8,
+                256,
+                4
+              ],
+              "exact": true,
+              "ms": 0.011219920276515073
+            },
+            {
+              "config": [
+                16,
+                64,
+                4
+              ],
+              "exact": true,
+              "ms": 0.0118083084030618
+            },
+            {
+              "config": [
+                16,
+                256,
+                4
+              ],
+              "exact": true,
+              "ms": 0.01314724272205716
+            },
+            {
+              "config": [
+                32,
+                64,
+                4
+              ],
+              "exact": true,
+              "ms": 0.014439084034507763
+            },
+            {
+              "config": [
+                32,
+                256,
+                4
+              ],
+              "exact": true,
+              "ms": 0.017611317532507286
+            }
+          ]
+        },
+        {
+          "tokens": 256,
+          "baseline_ms": 0.016358319607526896,
+          "trials": [
+            {
+              "config": [
+                1,
+                64,
+                4
+              ],
+              "exact": true,
+              "ms": 0.012578277852391975
+            },
+            {
+              "config": [
+                1,
+                256,
+                4
+              ],
+              "exact": true,
+              "ms": 0.011651807434764908
+            },
+            {
+              "config": [
+                4,
+                64,
+                4
+              ],
+              "exact": true,
+              "ms": 0.012488642394087698
+            },
+            {
+              "config": [
+                4,
+                256,
+                4
+              ],
+              "exact": true,
+              "ms": 0.011442022138842883
+            },
+            {
+              "config": [
+                8,
+                64,
+                4
+              ],
+              "exact": true,
+              "ms": 0.012856104892864257
+            },
+            {
+              "config": [
+                8,
+                256,
+                4
+              ],
+              "exact": true,
+              "ms": 0.01253134771493765
+            },
+            {
+              "config": [
+                16,
+                64,
+                4
+              ],
+              "exact": true,
+              "ms": 0.013336452018213636
+            },
+            {
+              "config": [
+                16,
+                256,
+                4
+              ],
+              "exact": true,
+              "ms": 0.01484755482150377
+            },
+            {
+              "config": [
+                32,
+                64,
+                4
+              ],
+              "exact": true,
+              "ms": 0.015458808276588463
+            },
+            {
+              "config": [
+                32,
+                256,
+                4
+              ],
+              "exact": true,
+              "ms": 0.019322413434295888
+            }
+          ]
+        }
+      ],
+      "verification": [
+        {
+          "dtype": "torch.bfloat16",
+          "tokens": 1,
+          "exact": true,
+          "baseline_ms": [
+            0.015375952404471309,
+            0.015354393792214656,
+            0.015357754515599014
+          ],
+          "tuned_ms": [
+            0.010214289677266276,
+            0.010246392978089196,
+            0.010216706791826048
+          ]
+        },
+        {
+          "dtype": "torch.bfloat16",
+          "tokens": 8,
+          "exact": true,
+          "baseline_ms": [
+            0.015723204412380187,
+            0.01570243520618633,
+            0.015707153420838504
+          ],
+          "tuned_ms": [
+            0.010528612485746058,
+            0.010540438971473175,
+            0.010506000863500389
+          ]
+        },
+        {
+          "dtype": "torch.bfloat16",
+          "tokens": 16,
+          "exact": true,
+          "baseline_ms": [
+            0.015727303105015907,
+            0.015721227159991174,
+            0.01575486685778644
+          ],
+          "tuned_ms": [
+            0.01055951062370749,
+            0.01059182668564265,
+            0.010553418973149232
+          ]
+        },
+        {
+          "dtype": "torch.bfloat16",
+          "tokens": 32,
+          "exact": true,
+          "baseline_ms": [
+            0.015860853283845414,
+            0.015862731985004763,
+            0.015854931787184213
+          ],
+          "tuned_ms": [
+            0.010932157632890441,
+            0.01099813700841626,
+            0.010933329465803407
+          ]
+        },
+        {
+          "dtype": "torch.bfloat16",
+          "tokens": 64,
+          "exact": true,
+          "baseline_ms": [
+            0.015887299992821433,
+            0.015878933374999,
+            0.015888862662335045
+          ],
+          "tuned_ms": [
+            0.010859456388106257,
+            0.010851998183989693,
+            0.010894384317464761
+          ]
+        },
+        {
+          "dtype": "torch.bfloat16",
+          "tokens": 256,
+          "exact": true,
+          "baseline_ms": [
+            0.016299444445703054,
+            0.01627880044534904,
+            0.016302330422466392
+          ],
+          "tuned_ms": [
+            0.01135369292770072,
+            0.011360817635088647,
+            0.011383529241774834
+          ]
+        },
+        {
+          "dtype": "torch.bfloat16",
+          "tokens": 257,
+          "exact": true,
+          "baseline_ms": [
+            0.01632308498930536,
+            0.01635188209554537,
+            0.01635553378076734
+          ],
+          "tuned_ms": [
+            0.011416564234470777,
+            0.011420256574198885,
+            0.011445011338495896
+          ]
+        },
+        {
+          "dtype": "torch.bfloat16",
+          "tokens": 1024,
+          "exact": true,
+          "baseline_ms": [
+            0.01780765692168802,
+            0.017867242869604456,
+            0.01791257311758134
+          ],
+          "tuned_ms": [
+            0.013593974228583872,
+            0.013608470008271565,
+            0.013578226656283972
+          ]
+        },
+        {
+          "dtype": "torch.bfloat16",
+          "tokens": 4096,
+          "exact": true,
+          "baseline_ms": [
+            0.022738677897351855,
+            0.02269091671104327,
+            0.022748821736037976
+          ],
+          "tuned_ms": [
+            0.023372548218148347,
+            0.02340542922899561,
+            0.023424752745035905
+          ]
+        },
+        {
+          "dtype": "torch.bfloat16",
+          "tokens": 8192,
+          "exact": true,
+          "baseline_ms": [
+            0.0319530405082812,
+            0.03183202888625951,
+            0.03183262384549589
+          ],
+          "tuned_ms": [
+            0.03723007575520929,
+            0.037383483154605136,
+            0.03730568249631249
+          ]
+        },
+        {
+          "dtype": "torch.float16",
+          "tokens": 1,
+          "exact": true
+        },
+        {
+          "dtype": "torch.float16",
+          "tokens": 8,
+          "exact": true
+        },
+        {
+          "dtype": "torch.float16",
+          "tokens": 16,
+          "exact": true
+        },
+        {
+          "dtype": "torch.float16",
+          "tokens": 32,
+          "exact": true
+        },
+        {
+          "dtype": "torch.float16",
+          "tokens": 64,
+          "exact": true
+        },
+        {
+          "dtype": "torch.float16",
+          "tokens": 256,
+          "exact": true
+        },
+        {
+          "dtype": "torch.float16",
+          "tokens": 257,
+          "exact": true
+        },
+        {
+          "dtype": "torch.float16",
+          "tokens": 1024,
+          "exact": true
+        },
+        {
+          "dtype": "torch.float16",
+          "tokens": 4096,
+          "exact": true
+        },
+        {
+          "dtype": "torch.float16",
+          "tokens": 8192,
+          "exact": true
+        }
+      ],
+      "rejected_cuda_topk": "Not retained after the capped GSM8K no-thinking score fell from 94/100 to 91/100; no full serving run was performed."
+    },
+    "decision": "Not retained: throughput gain 0.1554% in one full run does not establish a useful improvement; mean TPOT slightly increased, and capped thinking accuracy lost one correct answer on net.",
+    "source_snapshots": {
+      "python/sfllm/kernels/moe.py": "/tmp/qwen35-moe-tuned-triton-source-python_sfllm_kernels_moe.py",
+      "tests/test_qwen3_5_moe.py": "/tmp/qwen35-moe-tuned-triton-source-tests_test_qwen3_5_moe.py"
+    }
+  }
+}
