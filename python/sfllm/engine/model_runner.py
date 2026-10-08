@@ -149,7 +149,14 @@ class ModelRunner:
 
         self.num_kv_splits_buffer = torch.zeros((MAX_PROCESSED_TOKENS,), dtype=torch.int32, device="cuda")+2
         self.kv_indptr_buffer = torch.zeros((max_batch_size+2,), dtype=torch.int32, device="cuda")
-        self.kv_indices_buffer = torch.zeros((MAX_PROCESSED_TOKENS,), dtype=torch.int64, device="cuda")
+        # KV indices concatenate all requests' contexts, including speculative tokens.
+        # Eagle's per-step buffers handle top-k expansion separately.
+        kv_index_capacity = max(
+            MAX_PROCESSED_TOKENS,
+            max_capture_batch_size
+            * (server_args.max_context_length + server_args.speculative_num_draft_tokens),
+        )
+        self.kv_indices_buffer = torch.zeros((kv_index_capacity,), dtype=torch.int64, device="cuda")
         self.qo_indptr_buffer = torch.zeros((max_batch_size+4,), dtype=torch.int32, device="cuda")
         self.mask_indptr_buffer = torch.zeros((max_batch_size+2,), dtype=torch.int32, device="cuda")
         self.custom_mask_buffer = torch.zeros((MAX_PROCESSED_TOKENS*4096//200+2,), dtype=torch.bool, device="cuda")
