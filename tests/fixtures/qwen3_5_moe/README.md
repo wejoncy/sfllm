@@ -1,0 +1,1 @@
+Configuration from [Qwen/Qwen3.5-35B-A3B](https://huggingface.co/Qwen/Qwen3.5-35B-A3B/tree/59d61f3ce65a6d9863b86d2e96597125219dc754), pinned to revision `59d61f3ce65a6d9863b86d2e96597125219dc754` (Apache-2.0). Used for offline model registration checks.

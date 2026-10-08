@@ -52,7 +52,7 @@ def _per_token_quant_int8(
     CAL_SUM: tl.constexpr,
     BLOCK: tl.constexpr,
 ):
-    # Adapted from https://github.com/InternLM/lmdeploy/blob/086481ed84b59bee3b8e4274e5fc69620040c048/lmdeploy/pytorch/kernels/cuda/w8a8_triton_kernels.py#L282
+    # Adapted from https://github.com/InternLM/lmdeploy/commit/086481ed84b59bee3b8e4274e5fc69620040c048
     row_id = tl.program_id(0)
 
     cols = tl.arange(0, BLOCK)

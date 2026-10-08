@@ -253,5 +253,4 @@ setup(
     package_dir={"": "python"},
     ext_modules=ext_modules,
     cmdclass=cmdclass,
-    options={"bdist_wheel": {"py_limited_api": "cp39"}},
 )
