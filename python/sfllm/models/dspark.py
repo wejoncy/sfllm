@@ -145,11 +145,11 @@ class DSparkDraftModel(DFlash2DraftModel):
         )
 
     def sample_proposals(self, hidden_states, target_head_weight, anchor_tokens, out,
-                         prefix_logprobs_out=None):
+                         prefix_logprobs_out=None, quantized_hidden=None):
         if self.proposal_top_k > 0:
             ids, unary = self.compute_candidates(
                 hidden_states, target_head_weight,
-                top_k=self.proposal_top_k,
+                top_k=self.proposal_top_k, quantized_hidden=quantized_hidden,
             )
             self.markov_head.sample_candidates(
                 ids, unary, anchor_tokens, out, prefix_logprobs_out
@@ -157,9 +157,10 @@ class DSparkDraftModel(DFlash2DraftModel):
             return
         # Dropping the anchor leaves gaps between requests. Flatten explicitly
         # so matmul uses one GEMM instead of rereading the head for each request.
-        batch, slots, hidden_size = hidden_states.shape
-        flat_hidden = hidden_states.reshape(-1, hidden_size).to(target_head_weight.dtype)
-        logits = torch.matmul(flat_hidden, target_head_weight.T).view(batch, slots, -1)
+        batch, slots, _ = hidden_states.shape
+        logits = self.compute_logits(
+            hidden_states, target_head_weight, quantized_hidden
+        ).view(batch, slots, -1)
         self.markov_head.sample(logits, hidden_states, anchor_tokens, out)
 
     def load_weights(self, weights):

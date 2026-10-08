@@ -34,6 +34,7 @@ class ServerArgs:
     # speculative decoding
     speculative_algorithm: Optional[str] = None
     speculative_draft_model_path: Optional[str] = None
+    speculative_draft_quantization: Optional[Literal["fp8"]] = None
     speculative_eagle_topk: int = 4
     speculative_num_steps: int = 4
     speculative_num_draft_tokens: Optional[int] = None
@@ -216,6 +217,12 @@ class ServerArgs:
             help="The path of the draft model.",
         )
         parser.add_argument(
+            "--speculative-draft-quantization",
+            choices=["fp8"],
+            default=ServerArgs.speculative_draft_quantization,
+            help="Opt-in FP8 for DFlash2/DSpark projections with fused activation quantization; leaves target and SSM state precision unchanged.",
+        )
+        parser.add_argument(
             "--speculative-eagle-topk",
             type=int,
             default=ServerArgs.speculative_eagle_topk,
@@ -263,6 +270,10 @@ class ServerArgs:
         return cls(**{attr: getattr(args, attr) for attr in attrs})
 
     def __post_init__(self):
+        if self.speculative_draft_quantization is not None:
+            if (self.speculative_draft_quantization != "fp8"
+                    or self.speculative_algorithm not in ("dflash2", "dspark")):
+                raise ValueError("--speculative-draft-quantization fp8 requires DFlash2 or DSpark.")
         if self.spec_adaptive_verify is not None:
             match = re.fullmatch(r"d(\d+)t(\d+(?:\.\d+)?)", self.spec_adaptive_verify)
             if match is None:
