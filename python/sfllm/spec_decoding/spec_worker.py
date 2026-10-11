@@ -1,11 +1,13 @@
 import logging
 from array import array
+from itertools import chain
 from typing import Callable
 
 import torch
 
 from sfllm.engine.forward_params import ForwardMode
 from sfllm.engine.model_runner import ModelRunner
+from sfllm.engine.cache.manager import CacheManager
 from sfllm.engine.schedule_batch import BatchResult, ScheduleBatch
 from sfllm.server_args import ServerArgs
 from sfllm.spec_decoding.spec_e2e_cuda_graph_runner import (
@@ -42,10 +44,7 @@ class SpeculativeWorker:
         return self.draft_model_runner.block_memory_manager
 
     def init_memory_pools(self) -> None:
-        self.target_model_runner.init_memory_pool()
-        self.draft_model_runner.init_memory_pool(
-            num_blocks=self.target_model_runner.block_memory_manager.num_blocks
-        )
+        self.cache = CacheManager([self.target_model_runner, self.draft_model_runner])
 
     def init_e2e_runner(self, model_func: Callable) -> None:
         self.e2e_runner = SpeculativeE2ECudaGraphRunner(
@@ -193,6 +192,7 @@ class SpeculativeWorker:
             spec_info.verified_id = spec_info.verified_id[:accepted_count]
             spec_info.hidden_states = spec_info.hidden_states[:accepted_count]
 
+        accept_lengths = memoryview(accept_length_cpu.numpy())
         if spec_info.out_cache_loc is not None:
             accepted_cache_locs = spec_info.out_cache_loc.cpu()
             accepted_cache_locs = [
@@ -209,13 +209,13 @@ class SpeculativeWorker:
             if not async_overlap:
                 for idx, sequence in enumerate(scheduled_batch):
                     sequence.out_cache_loc = sequence.out_cache_loc[:-draft_token_num]
-                    accept_len = accept_length_cpu[idx].item() + 1
+                    accept_len = accept_lengths[idx] + 1
                     sequence.out_cache_loc.extend(accepted_cache_locs[:accept_len])
                     accepted_cache_locs = accepted_cache_locs[accept_len:]
             else:
                 width = self.server_args.speculative_num_steps + 1
                 for idx, sequence in enumerate(scheduled_batch):
-                    accept_len = accept_length_cpu[idx].item()
+                    accept_len = accept_lengths[idx]
                     sequence_cache_locs = accepted_cache_locs[: 1 + accept_len]
                     accepted_cache_locs = accepted_cache_locs[1 + accept_len :]
                     if not sequence.status.is_active():
@@ -230,10 +230,11 @@ class SpeculativeWorker:
 
         if async_overlap:
             num_steps = self.server_args.speculative_num_steps
+            rejected_draft_locs = []
             for idx, sequence in enumerate(scheduled_batch):
                 if not sequence.status.is_active():
                     continue
-                accept_len = batch_output.spec_info.accept_length_cpu[idx].item()
+                accept_len = accept_lengths[idx]
                 sequence.accept_length_cpu = accept_length_cpu[idx:idx + 1]
                 if len(sequence.tokens) - sequence.last_generated_token_pos <= num_steps + 1:
                     continue
@@ -242,17 +243,22 @@ class SpeculativeWorker:
                     sequence.out_cache_loc_spec[:offset],
                     sequence.out_cache_loc_spec[offset:],
                 )
-                self.draft_mem_pool.free_block(extra_locs)
+                rejected_draft_locs.append(extra_locs)
+            if rejected_draft_locs:
+                # Preserve the pool's free-stack order from per-request release.
+                self.draft_mem_pool.free_block(
+                    list(chain.from_iterable(reversed(rejected_draft_locs)))
+                )
 
         if not async_overlap:
             for idx, sequence in enumerate(scheduled_batch):
                 if not sequence.status.is_active():
                     continue
                 sequence.accept_length = spec_info.accept_length[idx : idx + 1]
-                sequence.accept_length_cpu = spec_info.accept_length.cpu()[
+                sequence.accept_length_cpu = spec_info.accept_length_cpu[
                     idx : idx + 1
                 ]
-                accept_length = accept_length_cpu[idx].item()
+                accept_length = accept_lengths[idx]
                 end = last_verify_id_start + accept_length + 1
                 sequence.verified_id = spec_info.verified_id[last_verify_id_start:end]
                 sequence.hidden_states = spec_info.hidden_states[

@@ -4,6 +4,13 @@ import logging
 import torch
 import tqdm
 
+try:
+    from flashinfer.utils import _cache_buf as flashinfer_workspaces
+except ModuleNotFoundError as exc:
+    if exc.name != "flashinfer":
+        raise
+    flashinfer_workspaces = {}
+
 from sfllm.engine.forward_params import ForwardBatch
 from sfllm.engine.schedule_batch import ScheduleBatch
 from sfllm.models.interfaces import HasBatchState
@@ -31,13 +38,9 @@ class PrefillCudaGraphRunner:
         self.max_tokens = self.capture_sizes[-1]
         self.max_requests = args.max_running_requests
         pool = model_runner.block_memory_manager
-        if not pool.can_alloc(self.max_tokens):
-            raise ValueError("Insufficient KV cache for prefill CUDA Graph padding.")
         # Padding writes must never alias a live request or another padded token.
-        self.scratch_locations = torch.tensor(
-            pool.persist_alloc_block_from_rear(self.max_tokens),
-            dtype=torch.int64, device=model_runner.device_id,
-        )
+        self.scratch_locations = pool.scratch_locations
+        assert self.scratch_locations.numel() == self.max_tokens
         self.input_ids = torch.zeros_like(self.scratch_locations)
         self.positions = torch.zeros_like(self.input_ids)
         self.locations = self.scratch_locations.clone()
@@ -48,6 +51,7 @@ class PrefillCudaGraphRunner:
         self.kv_indices = model_runner.kv_indices_buffer
         self.graphs = {}
         self.outputs = {}
+        self.workspaces = {}
         self.capture()
 
     def forward(self, size, batch):
@@ -84,6 +88,9 @@ class PrefillCudaGraphRunner:
                 output = self.forward(size, batch)
             self.graphs[size] = graph
             self.outputs[size] = output
+            # FlashInfer may replace cached workspaces on a larger eager prefill.
+            # Keep the captured allocations alive for as long as these graphs.
+            self.workspaces.update((buf.data_ptr(), buf) for buf in flashinfer_workspaces.values())
         torch.cuda.current_stream().wait_stream(stream)
         logger.info("Captured prefill CUDA Graph token sizes: %s", self.capture_sizes)
 
@@ -94,6 +101,7 @@ class PrefillCudaGraphRunner:
             and 0 < len(batch) <= self.max_requests
             and batch.forward_batch.kv_indices.numel() <= self.kv_indices.numel()
             and batch.forward_batch.custom_mask is None
+            and (batch.prefill_plan is None or not batch.prefill_plan.active)
         ):
             return False
         size = self.capture_sizes[bisect.bisect_left(self.capture_sizes, tokens)]

@@ -152,7 +152,7 @@ class Qwen3Attention(nn.Module):
                 not self.rotary_emb.is_neox_style,
                 k_buffer,
                 v_buffer,
-                forward_batch.out_cache_loc,
+                forward_batch.cache_locations(self.attn.layer_id),
                 self.q_norm.variance_epsilon,
             )
         else:
