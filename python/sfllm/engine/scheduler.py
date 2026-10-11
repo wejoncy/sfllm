@@ -1,4 +1,3 @@
-from array import array
 import queue
 import logging
 from collections import deque
@@ -7,7 +6,7 @@ from typing import List, Tuple
 
 from sfllm.engine.sequence import RequestSequence, SequenceStatus
 from sfllm.engine.schedule_batch import ScheduleBatch
-from sfllm.engine.memory_pool import BlockMemoryManager
+from sfllm.engine.cache.pool import KVPool
 from sfllm.spec_decoding.spec_common import SpeculativeAlgorithm
 from sfllm.engine.model_worker import ModelWorker
 from sfllm.engine.scheduler_metrics import RunningMetrics
@@ -16,15 +15,11 @@ from sfllm.engine.scheduler_metrics import RunningMetrics
 logger = logging.getLogger(__name__)
 
 class SchedulerPolicy:
-    def __init__(self, memory_pool: BlockMemoryManager):
+    def __init__(self, memory_pool: KVPool):
         self.memory_pool = memory_pool
         self.total_token_used = 0
         self.cur_token_used = 0
         self.new_token_ratio = 0.7  # reserve 70% for new tokens
-    
-    @property
-    def total_remain_tokens(self) -> int:
-        return self.memory_pool.num_available_blocks() - self.total_token_used*self.new_token_ratio
     
     @property
     def cur_remain_tokens(self) -> int:
@@ -43,9 +38,9 @@ class SchedulerPolicy:
         self.cur_token_used -= token_len
         self.total_token_used -= sequence.max_possible_length
 
-    def can_add_prefill_req(self, sequence: RequestSequence) -> bool:
+    def prefill_required_tokens(self, sequence: RequestSequence) -> float:
         token_len = len(sequence.tokens)
-        return self.total_remain_tokens >= token_len + sequence.sampling_params.max_new_tokens
+        return token_len + sequence.sampling_params.max_new_tokens + self.total_token_used*self.new_token_ratio
 
 class Scheduler:
     def __init__(self, server_args, model_worker: ModelWorker):
@@ -65,8 +60,12 @@ class Scheduler:
         )
         self.mem_pool = model_worker.main_mem_pool
         self.draft_memory_pool = model_worker.draft_mem_pool if self.spec_algorithm.is_none() is False else None
-        self.metrics = RunningMetrics(self.waiting_queue, self.running_queue, self.mem_pool, server_args=server_args)
+        self.metrics = RunningMetrics(
+            self.waiting_queue, self.running_queue, self.mem_pool,
+            server_args=server_args, prefix_reuse=model_worker.cache.prefix,
+        )
         self.scheduler_policy = SchedulerPolicy(self.mem_pool)
+        self.cache = model_worker.cache
 
         # overlap Scheduling
         self.enable_overlap = not server_args.disable_overlap
@@ -77,10 +76,10 @@ class Scheduler:
         self.waiting_queue.put(sequence)
 
     def swap_req_to_waiting(self, sequence: RequestSequence):
-        self.free_sequence_resources(sequence)
+        self._release_sequence(sequence)
         del sequence.out_cache_loc[:]
         del sequence.out_cache_loc_spec[:]
-        sequence.status = "WAITING"
+        sequence.status = SequenceStatus.PENDING
         sequence.new_tokens = sequence.tokens.copy()
         self.waiting_queue.put(sequence)
 
@@ -95,7 +94,6 @@ class Scheduler:
             self.flying_batch.filter()
         # schedule prefill first
         prefill_tokens = 0
-
         while not self.waiting_queue.empty() and self.free_request_indices:
             # check abort requests first
             if self.waiting_queue.queue[0].sequence_id in self.abort_requests:
@@ -114,47 +112,27 @@ class Scheduler:
                 sequence.generated_tokens.clear()
                 failed_sequences.append(sequence)
                 continue
-            if not self.scheduler_policy.can_add_prefill_req(self.waiting_queue.queue[0]):
-                break
             if prefill_tokens + len(tokens) > self.max_prefill_tokens:
                 break
-            assert self.mem_pool.can_alloc(len(tokens))
+            start, end, node = self.cache.select(self.waiting_queue.queue[0])
+            required_tokens = self.scheduler_policy.prefill_required_tokens(self.waiting_queue.queue[0])
+            if not self.cache.can_admit(self.waiting_queue.queue[0], start, node, required_tokens):
+                break
             sequence = self.waiting_queue.get()
             assert sequence.request_index == -1
             sequence.request_index = self.free_request_indices.popleft()
+            self.cache.admit(sequence, start, end, node)
             sequence.status = SequenceStatus.RUNNING
             self.scheduler_policy.add_prefill_req(sequence)
             running_sequences.append(sequence)
-            running_sequences[-1].out_cache_loc.extend(array("q", self.mem_pool.alloc_block(len(tokens))))
-            if not self.spec_algorithm.is_none():
-                running_sequences[-1].out_cache_loc_spec.extend(array("q", self.draft_memory_pool.alloc_block(len(tokens))))
             prefill_tokens += len(tokens)
 
         running_batch = ScheduleBatch(running_sequences, self.mem_pool, self.draft_memory_pool)
+        self.cache.prepare_batch(running_batch)
         if self.enable_overlap:
             if len(running_sequences) == 0:
                 # if there is no prefill request, schedule decode requests
-                for seq in self.flying_batch.sequences:
-                    self.scheduler_policy.add_decode_req(seq)
-                    if not self.spec_algorithm.is_none():
-                        # # we postpone the allocation to prepare input_output, or it breaks the overlap
-                        # # reason: we used list here, in overlap, we have to use cuda tensor to manage the memory
-                        # break
-                        target_verify_len = self.server_args.speculative_num_draft_tokens
-                        best_decode_len = self.server_args.speculative_num_steps+1
-                        assert self.mem_pool.can_alloc(target_verify_len)  # the future token ids are unknown
-                        # we will only reserver a few of them, the rest will be free after verification
-                        seq.out_cache_loc.extend(self.mem_pool.alloc_block(target_verify_len))
-                        # for draft model
-                        total_draft_len = (
-                            best_decode_len
-                            if len(seq.tokens) > seq.last_generated_token_pos
-                            else int(seq.accept_length_cpu[0]) + 1
-                        )
-                        assert self.draft_memory_pool.can_alloc(total_draft_len)
-                        seq.out_cache_loc_spec.extend(self.draft_memory_pool.alloc_block(total_draft_len))
-                    else:
-                        seq.out_cache_loc.extend(self.mem_pool.alloc_block(1))
+                self._allocate_decode(self.flying_batch.sequences)
                 running_batch.merge(self.flying_batch)
                 running_batch.spec_info = self.flying_batch.spec_info
                 self.flying_batch = ScheduleBatch([], self.mem_pool)
@@ -165,27 +143,8 @@ class Scheduler:
                     sequence = self.running_queue.get()
                     self.free_sequence_resources(sequence)
                     continue
-                # TODO: hmm add_decode_req may not be accurate here during speculative decoding enabled
-                self.scheduler_policy.add_decode_req(self.running_queue.queue[0])
                 running_sequences.append(self.running_queue.get())
-                if not self.spec_algorithm.is_none():
-                    target_verify_len = self.server_args.speculative_num_draft_tokens
-                    assert self.mem_pool.can_alloc(target_verify_len)  # the future token ids are unknown
-                    # we will only reserver a few of them, the rest will be free after verification
-                    running_sequences[-1].out_cache_loc.extend(
-                        self.mem_pool.alloc_block(target_verify_len)
-                    )
-                    # for draft model
-                    # accept_length_cpu is -1 for the first decode step, so we won't alloc a block here
-                    total_draft_len = running_sequences[-1].accept_length_cpu[0]+1 # the first run to setup kv cache for last verify tokens
-                    # the "+1" is for the last bonus token
-                    assert self.draft_memory_pool.can_alloc(total_draft_len)
-                    running_sequences[-1].out_cache_loc_spec.extend(
-                        self.draft_memory_pool.alloc_block(total_draft_len)
-                    )
-                else:
-                    assert self.mem_pool.can_alloc(1)  # the future token ids are unknown
-                    running_sequences[-1].out_cache_loc.extend(self.mem_pool.alloc_block(1))
+            self._allocate_decode(running_sequences)
             running_batch.spec_info = self.flying_batch.spec_info
             self.flying_batch = running_batch
         else:
@@ -202,18 +161,33 @@ class Scheduler:
     def get_next_batch_async(self, last_batch: ScheduleBatch) -> Tuple[ScheduleBatch, List[RequestSequence]]:
         return self.get_next_batch(last_batch)
 
-    def free_sequence_resources(self, sequence: RequestSequence):
-        if sequence.sequence_id in self.abort_requests:
-            self.abort_requests.remove(sequence.sequence_id)
+    def _allocate_decode(self, sequences):
+        width = 1 if self.spec_algorithm.is_none() else self.server_args.speculative_num_draft_tokens
+        counts = [[width] * len(sequences)]
+        if not self.spec_algorithm.is_none():
+            counts.append([
+                self.server_args.speculative_num_steps + 1
+                if self.enable_overlap and len(seq.tokens) > seq.last_generated_token_pos
+                else int(seq.accept_length_cpu[0]) + 1
+                for seq in sequences
+            ])
+        self.cache.allocate_batch(sequences, counts)
+        for sequence in sequences:
+            self.scheduler_policy.add_decode_req(sequence)
 
-        if sequence.out_cache_loc:
-            self.mem_pool.free_block(sequence.out_cache_loc)
-            self.scheduler_policy.release_req(sequence)
-        if sequence.out_cache_loc_spec:
-            self.draft_memory_pool.free_block(sequence.out_cache_loc_spec)
+    def free_sequence_resources(self, sequence: RequestSequence):
+        self.abort_requests.discard(sequence.sequence_id)
+        self._release_sequence(sequence)
+
+    def _release_sequence(self, sequence):
+        self.cache.release_request(sequence)
         if sequence.request_index >= 0:
+            self.scheduler_policy.release_req(sequence)
             self.free_request_indices.append(sequence.request_index)
             sequence.request_index = -1
+
+    def complete_batch(self, batch):
+        self.cache.complete_batch(batch)
 
     def is_done(self) -> bool:
         return self.waiting_queue.empty() and self.running_queue.empty()

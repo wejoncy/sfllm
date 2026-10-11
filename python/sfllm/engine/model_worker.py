@@ -1,6 +1,8 @@
 import logging
 from sfllm.engine.schedule_batch import ScheduleBatch,BatchResult
+from sfllm.engine.forward_params import ForwardMode
 from sfllm.engine.model_runner import ModelRunner
+from sfllm.engine.cache.manager import CacheManager
 from sfllm.models.interfaces import HasBatchState
 from sfllm.server_args import ServerArgs
 
@@ -16,7 +18,7 @@ class ModelWorker:
 
         #===init
         self.model_runner.profile_run()
-        self.model_runner.init_memory_pool()
+        self.cache = CacheManager([self.model_runner])
 
     @property
     def main_mem_pool(self):
@@ -29,4 +31,12 @@ class ModelWorker:
         model = self.model_runner.model
         if isinstance(model, HasBatchState):
             model.prepare_batch_state(scheduled_batch)
-        return self.model_runner.forward(scheduled_batch)
+        self.cache.before_forward(scheduled_batch, self.model_runner.prefill_graph_runner)
+        if scheduled_batch.prefix_restores and scheduled_batch.prefill_plan is None:
+            return self.model_runner.forward_from_hidden(
+                scheduled_batch.forward_batch.prefill_output.cached_hidden, scheduled_batch.forward_batch,
+            )
+        result = self.model_runner.forward(scheduled_batch)
+        if scheduled_batch.forward_batch.forward_mode == ForwardMode.EXTEND:
+            self.cache.after_prefill(scheduled_batch)
+        return result

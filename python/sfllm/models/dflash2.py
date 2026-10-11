@@ -22,6 +22,7 @@ except ImportError:
 
 from sfllm.engine.forward_params import ForwardBatch
 from sfllm.kernels.dflash2 import dflash2_selector_greedy_walk
+from sfllm.kernels.kv_cache import write_context_kv
 from sfllm.layers.layernorm import RMSNorm
 from sfllm.layers.linear import ReplicatedLinear
 from sfllm.layers.quantization.fp8 import Fp8Config, Fp8LinearMethod
@@ -516,10 +517,10 @@ class DFlash2DraftModel(nn.Module):
             context.shape[0], len(self.layers), 2 * attention.num_kv_heads,
             attention.head_dim,
         )
-        torch.ops.sfkernels.kv_norm_rope_and_cache(
+        write_context_kv(
             raw_kv, self._kv_norm_weights, attention.rotary_emb.cos_sin_cache,
             positions, not attention.rotary_emb.is_neox_style,
-            kv_buffers[0], kv_buffers[1], cache_locs,
+            kv_buffers, cache_locs,
             attention.k_norm.variance_epsilon,
         )
 

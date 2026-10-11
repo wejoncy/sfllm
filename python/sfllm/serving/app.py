@@ -196,19 +196,11 @@ def create_app(server_args):
     @app.get("/server_info")
     @app.get("/get_server_info")
     async def get_server_info():
-        tokens, decode_steps = await app.state.inference_worker.request_control(
+        metrics = await app.state.inference_worker.request_control(
             ControlRequest.GET_METRICS
         )
-        internal_states = [{
-            "cum_spec_accept_tokens": tokens,
-            "cum_forward_ct": decode_steps,
-            "avg_spec_accept_length": (
-                tokens / decode_steps
-                if server_args.speculative_algorithm and decode_steps else None
-            ),
-        }]
         return {
-            "internal_states": internal_states,
+            "internal_states": [metrics],
             "version": __version__,
             "max_running_requests": server_args.max_running_requests,
         }

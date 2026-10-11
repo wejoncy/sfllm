@@ -37,6 +37,8 @@ def _split_l2norm_qkv_gates_kernel(
     head_k_dim: gl.constexpr, head_v_dim: gl.constexpr,
     kernel_width: gl.constexpr, block_t: gl.constexpr,
     block_k: gl.constexpr, log_g: gl.constexpr,
+    initial_conv=None,
+    source_indices=None,
 ):
     # Coalesce convolution loads and state writes along the head dimension.
     layout: gl.constexpr = gl.BlockedLayout([1, 4], [1, 32], [4, 1], [1, 0])
@@ -69,10 +71,23 @@ def _split_l2norm_qkv_gates_kernel(
             state_tap = tap_start + gl.arange(0, block_t, layout=gl.SliceLayout(1, layout))
             state_token = state_seq_end - kernel_width + 1 + state_tap
             state_mask = (state_tap[:, None] < kernel_width - 1) & (d[None, :] < dim) & (state_slot >= 0)
+            input_token = state_token
+            if source_indices is not None:
+                input_token = gl.load(source_indices + state_token,
+                    (state_tap < kernel_width - 1) & (state_token >= state_seq_start), other=0)
             state_x = gl.load(
-                mixed_qkv + state_token[:, None] * stride_token + input_columns[None, :] * stride_dim,
+                mixed_qkv + input_token[:, None] * stride_token + input_columns[None, :] * stride_dim,
                 mask=state_mask & (state_token[:, None] >= state_seq_start), other=0,
             )
+            if initial_conv is not None:
+                old_tap = state_token - state_seq_start + kernel_width - 1
+                old_x = gl.load(
+                    initial_conv + seq * stride_state + input_columns[None, :] * (kernel_width - 1)
+                    + old_tap[:, None],
+                    state_mask & (state_token[:, None] < state_seq_start) & (old_tap[:, None] >= 0), other=0,
+                )
+                state_x = gl.where(state_token[:, None] < state_seq_start, old_x, state_x)
+                state_mask &= state_seq_end > state_seq_start
             gl.store(
                 conv_states + state_slot * stride_state + input_columns[None, :] * (kernel_width - 1)
                 + state_tap[:, None], state_x, mask=state_mask,
@@ -90,20 +105,45 @@ def _split_l2norm_qkv_gates_kernel(
             lo = gl.where(token >= start, mid, lo)
             remaining -= half
         seq_start = gl.load(query_start_loc + lo, mask=token_mask, other=0)
+        if initial_conv is not None:
+            # Only tiles touching a sequence start need the previous conv taps.
+            needs_initial = gl.sum(
+                (token < seq_start + kernel_width - 1) & token_mask, 0,
+            ) > 0
 
         mask = token_mask[:, None] & (d[None, :] < dim)
         value = gl.full(mask.shape, 0.0, gl.float32, layout)
+        # Historical taps precede current-input taps; preserve their FMA order
+        # without keeping both input selections live through every convolution tap.
+        if initial_conv is not None:
+            if needs_initial:
+                for tap in gl.static_range(kernel_width - 1):
+                    source_token = token + tap - kernel_width + 1
+                    old_tap = source_token - seq_start + kernel_width - 1
+                    old_x = gl.load(
+                        initial_conv + lo[:, None] * stride_state
+                        + input_columns[None, :] * (kernel_width - 1) + old_tap[:, None],
+                        mask & (source_token[:, None] < seq_start[:, None])
+                        & (old_tap[:, None] >= 0), other=0,
+                    ).to(gl.float32)
+                    weight = gl.load(conv_weight + input_columns * kernel_width + tap,
+                                     d < dim, other=0).to(gl.float32)
+                    value = gl.fma(old_x, weight[None, :], value)
         for tap in gl.static_range(kernel_width):
             source_token = token + tap - kernel_width + 1
+            input_token = source_token
+            if source_indices is not None:
+                input_token = gl.load(source_indices + source_token,
+                    token_mask & (source_token >= seq_start), other=0)
             x = gl.load(
-                mixed_qkv + source_token[:, None] * stride_token + input_columns[None, :] * stride_dim,
+                mixed_qkv + input_token[:, None] * stride_token + input_columns[None, :] * stride_dim,
                 mask=mask & (source_token[:, None] >= seq_start[:, None]), other=0,
             ).to(gl.float32)
             weight = gl.load(
                 conv_weight + input_columns * kernel_width + tap,
                 mask=d < dim, other=0,
             ).to(gl.float32)
-            value = gl.fma(x, weight[None, :], value)
+            value = gl.fma(x.to(gl.float32), weight[None, :], value)
         value = (value / (1.0 + gl.exp(-value))).to(mixed_qkv.dtype.element_ty).to(gl.float32)
         if head < 2 * num_k_heads:
             value *= gl.rsqrt(gl.sum(value * value, axis=1)[:, None] + 1e-6)
@@ -111,9 +151,12 @@ def _split_l2norm_qkv_gates_kernel(
 
         if head >= 2 * num_k_heads:
             head -= 2 * num_k_heads
-            a_value = gl.load(a + token * stride_a_token + head * stride_a_head,
+            gate_token = token
+            if source_indices is not None:
+                gate_token = gl.load(source_indices + token, token_mask, other=0)
+            a_value = gl.load(a + gate_token * stride_a_token + head * stride_a_head,
                               mask=token_mask, other=0).to(gl.float32)
-            b_value = gl.load(b + token * stride_b_token + head * stride_b_head,
+            b_value = gl.load(b + gate_token * stride_b_token + head * stride_b_head,
                               mask=token_mask, other=0).to(gl.float32)
             decay = gl.load(a_log + head).to(gl.float32)
             bias = gl.load(dt_bias + head).to(gl.float32)
@@ -142,15 +185,22 @@ def split_l2norm_qkv_gates(
     query_start_loc: torch.Tensor,
     state_indices: torch.Tensor,
     log_g: bool = False,
+    initial_conv: torch.Tensor = None,
+    source_indices: torch.Tensor = None,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """Fuse packed prefill convolution, QK normalization and GDN gates."""
-    num_tokens = mixed_qkv.shape[0]
+    num_tokens = mixed_qkv.shape[0] if source_indices is None else source_indices.numel()
     q = mixed_qkv.new_empty((num_tokens, num_k_heads, head_k_dim))
     k = torch.empty_like(q)
     v = mixed_qkv.new_empty((num_tokens, num_v_heads, head_v_dim))
-    g = torch.empty_like(a, dtype=torch.float32)
-    beta = torch.empty_like(b, dtype=torch.float32)
-    block_t = 32
+    if source_indices is None:
+        g = torch.empty_like(a, dtype=torch.float32)
+        beta = torch.empty_like(b, dtype=torch.float32)
+    else:
+        g = a.new_empty((num_tokens, num_v_heads), dtype=torch.float32)
+        beta = b.new_empty((num_tokens, num_v_heads), dtype=torch.float32)
+    # History operands need smaller tiles to avoid register-limited occupancy.
+    block_t = 16 if initial_conv is not None else 32
     grid = (2 * num_k_heads + num_v_heads, triton.cdiv(num_tokens, block_t) + query_start_loc.shape[0] - 1)
     _split_l2norm_qkv_gates_kernel[grid](
         mixed_qkv,
@@ -178,13 +228,18 @@ def split_l2norm_qkv_gates(
         block_t=block_t,
         block_k=triton.next_power_of_2(max(head_k_dim, head_v_dim)),
         log_g=log_g,
+        initial_conv=initial_conv,
+        source_indices=source_indices,
         num_warps=4,
         num_stages=3,
     )
     return q, k, v, g, beta
 
 
-@triton.jit
+@triton.jit(
+    do_not_specialize=["num_state_slots"],
+    do_not_specialize_on_alignment=["num_state_slots"],
+)
 def _scatter_recurrent_state_kernel(
     source,
     destination,
@@ -196,14 +251,15 @@ def _scatter_recurrent_state_kernel(
     stride_destination_layer,
     stride_step,
     state_elements: tl.constexpr,
-    num_state_slots: tl.constexpr,
+    num_state_slots,
     block: tl.constexpr,
+    source_indices=None,
 ):
     batch = tl.program_id(0)
     # Speculative state pools can exceed 2^31 elements across layers.
     layer = tl.program_id(2).to(tl.int64)
     offsets = tl.program_id(1) * block + tl.arange(0, block)
-    slot = tl.load(state_indices + batch).to(tl.int64)
+    slot = batch if state_indices is None else tl.load(state_indices + batch).to(tl.int64)
     mask = (offsets < state_elements) & (slot >= 0) & (slot < num_state_slots)
     source += layer * stride_source_layer
     destination += layer * stride_destination_layer
@@ -211,9 +267,14 @@ def _scatter_recurrent_state_kernel(
         step = tl.load(accepted_steps + batch)
         source += step * stride_step
         mask &= step >= 0
+    source_slot = batch
+    source_mask = mask
+    if source_indices is not None:
+        source_slot = tl.load(source_indices + batch).to(tl.int64)
+        source_mask &= source_slot >= 0
     value = tl.load(
-        source + batch * stride_source + offsets,
-        mask=mask,
+        source + source_slot * stride_source + offsets,
+        mask=source_mask,
         other=0.0,
     )
     tl.store(
@@ -226,21 +287,26 @@ def _scatter_recurrent_state_kernel(
 def scatter_recurrent_state(
     source: torch.Tensor,
     destination: torch.Tensor,
-    state_indices: torch.Tensor,
+    state_indices: torch.Tensor | None,
     accepted_steps: torch.Tensor = None,
+    *,
+    source_indices: torch.Tensor = None,
+    layered: bool = False,
 ) -> None:
     """Scatter [batch, ...] final states into [slot, ...] state rows.
 
     With accepted_steps, source is [layer, batch, step, ...] and destination
     is [layer, slot, ...]. Steps are zero-based: step 0 includes the anchor.
+    With state_indices=None, gather source_indices into consecutive rows.
     """
     if source.numel() == 0:
         return
-    verifying = accepted_steps is not None
+    verifying = accepted_steps is not None or layered
     state_elements = destination[0, 0].numel() if verifying else source[0].numel()
     block = 1024
     _scatter_recurrent_state_kernel[
-        (state_indices.shape[0], triton.cdiv(state_elements, block),
+        ((state_indices if state_indices is not None else source_indices).shape[0],
+         triton.cdiv(state_elements, block),
          source.shape[0] if verifying else 1)
     ](
         source,
@@ -251,12 +317,122 @@ def scatter_recurrent_state(
         destination.stride(1 if verifying else 0),
         source.stride(0) if verifying else 0,
         destination.stride(0) if verifying else 0,
-        source.stride(2) if verifying else 0,
+        source.stride(2) if accepted_steps is not None else 0,
         state_elements=state_elements,
         num_state_slots=destination.shape[1 if verifying else 0],
         block=block,
+        source_indices=source_indices,
         num_warps=4,
     )
+
+
+@triton.jit
+def _gather_gdn_initial_states_kernel(
+    ssm, conv, ssm_slots, conv_slots, initial_ssm, initial_conv,
+    ssm_stride, conv_stride,
+    ssm_elements: tl.constexpr, conv_elements: tl.constexpr, block: tl.constexpr,
+):
+    row, tile = tl.program_id(0), tl.program_id(1)
+    offsets = tl.arange(0, block)
+    if tile < tl.cdiv(ssm_elements, block):
+        offset = tile * block + offsets
+        slot = tl.load(ssm_slots + row).to(tl.int64)
+        value = tl.load(ssm + slot * ssm_stride + offset,
+                        (slot >= 0) & (offset < ssm_elements), other=0)
+        tl.store(initial_ssm + row * ssm_elements + offset, value, offset < ssm_elements)
+    else:
+        offset = (tile - tl.cdiv(ssm_elements, block)) * block + offsets
+        slot = tl.load(conv_slots + row).to(tl.int64)
+        conv_value = tl.load(conv + slot * conv_stride + offset,
+                        (slot >= 0) & (offset < conv_elements), other=0)
+        tl.store(initial_conv + row * conv_elements + offset, conv_value, offset < conv_elements)
+
+
+def _gather_gdn_initial_states(states, slots):
+    """Pack immutable SSM/conv history in batch order with one transfer."""
+    ssm, conv = states
+    if slots is None:
+        return ssm.float(), conv
+    count = slots[0].numel()
+    initial_ssm = ssm.new_empty((count, *ssm.shape[1:]), dtype=torch.float32)
+    initial_conv = conv.new_empty((count, *conv.shape[1:]))
+    ssm_elements, conv_elements = ssm[0].numel(), conv[0].numel()
+    block = 1024
+    _gather_gdn_initial_states_kernel[
+        (count, triton.cdiv(ssm_elements, block) + triton.cdiv(conv_elements, block))
+    ](
+        ssm, conv, *slots, initial_ssm, initial_conv, ssm.stride(0), conv.stride(0),
+        ssm_elements, conv_elements, block,
+    )
+    return initial_ssm, initial_conv
+
+
+@triton.jit(
+    do_not_specialize=["num_requests", "num_states", "num_outputs"],
+    do_not_specialize_on_alignment=["num_requests", "num_states", "num_outputs"],
+)
+def _finish_gdn_prefill_kernel(
+    states, conv, live_states, live_conv, live_slots, conv_slots,
+    checkpoint_states, checkpoint_conv, checkpoint_slots, query_start_loc,
+    output, result, owners, num_requests, num_states, num_outputs,
+    state_elements: tl.constexpr, conv_elements: tl.constexpr,
+    output_elements: tl.constexpr, block: tl.constexpr,
+):
+    """Commit contiguous SSM/conv rows and select shared output rows once."""
+    tile = tl.program_id(0)
+    ssm_blocks = tl.cdiv(state_elements, block)
+    state_blocks = ssm_blocks + tl.cdiv(conv_elements, block)
+    output_start = num_states * state_blocks
+    offsets = tl.arange(0, block)
+    if tile < output_start:
+        row = tile // state_blocks
+        state_tile = tile % state_blocks
+        for is_conv in tl.static_range(2):
+            if (state_tile >= ssm_blocks) == is_conv:
+                if is_conv:
+                    source, destination, indices = conv, live_conv, conv_slots
+                    checkpoint = checkpoint_conv
+                    elements = conv_elements
+                    offset = (state_tile - ssm_blocks) * block + offsets
+                else:
+                    source, destination, indices = states, live_states, live_slots
+                    checkpoint = checkpoint_states
+                    elements = state_elements
+                    offset = state_tile * block + offsets
+                slot = tl.load(indices + row, row < num_requests, other=-1).to(tl.int64)
+                if checkpoint_slots is not None:
+                    if row >= num_requests:
+                        destination = checkpoint
+                        slot = tl.load(checkpoint_slots + row - num_requests).to(tl.int64)
+                valid = (offset < elements) & (slot >= 0)
+                if is_conv and query_start_loc is not None:
+                    valid &= tl.load(query_start_loc + row + 1) > tl.load(query_start_loc + row)
+                value = tl.load(source + row * elements + offset, valid, other=0)
+                tl.store(destination + slot * elements + offset, value, valid)
+    elif owners is not None:
+        offset = (tile - output_start) * block + offsets
+        valid = offset < num_outputs * output_elements
+        owner = tl.load(owners + offset // output_elements, valid, other=0).to(tl.int64)
+        output_value = tl.load(output + owner * output_elements + offset % output_elements, valid, other=0)
+        tl.store(result + offset, output_value, valid)
+
+
+def _finish_gdn_prefill(states, live_states, live_slots, output, plan, checkpoint_states, use_initial_state):
+    owners = plan.owners if isinstance(plan.owners, torch.Tensor) else None
+    result = output.new_empty((owners.numel(), *output.shape[1:])) if owners is not None else output[plan.owners]
+    ssm, conv = states
+    state_elements, conv_elements, output_elements = ssm[0].numel(), conv[0].numel(), output[0].numel()
+    block = 1024
+    blocks = ssm.shape[0] * (triton.cdiv(state_elements, block) + triton.cdiv(conv_elements, block))
+    if owners is not None:
+        blocks += triton.cdiv(result.numel(), block)
+    _finish_gdn_prefill_kernel[(blocks,)](
+        *states, *live_states, *live_slots, *checkpoint_states,
+        plan.internal_slots if plan.internal_slots.numel() else None,
+        plan.indptr if use_initial_state else None, output, result, owners, live_slots[0].numel(), ssm.shape[0], result.shape[0],
+        state_elements, conv_elements, output_elements, block,
+    )
+    return result
 
 
 @triton.jit(
@@ -855,29 +1031,27 @@ def packed_gdn_prefill(
     v: torch.Tensor,
     log_g: torch.Tensor,
     beta: torch.Tensor,
-    states: torch.Tensor,
-    state_indices: torch.Tensor,
     cu_seqlens: torch.Tensor,
-) -> torch.Tensor:
-    """FLA chunked prefill from zero state; gates are natural logarithms.
+    initial_state: torch.Tensor = None,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """FLA chunked prefill with optional initial state; gates are natural logarithms.
 
-    Intermediates and the state pool both use V-first layout.
+    Returns output and FP32 final state in V-first layout; the caller commits it.
     cu_seqlens must be immutable for the forward; FLA caches its chunk indices.
     """
     _, output, _, final_state, _, _ = chunk_gated_delta_rule_fwd(
         q=q.unsqueeze(0), k=k.unsqueeze(0), v=v.unsqueeze(0),
         g=log_g.unsqueeze(0), beta=beta.unsqueeze(0), scale=q.shape[-1] ** -0.5,
-        initial_state=None, output_final_state=True,
+        initial_state=initial_state, output_final_state=True,
         state_v_first=True, cu_seqlens=cu_seqlens,
     )
-    scatter_recurrent_state(final_state, states, state_indices)
-    return output.squeeze(0)
+    return output.squeeze(0), final_state
 
 
 class GatedDeltaNetBackend:
     """Fused GDN execution over model-owned recurrent state buffers."""
 
-    def __init__(self, prefill_backend: str, decode_backend: str):
+    def __init__(self, prefill_backend: str, decode_backend: str, *, use_initial_state: bool = False):
         supported = {"flashinfer", "triton"}
         if prefill_backend not in supported or decode_backend not in supported:
             raise ValueError("GDN backends must be one of: flashinfer, triton")
@@ -888,6 +1062,10 @@ class GatedDeltaNetBackend:
             )
         self.prefill_backend = prefill_backend
         self.decode_backend = decode_backend
+        self.use_initial_state = use_initial_state
+        self.prefill_plan = None
+        self.prefill_initial_states = None
+        self.checkpoint_states = None
 
     @staticmethod
     def prepare_verify(forward_batch) -> None:
@@ -922,6 +1100,29 @@ class GatedDeltaNetBackend:
             and mixed_qkv.dtype in (torch.float16, torch.bfloat16)
         ):
             raise ValueError("FlashInfer GDN prefill requires K=V=128, FP16/BF16 inputs and FP32/BF16 states.")
+        plan = self.prefill_plan
+        initial_ssm = initial_conv = None
+        if self.use_initial_state:
+            if self.prefill_initial_states is not None:
+                ssm, conv, slots = self.prefill_initial_states
+                initial_ssm, initial_conv = _gather_gdn_initial_states(
+                    (ssm, conv), (slots, slots) if slots is not None else None,
+                )
+            else:
+                slots = (ssm_state_indices if ssm_state_indices is not None else state_indices,
+                         state_indices)
+                if plan is not None:
+                    slots = tuple(indices[plan.rows] for indices in slots)
+                initial_ssm, initial_conv = _gather_gdn_initial_states((ssm_states, conv_states), slots)
+        if plan is not None:
+            original_states = (ssm_states, conv_states)
+            original_slots = (ssm_state_indices if ssm_state_indices is not None else state_indices,
+                              state_indices)
+            conv_states = conv_states.new_empty((plan.dense_rows.numel(), *conv_states.shape[1:]))
+            state_indices = plan.dense_rows
+            ssm_state_indices = None
+            query_start_loc = query_start_loc_i64 = plan.indptr
+
         q, k, v, g, beta = split_l2norm_qkv_gates(
             mixed_qkv,
             a,
@@ -932,45 +1133,51 @@ class GatedDeltaNetBackend:
             num_v_heads,
             head_k_dim,
             head_v_dim,
-            conv_weight=conv_weight, conv_states=conv_states,
-            query_start_loc=query_start_loc, state_indices=state_indices,
+            conv_weight=conv_weight,
+            conv_states=conv_states,
+            query_start_loc=query_start_loc,
+            state_indices=state_indices,
             log_g=not use_flashinfer,
+            initial_conv=initial_conv,
+            source_indices=plan.expanded if plan is not None else None,
         )
         if ssm_state_indices is not None:
             state_indices = ssm_state_indices
-
         if not use_flashinfer:
-            return packed_gdn_prefill(
+            output, output_state = packed_gdn_prefill(
                 q,
                 k,
                 v,
                 g,
                 beta,
-                ssm_states,
-                state_indices,
                 query_start_loc_i64,
+                initial_state=initial_ssm,
             )
 
-        # SFLLM has no prefix cache or chunked prefill, so EXTEND starts from
-        # zero state.  Only the final state is materialized for later decode.
-        # CP accumulates in FP32; the final scatter rounds to the cache dtype.
-        output_state = torch.empty(
-            (state_indices.shape[0], *ssm_states.shape[1:]),
-            dtype=torch.float32, device=ssm_states.device,
-        )
-        output, output_state = chunk_gated_delta_rule(
-            q=q,
-            k=k,
-            v=v,
-            g=g,
-            beta=beta,
-            initial_state=None,
-            output_final_state=True,
-            cu_seqlens=query_start_loc_i64,
-            use_qk_l2norm_in_kernel=False,
-            output_state=output_state,
-            use_cp=True,
-        )
+        else:
+            # CP accumulates in FP32; the final scatter rounds to the cache dtype.
+            output_state = torch.empty(
+                (state_indices.shape[0], *ssm_states.shape[1:]),
+                dtype=torch.float32, device=ssm_states.device,
+            )
+            output, output_state = chunk_gated_delta_rule(
+                q=q,
+                k=k,
+                v=v,
+                g=g,
+                beta=beta,
+                initial_state=initial_ssm,
+                output_final_state=True,
+                cu_seqlens=query_start_loc_i64,
+                use_qk_l2norm_in_kernel=False,
+                output_state=output_state,
+                use_cp=True,
+            )
+        if plan is not None:
+            return _finish_gdn_prefill(
+                (output_state, conv_states), original_states, original_slots, output, plan,
+                self.checkpoint_states if plan.internal_slots.numel() else (None, None), self.use_initial_state,
+            )
         scatter_recurrent_state(output_state, ssm_states, state_indices)
         return output
 

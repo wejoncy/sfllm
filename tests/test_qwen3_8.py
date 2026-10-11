@@ -1,6 +1,7 @@
 import asyncio
 from pathlib import Path
 from queue import Queue
+from threading import Thread
 from types import SimpleNamespace
 
 import httpx
@@ -146,29 +147,29 @@ def test_historical_reasoning_is_preserved(manager, field, preserve):
 def test_template_error_does_not_stop_tokenizer_worker(manager):
     invalid = submit_chat(reasoning_effort="invalid")
     valid = submit_chat(chat_template_kwargs={"enable_thinking": False})
-    requests = iter((invalid, valid))
-
-    def next_request():
-        try:
-            return next(requests)
-        except StopIteration:
-            manager.running = False
-            return AbortSequence(-1)
-
     manager.load_tokenizer = lambda: None
+    manager.server_args = SimpleNamespace(tokenizer_worker_num=4)
     manager.eos_token_ids = frozenset({248044, 248046})
     manager.decode_states = {}
-    manager.tokenizer_input_queue = SimpleNamespace(get=next_request)
+    manager.tokenizer_input_queue = Queue()
     manager.tokenizer_output_queue = Queue()
     manager.inferengine_input_queue = Queue()
-    TokenizerManager.tokenizer_event_run_loop(manager)
-
-    error = manager.tokenizer_output_queue.get_nowait()[invalid.sequence_id]
-    assert error["status"] == SequenceStatus.FAILED
-    assert "Unexpected reasoning effort" in error["error"]
-    assert manager.inferengine_input_queue.get_nowait() is valid
-    assert valid.sampling_params.stop_token_ids == {248044, 248046}
-    assert valid.tokens == manager.encode_chat(valid)
+    worker = Thread(target=TokenizerManager.tokenizer_event_run_loop, args=(manager,))
+    worker.start()
+    try:
+        manager.tokenizer_input_queue.put(invalid)
+        manager.tokenizer_input_queue.put(valid)
+        error = manager.tokenizer_output_queue.get(timeout=5)[invalid.sequence_id]
+        assert error["status"] == SequenceStatus.FAILED
+        assert "Unexpected reasoning effort" in error["error"]
+        assert manager.inferengine_input_queue.get(timeout=5) is valid
+        assert valid.sampling_params.stop_token_ids == {248044, 248046}
+        assert valid.tokens == manager.encode_chat(valid)
+    finally:
+        manager.running = False
+        manager.tokenizer_input_queue.put(AbortSequence(-1))
+        worker.join(timeout=5)
+        assert not worker.is_alive()
 
 
 def test_template_error_returns_http_400():

@@ -60,7 +60,8 @@ def split_lastdim_kernel(
     batch_size,
     max_tokens,
     BLOCK_SIZE: tl.constexpr,
-    BLOCK_BATCH: tl.constexpr
+    BLOCK_BATCH: tl.constexpr,
+    output_indptr_ptr=None,
 ):
     pid = tl.program_id(0)
     
@@ -70,6 +71,9 @@ def split_lastdim_kernel(
     lens = tl.load(accept_length_ptr + offs_batch, mask=mask_batch, other=0)
     offsets = tl.cumsum(lens, 0) - lens
     src_start = tl.sum(tl.where(offs_batch == pid, offsets, 0))
+    if output_indptr_ptr is not None and pid == 0:
+        tl.store(output_indptr_ptr + offs_batch, offsets, mask_batch)
+        tl.store(output_indptr_ptr + batch_size, tl.sum(lens))
 
     # 2. Copy and Fill
     cur_len = tl.load(accept_length_ptr + pid)
@@ -96,7 +100,9 @@ def split_lastdim_kernel(
 def split_lastdim_async(
     next_token_ids: torch.Tensor,
     accept_length: torch.Tensor,
-    output_buffers: Optional[torch.Tensor] = None
+    output_buffers: Optional[torch.Tensor] = None,
+    *,
+    output_indptr: torch.Tensor = None,
 ) -> List[torch.Tensor]:
     device = next_token_ids.device
     batch_size = accept_length.shape[0]
@@ -125,7 +131,8 @@ def split_lastdim_async(
         batch_size,
         max_tokens,
         BLOCK_SIZE=BLOCK_SIZE,
-        BLOCK_BATCH=BLOCK_BATCH
+        BLOCK_BATCH=BLOCK_BATCH,
+        output_indptr_ptr=output_indptr,
     )
     
     if output_buffers is not None:
@@ -480,7 +487,8 @@ def compact_accepted_tokens_kernel(
     total_size,
     fill_value,
     BLOCK_SIZE: tl.constexpr,
-    BLOCK_BATCH: tl.constexpr
+    BLOCK_BATCH: tl.constexpr,
+    output_indptr_ptr=None,
 ):
     pid = tl.program_id(0)
     num_pids = tl.num_programs(0)
@@ -491,6 +499,9 @@ def compact_accepted_tokens_kernel(
     lens = tl.load(accept_len_ptr + offs_batch, mask=mask_batch, other=0)
     offsets = tl.cumsum(lens, 0) - lens
     total_accepted = tl.sum(lens)
+    if output_indptr_ptr is not None and pid == 0:
+        tl.store(output_indptr_ptr + offs_batch, offsets, mask_batch)
+        tl.store(output_indptr_ptr + batch_size, total_accepted)
 
     # 2. Copy Logic
     if pid < batch_size:
@@ -532,8 +543,12 @@ def compact_accepted_tokens(
     x: torch.Tensor,
     kv_indptr: torch.Tensor,
     accept_length: torch.Tensor,
-    fill_value: int = -1
+    fill_value: int = -1,
+    *,
+    output_indptr: torch.Tensor = None,
 ) -> torch.Tensor:
+    if output_indptr is not None and output_indptr.data_ptr() == kv_indptr.data_ptr():
+        raise ValueError("Compaction output_indptr must not alias the source boundaries")
     batch_size = kv_indptr.shape[0] - 1
     total_size = x.numel()
     
@@ -560,7 +575,8 @@ def compact_accepted_tokens(
         total_size,
         fill_value,
         BLOCK_SIZE=BLOCK_SIZE,
-        BLOCK_BATCH=BLOCK_BATCH
+        BLOCK_BATCH=BLOCK_BATCH,
+        output_indptr_ptr=output_indptr,
     )
     return output
 

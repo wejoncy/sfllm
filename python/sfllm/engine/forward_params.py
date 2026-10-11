@@ -20,6 +20,24 @@ class ForwardMode(IntEnum):
     # No sequence to forward. For data parallel attention, some workers will be IDLE if no sequence are allocated.
     IDLE = auto()
 
+class PrefillOutputPlan:
+    """Hidden-row selection and checkpoint writes for one prefill.
+
+    Hidden-row indices address computed rows followed by cached_hidden rows.
+    output_indices=None selects request ends; checkpoint_indices=None saves
+    those same rows. output_mapping restores request order after the LM head.
+    Buffers are borrowed from their owners, including during graph capture.
+    """
+
+    def __init__(self, *, output_indices=None, output_mapping=None,
+                 cached_hidden=None, checkpoint_indices=None, checkpoint_buffer=None):
+        self.output_indices = output_indices
+        self.output_mapping = output_mapping
+        self.cached_hidden = cached_hidden
+        self.checkpoint_indices = checkpoint_indices
+        self.checkpoint_buffer = checkpoint_buffer
+
+
 class ForwardBatch:
     def __init__(self, mem_pool):
         # need to inilialize during prepare inputs
@@ -35,6 +53,7 @@ class ForwardBatch:
         self.mask_indptr = None
         # Optional caller-owned storage shared by mutually exclusive CUDA graphs.
         self.logits_output_buffer = None
+        self.prefill_output: PrefillOutputPlan | None = None
         self.max_kv_splits = 16
         self.sampling_batch_info = None
         self.padded_token = 0
@@ -42,6 +61,7 @@ class ForwardBatch:
         self.position_ids_extend = None
 
         self.spec_info:SpecInput = None
+        self.cache_groups = None
 
         self.past_key_values = mem_pool.kv_buffers if mem_pool is not None else None
         self.forward_mode:ForwardMode = ForwardMode.EXTEND
@@ -62,3 +82,8 @@ class ForwardBatch:
         past_key[self.out_cache_loc, ...] = key_states
         past_value[self.out_cache_loc, ...] = value_states
         return key_states, value_states
+
+    def cache_locations(self, layer_id):
+        if self.cache_groups is None:
+            return self.out_cache_loc
+        return self.cache_groups[layer_id].out_cache_loc

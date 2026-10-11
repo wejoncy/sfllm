@@ -73,6 +73,7 @@ class InferenceEngine:
             raise RuntimeError("overlap output must be staged in host memory")
         if token_ids_tensor.device.type != "cpu":
             token_ids_tensor = token_ids_tensor.to("cpu")
+        self.scheduler.complete_batch(schedule_batch)
         token_ids = memoryview(token_ids_tensor.numpy())
         if self.is_spec_algo:
             # TODO parallel decoding with speculative decoding, multitoken would be decoded in a single step
@@ -153,17 +154,10 @@ class InferenceEngine:
         if (not scheduler.is_done()
                 or len(scheduler.free_request_indices) != scheduler.max_running_req):
             return False
-        pools = ((scheduler.mem_pool, scheduler.draft_memory_pool)
-                 if self.is_spec_algo else (scheduler.mem_pool,))
-        if any(pool.used_block_ids for pool in pools):
-            return False
         torch.cuda.synchronize()
-        for pool in pools:
-            pool.sort_free_blocks()
+        scheduler.cache.clear()
         scheduler.flying_batch = ScheduleBatch([], scheduler.mem_pool, scheduler.draft_memory_pool)
         scheduler.abort_requests.clear()
-        scheduler.scheduler_policy.total_token_used = 0
-        scheduler.scheduler_policy.cur_token_used = 0
         self.decode_states.clear()
         torch.cuda.empty_cache()
         scheduler.metrics.reset()
@@ -194,9 +188,8 @@ class InferenceEngine:
             self.output_batch_queue.put((prompt, self.flush_cache()))
             return
         elif prompt is ControlRequest.GET_METRICS:
-            metrics = self.scheduler.metrics
             self.output_batch_queue.put(
-                (prompt, (metrics.cum_spec_accept_tokens, metrics.cum_forward_ct))
+                (prompt, self.scheduler.metrics.get_metrics())
             )
             return
         else:
@@ -267,6 +260,9 @@ class InferenceEngine:
         import time
         compute_stream = self.model_worker.compute_stream
         scheduler_stream = torch.cuda.Stream(device=device_id)
+        if self.is_spec_algo:
+            with torch.cuda.stream(compute_stream):
+                prefill_hidden_indptr = torch.arange(2, device=device_id)
         def notified():
             if event is not None:
                 return event.is_set()
@@ -313,17 +309,14 @@ class InferenceEngine:
                     if self.is_spec_algo:
                         compute_stream.wait_stream(scheduler_stream)
                     if self.is_spec_algo and cur_batch.forward_batch.is_decode():
-                        accept_length = cur_batch.spec_info.accept_length.clamp(min=0)+1
                         accept_length_raw = cur_batch.spec_info.accept_length+1
+                        accept_length = accept_length_raw.clamp(min=1)
                         draft_indptr = cur_batch.forward_batch_spec.qo_indptr
                         extra_length = draft_indptr[1:] - draft_indptr[:-1] - accept_length
                         cur_batch.position_ids -= extra_length
                         cur_batch.forward_batch.seq_lens -= torch.where(
                             accept_length_raw == 0, 0, extra_length
                         )
-                        seq_mask_len = num_draft_tokens * (cur_batch.forward_batch.seq_lens + num_draft_tokens)
-                        cum_seq_mask_len = torch.cumsum(seq_mask_len, dim=0, dtype=torch.int32)
-                        cur_batch.forward_batch.mask_indptr[1:] = cum_seq_mask_len
                         #####
                         x = cur_batch.forward_batch_spec.kv_indices_mtd
                         # These staging tensors were allocated on scheduler_stream
@@ -331,10 +324,17 @@ class InferenceEngine:
                         # Keep their storage alive through compute-side compaction.
                         x.record_stream(compute_stream)
                         b = cur_batch.forward_batch_spec.kv_indptr
+                        b.record_stream(compute_stream)
                         # x1=x.clone()
-                        cur_batch.forward_batch_spec.kv_indices_mtd = compact_accepted_tokens(x, b, cur_batch.forward_batch.seq_lens)
+                        target_indptr = torch.empty_like(cur_batch.forward_batch.kv_indptr)
+                        cur_batch.forward_batch_spec.kv_indices_mtd = compact_accepted_tokens(
+                            x, b, cur_batch.forward_batch.seq_lens, output_indptr=target_indptr,
+                        )
                         prefix_lens = cur_batch.forward_batch.seq_lens - accept_length
-                        cur_batch.forward_batch_spec.kv_indices = compact_accepted_tokens(x, b, prefix_lens, fill_value=0)
+                        draft_kv_indptr = torch.empty_like(b)
+                        cur_batch.forward_batch_spec.kv_indices = compact_accepted_tokens(
+                            x, b, prefix_lens, fill_value=0, output_indptr=draft_kv_indptr,
+                        )
 
                         # row_ids = torch.arange(x.shape[0], device=device_id)
                         # seg_ids = torch.searchsorted(b, row_ids, right=True) - 1  # [N]
@@ -345,7 +345,7 @@ class InferenceEngine:
                         # x[mask] = -1
                         # x[:] = move_neg1_to_tail(x)
                         # cur_batch.forward_batch_spec.kv_indices_mtd -= extra_length # can't handle it here, may generate_kv_indices_kernel
-                        cur_batch.forward_batch_spec.kv_indptr[1:] = prefix_lens.cumsum(dim=0)
+                        cur_batch.forward_batch_spec.kv_indptr = draft_kv_indptr
                         if cur_batch.spec_info.out_cache_loc is not None:
                             # even we don't know the accept index yet, we can adjust it in GPU async
                             # would it affect when this is in the scheduler stream?
@@ -372,16 +372,25 @@ class InferenceEngine:
                             # cur_batch.forward_batch.kv_indices[:draft_token_steps-len(cur_batch)] = resolve_out_cache_loc
                             # cur_batch.forward_batch.kv_indices[:] = move_neg1_to_tail(cur_batch.forward_batch.kv_indices)
                             # cur_batch.forward_batch.kv_indices = cur_batch.forward_batch.kv_indices[:len(cur_batch)*num_draft_tokens]
-                        cur_batch.forward_batch.kv_indptr[1:] = cur_batch.forward_batch.seq_lens.cumsum(dim=0)
+                        cur_batch.forward_batch.kv_indptr.record_stream(compute_stream)
+                        cur_batch.forward_batch.kv_indptr = target_indptr
+                        # Both indptrs already contain the history/query prefix sums.
+                        torch.add(target_indptr, cur_batch.forward_batch.qo_indptr,
+                                  out=cur_batch.forward_batch.mask_indptr)
+                        cur_batch.forward_batch.mask_indptr.mul_(num_draft_tokens)
 
                         x = cur_batch.forward_batch_spec.position_ids_extend
                         x.record_stream(compute_stream)
                         b = draft_indptr
-                        cur_batch.forward_batch_spec.position_ids_extend = compact_accepted_tokens(x, b, accept_length, fill_value=0)
+                        draft_indptr.record_stream(compute_stream)
+                        accepted_indptr = torch.empty_like(draft_indptr)
+                        cur_batch.forward_batch_spec.position_ids_extend = compact_accepted_tokens(
+                            x, b, accept_length, fill_value=0, output_indptr=accepted_indptr,
+                        )
                         x = cur_batch.forward_batch_spec.out_cache_loc
                         x.record_stream(compute_stream)
                         cur_batch.forward_batch_spec.out_cache_loc = compact_accepted_tokens(x, b, accept_length, fill_value=0)
-                        draft_indptr[1:] = accept_length.cumsum(dim=0, dtype=torch.int32)
+                        cur_batch.forward_batch_spec.qo_indptr = accepted_indptr
                         if cur_batch.spec_info.verified_id.shape[0] != cur_batch.forward_batch_spec.position_ids_extend.shape[0]:
                             token_len = cur_batch.spec_info.verified_id.shape[0]
                             cur_batch.forward_batch_spec.position_ids_extend = cur_batch.forward_batch_spec.position_ids_extend[:token_len]
@@ -410,7 +419,13 @@ class InferenceEngine:
                         future_token_out_buffer = spec_future_tokenid_buf[
                             : len(cur_batch)
                         ]
-                        split_lastdim_async(model_output.next_token_ids, update_accept_length, future_token_out_buffer)
+                        cum_update_accept_length = (torch.empty(
+                            len(cur_batch) + 1, dtype=torch.int64, device=device_id,
+                        ) if cur_batch.forward_batch.is_decode() else None)
+                        split_lastdim_async(
+                            model_output.next_token_ids, update_accept_length, future_token_out_buffer,
+                            output_indptr=cum_update_accept_length,
+                        )
                         future_tokenid_bufs[fake_tokenid_indices] = (
                             future_token_out_buffer.view(-1)
                         )
@@ -423,7 +438,6 @@ class InferenceEngine:
 
                         #     # even we don't know the accept index yet, we can adjust it in GPU async
                         #     # would it affect when this is in the scheduler stream?                            
-                        cum_update_accept_length = torch.cat([torch.zeros((1,), dtype=torch.long, device=device_id), update_accept_length.cumsum(dim=0)], dim=0)
                         for idx, seq in enumerate(cur_batch):
                             seq.accept_length = raw_accept_length[idx:idx+1]
                             if cur_batch.forward_batch.is_decode():
@@ -440,7 +454,7 @@ class InferenceEngine:
                             else:
                                 # the first token generated from prefill
                                 seq.verified_id = model_output.spec_info.verified_id[idx:idx+1]
-                                seq.hidden_states = (model_output.spec_info.hidden_states[idx:idx+1], torch.arange(0,2, device=device_id))
+                                seq.hidden_states = (model_output.spec_info.hidden_states[idx:idx+1], prefill_hidden_indptr)
                         # replace the spec_info with cpu version
                         async_spec_info = model_output.spec_info
                         model_output.spec_info = model_output.spec_info.raw_new()

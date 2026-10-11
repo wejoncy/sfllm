@@ -92,6 +92,7 @@ class RequestSequence(RawSequence):
         self.out_cache_loc_spec = array("q")
         self.out_cache_loc_lazy = None  # (CUDA source tensor, CUDA [start, end) row range)
         self.request_index = -1
+        self.prefix_restore = None  # (checkpoint slot, prefix length), owned until batching
         self.stream = stream
         self.messages = messages
         self.chat_template_kwargs = dict(chat_template_kwargs or {})

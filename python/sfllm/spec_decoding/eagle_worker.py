@@ -55,10 +55,8 @@ class EagleWorker(SpeculativeWorker):
 
         # prealloc out_cache_loc for draft propose
         total_tokens = self.server_args.cuda_graph_max_bs * self.topk * (self.speculative_num_steps - 1)
-        token_allocator = self.draft_mem_pool
-        assert token_allocator.can_alloc(total_tokens)
-        out_cache_loc = token_allocator.persist_alloc_block_from_rear(total_tokens)
-        self.prealloc_out_cache_loc_tensor = torch.tensor(out_cache_loc, dtype=torch.long, device="cuda")
+        self.prealloc_out_cache_loc_tensor = self.draft_mem_pool.scratch_locations
+        assert self.prealloc_out_cache_loc_tensor.numel() == total_tokens
 
     
     def profile_run(self):
