@@ -94,8 +94,23 @@ class LogitsProcessor(nn.Module):
         Returns:
             Logits tensor.
         """
+        output = forward_batch.prefill_output
         if forward_batch.forward_mode == ForwardMode.EXTEND:
-            prune_hidden_states = hidden_states[forward_batch.qo_indptr[1:] - 1]
+            if output is None:
+                prune_hidden_states = hidden_states[forward_batch.qo_indptr[1:] - 1]
+            else:
+                if output.cached_hidden is not None:
+                    hidden_states = torch.cat((hidden_states, output.cached_hidden))
+                indices = output.output_indices
+                indices = forward_batch.qo_indptr[1:] - 1 if indices is None else indices
+                save_indices = output.checkpoint_indices
+                saved = output.checkpoint_buffer
+                if saved is not None:
+                    checkpoint_indices = indices if save_indices is None else save_indices
+                    saved = saved[:checkpoint_indices.numel()]
+                    torch.index_select(hidden_states, 0, checkpoint_indices, out=saved)
+                prune_hidden_states = (saved if saved is not None and save_indices is None
+                                       else hidden_states[indices])
         else:
             prune_hidden_states = hidden_states
         output_buffer = forward_batch.logits_output_buffer
@@ -106,4 +121,6 @@ class LogitsProcessor(nn.Module):
             lm_head,
             output_buffer=output_buffer,
         )
+        if output is not None and output.output_mapping is not None:
+            logits = logits[output.output_mapping]
         return logits, aux_hidden_states

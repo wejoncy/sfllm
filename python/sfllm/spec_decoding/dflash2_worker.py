@@ -133,13 +133,8 @@ class DFlash2Worker(SpeculativeWorker):
         protocol_width = self.draft_model_runner.hidden_states_buffer.shape[-1]
         device = torch.device("cuda", int(self.target_model_runner.device_id))
 
-        scratch_count = max_bs * block
-        assert self.draft_mem_pool.can_alloc(scratch_count)
-        self._draft_scratch_locs = torch.tensor(
-            self.draft_mem_pool.persist_alloc_block_from_rear(scratch_count),
-            dtype=torch.int64,
-            device=device,
-        )
+        self._draft_scratch_locs = self.draft_mem_pool.scratch_locations
+        assert self._draft_scratch_locs.numel() == max_bs * block
         self._block_ids = torch.empty((max_bs, block), dtype=torch.int64, device=device)
         self._positions = torch.empty_like(self._block_ids)
         self._proposals = torch.empty(
@@ -167,6 +162,7 @@ class DFlash2Worker(SpeculativeWorker):
         model = self.target_model_runner.model
         if isinstance(model, HasBatchState):
             model.prepare_batch_state(batch)
+        self.cache.before_forward(batch, self.target_model_runner.prefill_graph_runner)
         if batch.forward_batch.forward_mode == ForwardMode.EXTEND:
             return self._forward_prefill(batch)
         return self.forward_e2e(batch)
@@ -184,15 +180,21 @@ class DFlash2Worker(SpeculativeWorker):
         if not all(sequence.sampling_params.is_greedy for sequence in batch):
             raise ValueError("Block drafts currently support greedy requests only.")
 
-        output = self.target_model_runner.forward(batch)
-        if output.aux_hidden_states is None:
-            raise RuntimeError("Target prefill returned no captured states for the draft.")
-        self.draft_model_runner.model.materialize_target_kv(
-            target_hidden=torch.cat(output.aux_hidden_states, dim=-1),
-            positions=batch.position_ids,
-            cache_locs=batch.forward_batch_spec.out_cache_loc,
-            kv_buffers=(self.draft_mem_pool.k_buffer, self.draft_mem_pool.v_buffer),
-        )
+        if batch.prefix_restores and batch.prefill_plan is None:
+            output = self.target_model_runner.forward_from_hidden(
+                batch.forward_batch.prefill_output.cached_hidden, batch.forward_batch,
+            )
+        else:
+            output = self.target_model_runner.forward(batch)
+            if output.aux_hidden_states is None:
+                raise RuntimeError("Target prefill returned no captured states for the draft.")
+            self.draft_model_runner.model.materialize_target_kv(
+                target_hidden=torch.cat(output.aux_hidden_states, dim=-1),
+                positions=batch.position_ids,
+                cache_locs=batch.forward_batch_spec.out_cache_loc,
+                kv_buffers=self.cache.context_for(self.draft_mem_pool, batch),
+            )
+            self.cache.after_prefill(batch)
 
         spec_info = EagleSpecInput(
             accept_length=torch.full(
@@ -248,7 +250,7 @@ class DFlash2Worker(SpeculativeWorker):
             context=spec_info.hidden_states[:count, :hidden_size],
             positions=batch.forward_batch_spec.position_ids_extend[:count],
             cache_locs=safe_cache_locs,
-            kv_buffers=(self.draft_mem_pool.k_buffer, self.draft_mem_pool.v_buffer),
+            kv_buffers=self.cache.context_for(self.draft_mem_pool, batch, safe_cache_locs),
         )
 
     def proposal(self, batch: ScheduleBatch) -> SpecVerifyInput:

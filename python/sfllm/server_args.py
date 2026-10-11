@@ -13,7 +13,7 @@ class ServerArgs:
     model_path: str
     tokenizer_path: Optional[str] = None
     tokenizer_mode: str = "auto"
-    tokenizer_worker_num: int = 1
+    tokenizer_worker_num: int = 4
     request_timeout_seconds: float = 3600
 
     #dtype and quantization
@@ -25,6 +25,7 @@ class ServerArgs:
     max_context_length: int = 8192
     max_running_requests: Optional[int] = None
     disable_overlap: bool = False
+    enable_prefix_cache: bool = False
     attention_backend: Literal["triton", "fa3"] = "triton"
     moe_runner_backend: Literal["auto", "flashinfer_cutlass", "triton_kernel"] = "auto"
     linear_attn_backend: Literal["triton", "flashinfer"] = "flashinfer"
@@ -64,6 +65,10 @@ class ServerArgs:
         )
         # Model and tokenizer
         parser.add_argument(
+            "--enable-prefix-cache", action="store_true",
+            help="Reuse complete Full/SWA and recurrent-state prefix checkpoints.",
+        )
+        parser.add_argument(
             "--model-path",
             "--model",
             type=str,
@@ -94,7 +99,7 @@ class ServerArgs:
             "--tokenizer-worker-num",
             type=int,
             default=ServerArgs.tokenizer_worker_num,
-            help="The worker num of the tokenizer manager.",
+            help="Prompt encoding threads in the tokenizer process; 1 uses serial encoding.",
         )
         parser.add_argument(
             "--request-timeout-seconds",
@@ -270,6 +275,10 @@ class ServerArgs:
         return cls(**{attr: getattr(args, attr) for attr in attrs})
 
     def __post_init__(self):
+        if self.tokenizer_worker_num < 1:
+            raise ValueError("tokenizer_worker_num must be positive")
+        if self.enable_prefix_cache and self.speculative_algorithm not in (None, 'dflash2', 'dspark'):
+            raise ValueError('Prefix checkpoints currently support base models, DFlash2 and DSpark.')
         if self.speculative_draft_quantization is not None:
             if (self.speculative_draft_quantization != "fp8"
                     or self.speculative_algorithm not in ("dflash2", "dspark")):

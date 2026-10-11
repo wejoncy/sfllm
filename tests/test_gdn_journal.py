@@ -228,16 +228,16 @@ def test_model_verification_and_commit(monkeypatch, dtype, steps, varlen):
     monkeypatch.setattr(qwen, "get_pool_index_layers", lambda _: [])
 
     class Layer(torch.nn.Module):
-        def __init__(self, cfg, layer_id, cache_id, state_id, buffers, *rest):
+        def __init__(self, cfg, layer_id, cache_id, *rest):
             super().__init__()
             self.linear_attn = qwen.Qwen3_5GatedDeltaNet(
-                cfg, buffers[0][state_id], buffers[1][state_id], buffers[2],
+                cfg,
             )
 
         def forward(self, positions, hidden, batch, residual, *args):
             return self.linear_attn(hidden, batch, *args), residual
 
-    monkeypatch.setattr(qwen, "Qwen3_5DecoderLayer", Layer)
+    monkeypatch.setattr(qwen.Qwen3_5Model, "decoder_layer_class", Layer)
     models = []
     for enabled in (False, True):
         monkeypatch.setenv("SFLLM_GDN_JOURNAL", "1" if enabled else "0")
@@ -246,18 +246,19 @@ def test_model_verification_and_commit(monkeypatch, dtype, steps, varlen):
             torch.set_default_dtype(torch.bfloat16)
             with torch.device("cuda"):
                 model = qwen.Qwen3_5Model(config)
+                model.init_batch_state(args)
         finally:
             torch.set_default_dtype(previous_dtype)
         torch.manual_seed(427)
         for param in model.parameters():
             param.data.normal_(0, .1)
         active = enabled and dtype == "float32"
-        assert (model.ssm_journal is not None) == active
-        assert model.ssm_states.shape[1] == 8 * (1 if active else steps + 1) + 1
-        assert model.ssm_states.dtype == getattr(torch, dtype)
+        assert (model.recurrent_state.journal is not None) == active
+        assert model.recurrent_state.ssm.shape[1] == 8 * (1 if active else steps + 1) + 1
+        assert model.recurrent_state.ssm.dtype == getattr(torch, dtype)
         if active:
-            assert all(t.dtype == torch.float32 for t in model.ssm_journal)
-            assert model.ssm_output_indices is None
+            assert all(t.dtype == torch.float32 for t in model.recurrent_state.journal)
+            assert model.recurrent_state.write_slots is None
             assert not any("journal" in key for key in model.state_dict())
         wrapper = qwen.Qwen3_5ForConditionalGeneration.__new__(qwen.Qwen3_5ForConditionalGeneration)
         torch.nn.Module.__init__(wrapper)
@@ -275,13 +276,13 @@ def test_model_verification_and_commit(monkeypatch, dtype, steps, varlen):
         elif mode == ForwardMode.EXTEND:
             indices = torch.tensor([4, 1, 6], device="cuda", dtype=torch.int32)
         for wrapper in models:
-            wrapper.model.state_indices[:3].copy_(indices)
+            wrapper.model.recurrent_state.indices[:3].copy_(indices)
         lengths = ([1, count, max(1, count // 2)]
                    if varlen and mode == ForwardMode.TARGET_VERIFY else [count] * 3)
         cu = torch.tensor([0, *lengths], device="cuda", dtype=torch.int32).cumsum(0)
         batch = SimpleNamespace(forward_mode=mode, max_extend_len=count, qo_indptr=cu)
         inputs = torch.randint(config.vocab_size, (sum(lengths),), device="cuda")
-        before = candidate.model.ssm_states.clone()
+        before = candidate.model.recurrent_state.ssm.clone()
         if varlen and mode == ForwardMode.TARGET_VERIFY:
             # This unit test calls the model directly, without ModelRunner.
             qwen.GatedDeltaNetBackend.prepare_verify(batch)
@@ -294,21 +295,21 @@ def test_model_verification_and_commit(monkeypatch, dtype, steps, varlen):
         assert bool(torch.isfinite(outputs[1]).all())
         if mode == ForwardMode.TARGET_VERIFY:
             if dtype == "float32":
-                assert_bits_equal(candidate.model.ssm_states, before)
+                assert_bits_equal(candidate.model.recurrent_state.ssm, before)
             accepted = torch.tensor([0, count - 1, -1], device="cuda", dtype=torch.int32)
             for wrapper in models:
                 wrapper.commit_speculative_state(accepted)
         valid = indices[indices > 0].long()
-        baseline_slots = baseline.model.ssm_current_slots[valid].long()
+        baseline_slots = baseline.model.recurrent_state.current_slots[valid].long()
         candidate_slots = (valid if dtype == "float32"
-                           else candidate.model.ssm_current_slots[valid].long())
+                           else candidate.model.recurrent_state.current_slots[valid].long())
         compare_state = assert_state_close if dtype == "float32" else assert_bits_equal
-        compare_state(candidate.model.ssm_states[:, candidate_slots],
-                      baseline.model.ssm_states[:, baseline_slots])
+        compare_state(candidate.model.recurrent_state.ssm[:, candidate_slots],
+                      baseline.model.recurrent_state.ssm[:, baseline_slots])
         if dtype == "float32":
             # The first layer has identical inputs; later layers receive the
             # small output differences from the preceding GDN reductions.
-            assert_bits_equal(candidate.model.conv_states[0], baseline.model.conv_states[0])
-            assert_output_close(candidate.model.conv_states, baseline.model.conv_states)
+            assert_bits_equal(candidate.model.recurrent_state.conv[0], baseline.model.recurrent_state.conv[0])
+            assert_output_close(candidate.model.recurrent_state.conv, baseline.model.recurrent_state.conv)
         else:
-            assert_bits_equal(candidate.model.conv_states, baseline.model.conv_states)
+            assert_bits_equal(candidate.model.recurrent_state.conv, baseline.model.recurrent_state.conv)

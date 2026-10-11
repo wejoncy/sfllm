@@ -197,11 +197,12 @@ def test_target_forward_and_commit_cuda_graph(monkeypatch, kind, attention_backe
     for param in model.parameters():
         param.normal_(0, .1)
     model.set_layers_to_capture([0, 2])
+    model.init_batch_state(args)
     backbone = model.model
     # Construction fixes graph dispatch; later argument changes cannot alter it.
     args.spec_adaptive_verify = None if varlen else "d4t4"
-    backbone.ssm_states.normal_(0, .1)
-    backbone.conv_states.normal_(0, .1)
+    backbone.recurrent_state.ssm.normal_(0, .1)
+    backbone.recurrent_state.conv.normal_(0, .1)
 
     order_calls = 0
     original_order = gdn.gdn_verify_request_order
@@ -246,12 +247,12 @@ def test_target_forward_and_commit_cuda_graph(monkeypatch, kind, attention_backe
         batch.position_ids.copy_(torch.cat([torch.arange(16, 16 + n, device="cuda") for n in lengths]))
         fb.out_cache_loc.copy_(torch.cat([torch.arange(r * 64 + 16, r * 64 + 16 + n, device="cuda")
                                          for r, n in enumerate(lengths)]))
-        backbone.state_indices.copy_(torch.randperm(batch_size, device="cuda", dtype=torch.int32) + 1)
+        backbone.recurrent_state.indices.copy_(torch.randperm(batch_size, device="cuda", dtype=torch.int32) + 1)
         accepted.copy_((torch.arange(batch_size, device="cuda") + round_id) % lens)
 
-    state_buffers = [backbone.ssm_states, backbone.conv_states]
-    if backbone.ssm_journal is None:
-        state_buffers.append(backbone.ssm_current_slots)
+    state_buffers = [backbone.recurrent_state.ssm, backbone.recurrent_state.conv]
+    if backbone.recurrent_state.journal is None:
+        state_buffers.append(backbone.recurrent_state.current_slots)
 
     def run():
         before_order_calls = order_calls

@@ -6,7 +6,7 @@ from typing import List
 
 from sfllm.engine.sequence import DecodeSequence, SequenceStatus
 from sfllm.engine.schedule_batch import ScheduleBatch
-from sfllm.engine.memory_pool import BlockMemoryManager
+from sfllm.engine.cache.pool import KVPool
 
 
 logger = logging.getLogger(__name__)
@@ -15,14 +15,42 @@ class RunningMetrics:
         self,
         waiting_queue: queue.Queue,
         running_queue: queue.Queue,
-        mem_pool: BlockMemoryManager,
+        mem_pool: KVPool,
         server_args=None,
+        prefix_reuse=None,
     ):
         self.reset()
         self.waiting_queue = waiting_queue
         self.running_queue = running_queue
         self.mem_pool = mem_pool
         self.server_args = server_args
+        self.prefix_reuse = prefix_reuse
+
+    def get_metrics(self):
+        metrics = {
+            "cum_spec_accept_tokens": self.cum_spec_accept_tokens,
+            "cum_forward_ct": self.cum_forward_ct,
+            "avg_spec_accept_length": (
+                self.cum_spec_accept_tokens / self.cum_forward_ct
+                if self.server_args is not None and self.server_args.speculative_algorithm
+                and self.cum_forward_ct else None
+            ),
+        }
+        if self.prefix_reuse is not None:
+            metrics["prefix_cache"] = self.prefix_reuse.get_metrics()
+        return metrics
+
+    def _prefix_log(self):
+        if self.prefix_reuse is None:
+            return ""
+        stats = self.prefix_reuse.get_metrics()
+        return (
+            f", prefix cache (cumulative): hits {stats['hits']}/{stats['requests']} "
+            f"({stats['hit_rate']:.1%}), reused tokens {stats['reused_tokens']}/{stats['prompt_tokens']} "
+            f"({stats['token_hit_rate']:.1%}), batch shared tokens {stats['batch_shared_tokens']}, "
+            f"checkpoints: {stats['checkpoints']}, "
+            f"checkpoint slots: {stats['checkpoint_slots_used']}/{stats['checkpoint_capacity']}"
+        )
 
     def reset(self):
         self.num_generated_tokens = 0
@@ -70,7 +98,7 @@ class RunningMetrics:
                 f"Prefill throughput (token/s): {self.prefill_tokens / elapsed:.2f}, "
                 f"#queue-req p+d: {self.waiting_queue.qsize()}+{self.running_queue.qsize()}, "
             )
-            logger.info(msg)
+            logger.info(msg + self._prefix_log())
             self.prefill_tokens = 0
             self.last_prefill_refresh_time = current_time
 
@@ -100,7 +128,7 @@ class RunningMetrics:
             if schedule_batch.spec_info is not None and self.spec_num_forward_ct:
                 avg_accept_lengths = self.spec_num_accepted_tokens / self.spec_num_forward_ct
                 msg += f", accept len: {avg_accept_lengths:.2f}"
-            logger.info(msg)
+            logger.info(msg + self._prefix_log())
             self.last_refresh_time = current_time
             self.num_generated_tokens = 0
             self.spec_num_accepted_tokens = self.spec_num_forward_ct = 0

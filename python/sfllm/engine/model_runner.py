@@ -9,12 +9,12 @@ from typing import Dict, List, Any
 
 from sfllm.model_loader.model_loader import initialize_model
 from sfllm.engine.schedule_batch import ScheduleBatch,BatchResult
-from sfllm.engine.forward_params import ForwardMode, ForwardBatch
-from sfllm.engine.memory_pool import BlockMemoryManager
+from sfllm.engine.forward_params import ForwardMode, ForwardBatch, PrefillOutputPlan
 from sfllm.engine.prefill_cuda_graph_runner import PrefillCudaGraphRunner
 from sfllm.kernels.gdn import GatedDeltaNetBackend
 from sfllm.layers.radix_attention import collect_attention_metadata, create_attention_backend
 from sfllm.layers.sampler import Sampler
+from sfllm.models.interfaces import HasBatchState
 from sfllm.server_args import ServerArgs
 from sfllm.utils.nutils import DEFAULT_CUDA_GRAPH_BATCH_SIZES, MAX_PROCESSED_TOKENS
 import sfllm.utils.nutils as nutils
@@ -51,11 +51,15 @@ class ModelRunner:
             self.tokenizer = transformers.AutoTokenizer.from_pretrained(model_path)
         with collect_attention_metadata() as attention_metadata:
             self.model = initialize_model(model_path, server_args.dtype, server_args.quantization)
+        self.layer_metadata = attention_metadata
         self.device_id = device_id
         self.sampler = Sampler(self.model.config)
         self.rank = 0
         self.dtype = self.model.dtype
         self.server_args = server_args
+        self.prefill_hidden = None
+        self.recurrent_state = (self.model.init_batch_state(server_args)
+                                if isinstance(self.model, HasBatchState) else None)
 
         draft_token_width = max(
             server_args.speculative_num_steps * server_args.speculative_eagle_topk,
@@ -105,11 +109,6 @@ class ModelRunner:
             GatedDeltaNetBackend.prepare_verify(forward_batch)
         return self.attn_backend.prepare(forward_batch, num_tokens)
 
-    def init_memory_pool(self, num_blocks: int = None):
-        self.block_memory_manager = BlockMemoryManager(
-            self.server_args, self.get_config(), num_blocks=num_blocks
-        )
-
     def wrap_target_model(self, target_model_runner: 'ModelRunner'):
         if self.attn_logits.numel() > target_model_runner.attn_logits.numel():
             target_model_runner.attn_logits = self.attn_logits
@@ -154,7 +153,7 @@ class ModelRunner:
         kv_index_capacity = max(
             MAX_PROCESSED_TOKENS,
             max_capture_batch_size
-            * (server_args.max_context_length + server_args.speculative_num_draft_tokens),
+            * (server_args.max_context_length + 2 * server_args.speculative_num_draft_tokens),
         )
         self.kv_indices_buffer = torch.zeros((kv_index_capacity,), dtype=torch.int64, device="cuda")
         self.qo_indptr_buffer = torch.zeros((max_batch_size+4,), dtype=torch.int32, device="cuda")
@@ -180,6 +179,8 @@ class ModelRunner:
         self.model.logits_processor.bind_cuda_graph_output_buffer(
             forward_batch, num_tokens, self.dtype, self.device_id
         )
+        if forward_batch.forward_mode == ForwardMode.EXTEND and self.prefill_hidden is not None:
+            forward_batch.prefill_output = PrefillOutputPlan(checkpoint_buffer=self.prefill_hidden)
 
     def init_capture_cudagraph(self, forward_mode: ForwardMode = ForwardMode.DECODE):
         if self.server_args.disable_cuda_graph is False:
@@ -478,8 +479,12 @@ class ModelRunner:
             logits = logits[:bs_size]
             aux_hidden_states = aux_hidden_states[:bs_size] if aux_hidden_states is not None else None
 
-        token_ids = (
-            self.sampler(
-                logits, forward_batch.sampling_batch_info) if self.rank == 0 else None
-        )
+        return self.sample(logits, forward_batch.sampling_batch_info, aux_hidden_states)
+
+    def forward_from_hidden(self, hidden, forward_batch):
+        logits = self.model.logits_processor._get_logits(hidden, self.model.lm_head)
+        return self.sample(logits, forward_batch.sampling_batch_info)
+
+    def sample(self, logits, sampling_batch_info, aux_hidden_states=None):
+        token_ids = self.sampler(logits, sampling_batch_info) if self.rank == 0 else None
         return BatchResult(token_ids, logits, aux_hidden_states)

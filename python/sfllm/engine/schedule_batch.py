@@ -37,6 +37,9 @@ class ScheduleBatch:
         self.copy_done: Optional[torch.cuda.Event] = None
         self.next_token_ids:torch.Tensor = None
         self.spec_info: SpecInput = None
+        self.prefix_restores = None  # Request ID -> (checkpoint slot, prefix length)
+        self.prefill_plan = None
+        self.window_writes = None  # Pool -> existing (writes, mappings, copies) plan
         ###
         self.overlap_affiliated: Optional[tuple[torch.Tensor, torch.cuda.Stream]] = None
 
@@ -108,7 +111,7 @@ class ScheduleBatch:
         device = self.device
         for sequence in self.sequences:
             cache_locs = torch.from_numpy(np.asarray(sequence.out_cache_loc_spec, dtype=np.int64))
-            spec_out_cache_parts.append(cache_locs[-len(sequence.new_tokens):])
+            spec_out_cache_parts.append(cache_locs[len(cache_locs) - len(sequence.new_tokens):])
             spec_kv_indices_parts.append(cache_locs)
 
         padded_token = self.forward_batch.padded_token
@@ -137,8 +140,7 @@ class ScheduleBatch:
             self.spec_info.verified_id = move_neg1_to_tail(torch.cat([
                 seq.verified_id[:len(seq.new_tokens)] for seq in self.sequences
             ], dim=-1))
-            self.spec_info.verified_id = torch.where(self.spec_info.verified_id < 0,torch.zeros_like(self.spec_info.verified_id),
-                                                  self.spec_info.verified_id)
+            self.spec_info.verified_id.clamp_min_(0)
             self.spec_info.accept_length = torch.cat([seq.accept_length for seq in self.sequences], dim=-1)
             if hidden_states_buffer is not None:
                 assert isinstance(self.sequences[0].hidden_states, tuple)
@@ -208,18 +210,18 @@ class ScheduleBatch:
         # for this step, target model will go the verify path
         forward_batch_target = self.forward_batch
         num_draft_tokens = server_args.speculative_num_draft_tokens
-        seq_mask_len = num_draft_tokens * (forward_batch_target.seq_lens + num_draft_tokens)
-        forward_batch_target.mask_indptr = self.forward_batch.kv_indptr.clone()
-        forward_batch_target.mask_indptr[1:] = torch.cumsum(seq_mask_len, dim=0, dtype=torch.int32)
+        forward_batch_target.mask_indptr = torch.tensor(
+            [0, *itertools.accumulate(num_draft_tokens * len(seq.out_cache_loc)
+                                      for seq in self.sequences)],
+            dtype=torch.int32, pin_memory=True,
+        ).to(device, non_blocking=True)
         forward_batch_target.max_extend_len = num_draft_tokens
 
-        forward_batch_target.qo_indptr = torch.arange(
-            0, (1 + batch_size) * num_draft_tokens, step=num_draft_tokens,
-            dtype=torch.int32, device=device,
-        )
+        forward_batch_target.qo_indptr = torch.tensor(
+            range(0, (1 + batch_size) * num_draft_tokens, num_draft_tokens),
+            dtype=torch.int32, pin_memory=True,
+        ).to(device, non_blocking=True)
         # it's for verify_extend
-        minux_const = torch.arange(1, len(self.sequences)+1, dtype=torch.int32, device=device)
-        forward_batch_target.kv_indptr[1:].sub_(minux_const)
         if is_overlap:
             hidden_states_buffer,compute_stream = self.overlap_affiliated
             with torch.cuda.stream(compute_stream):
@@ -244,7 +246,9 @@ class ScheduleBatch:
         device = self.device
 
         batch_size = len(self.sequences)
-        if len(self.sequences[-1].new_tokens) == len(self.sequences[-1].tokens):
+        prefix_prefill = (get_global_server_args().enable_prefix_cache
+                          and self.forward_batch.forward_mode == ForwardMode.EXTEND)
+        if prefix_prefill or len(self.sequences[-1].new_tokens) == len(self.sequences[-1].tokens):
             self.forward_batch.forward_mode = ForwardMode.EXTEND
         else:
             self.forward_batch.forward_mode = ForwardMode.DECODE
@@ -270,8 +274,9 @@ class ScheduleBatch:
             else:
                 cur_seq_lens_list.append(len(sequence.new_tokens))
                 input_ids_buffer.extend(array("q", sequence.new_tokens))
-                start_pos = len(sequence.tokens) - len(sequence.new_tokens)
-                position_ids_buffer.frombytes(np.arange(start_pos, len(sequence.tokens), dtype=np.int64).tobytes())
+                start_pos, end_pos = ((sequence.prefill_start, sequence.prefill_end) if prefix_prefill
+                                      else (len(sequence.tokens) - len(sequence.new_tokens), len(sequence.tokens)))
+                position_ids_buffer.frombytes(np.arange(start_pos, end_pos, dtype=np.int64).tobytes())
             prefix_lens_list.append(start_pos)
             # Local views are copied into the batch-owned pinned buffer below.
             cache_locs = torch.from_numpy(np.frombuffer(sequence.out_cache_loc, dtype=np.int64))
@@ -281,6 +286,9 @@ class ScheduleBatch:
                 # target model used for verify, speculative_num_draft_tokens cache loc, different from normal decode
                 out_cache_loc_buffer.extend(sequence.out_cache_loc[true_lens:])
                 kv_indices_parts.append(cache_locs[:true_lens])
+            elif prefix_prefill:
+                out_cache_loc_buffer.extend(sequence.out_cache_loc[start_pos:end_pos])
+                kv_indices_parts.append(cache_locs[:start_pos])
             else:
                 out_cache_loc_buffer.extend(sequence.out_cache_loc[-len(sequence.new_tokens):])
                 kv_indices_parts.append(cache_locs)
@@ -295,7 +303,6 @@ class ScheduleBatch:
         # Pinning copies these CPU views into owned storage before asynchronous H2D.
         input_ids = torch.from_numpy(np.frombuffer(input_ids_buffer, dtype=np.int64)).pin_memory().to(device, non_blocking=True)
         position_ids = torch.from_numpy(np.frombuffer(position_ids_buffer, dtype=np.int64)).pin_memory().to(device, non_blocking=True)
-        cur_seq_lens = torch.tensor(cur_seq_lens_list, dtype=torch.int32, pin_memory=True).to(device, non_blocking=True)
         out_cache_loc = torch.from_numpy(np.frombuffer(out_cache_loc_buffer, dtype=np.int64)).pin_memory().to(device, non_blocking=True)
         kv_indices = _pack_cache_indices(kv_indices_parts, padded_token, device)
 
@@ -303,12 +310,21 @@ class ScheduleBatch:
 
         if self.forward_batch.forward_mode == ForwardMode.EXTEND:
             self.forward_batch.max_extend_len = max(cur_seq_lens_list)
-            self.forward_batch.kv_indptr = prefix_lens.cumsum(dim=-1, dtype=torch.int32)
+            self.forward_batch.kv_indptr = torch.tensor(
+                list(itertools.accumulate(prefix_lens_list)), dtype=torch.int32, pin_memory=True,
+            ).to(device, non_blocking=True)
             self.forward_batch.kv_indices = kv_indices
-            self.forward_batch.qo_indptr = cur_seq_lens.cumsum(dim=-1, dtype=torch.int32)
+            self.forward_batch.qo_indptr = torch.tensor(
+                list(itertools.accumulate(cur_seq_lens_list)), dtype=torch.int32, pin_memory=True,
+            ).to(device, non_blocking=True)
         else:
-            self.forward_batch.kv_indptr = prefix_lens.clone()
-            self.forward_batch.kv_indptr[1:] = (prefix_lens[1:] + 1).cumsum(dim=-1, dtype=torch.int32)
+            # Spec verify appends its queries separately; ordinary decode already
+            # includes its query in kv_indices. These lengths are CPU-owned.
+            append_query = int(self.forward_batch_spec is None)
+            self.forward_batch.kv_indptr = torch.tensor(
+                [0, *itertools.accumulate(length + append_query for length in prefix_lens_list[1:])],
+                dtype=torch.int32, pin_memory=True,
+            ).to(device, non_blocking=True)
             self.forward_batch.kv_indices = kv_indices
 
         self.forward_batch.seq_lens = prefix_lens[1:]
