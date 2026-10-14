@@ -48,7 +48,7 @@ class Scheduler:
         self.running_queue = queue.Queue()
         
         self.max_context_length = server_args.max_context_length
-        self.max_prefill_tokens = self.max_context_length
+        self.max_prefill_tokens = min(self.max_context_length, 16 * 1024)
         self.max_running_req = server_args.max_running_requests
         # Stable slots are shared by overlap token handoff and model-owned state.
         self.free_request_indices = deque(range(self.max_running_req))
@@ -102,19 +102,21 @@ class Scheduler:
                 self.free_sequence_resources(sequence)
                 continue
             tokens = self.waiting_queue.queue[0].tokens
-            if len(tokens) > self.max_prefill_tokens:
+            if len(tokens) > self.max_context_length:
                 sequence = self.waiting_queue.get()
                 logger.warning(
                     f"Request has {len(tokens)} prompt tokens, exceeding "
-                    f"the {self.max_prefill_tokens} token prefill limit."
+                    f"the {self.max_context_length} token context limit."
                 )
                 sequence.status = SequenceStatus.FAILED
                 sequence.generated_tokens.clear()
                 failed_sequences.append(sequence)
                 continue
-            if prefill_tokens + len(tokens) > self.max_prefill_tokens:
-                break
             start, end, node = self.cache.select(self.waiting_queue.queue[0])
+            # A prompt above the batch budget runs alone, up to the context limit.
+            if (running_sequences
+                    and prefill_tokens + end - start > self.max_prefill_tokens):
+                break
             required_tokens = self.scheduler_policy.prefill_required_tokens(self.waiting_queue.queue[0])
             if not self.cache.can_admit(self.waiting_queue.queue[0], start, node, required_tokens):
                 break
@@ -125,7 +127,7 @@ class Scheduler:
             sequence.status = SequenceStatus.RUNNING
             self.scheduler_policy.add_prefill_req(sequence)
             running_sequences.append(sequence)
-            prefill_tokens += len(tokens)
+            prefill_tokens += len(sequence.new_tokens)
 
         running_batch = ScheduleBatch(running_sequences, self.mem_pool, self.draft_memory_pool)
         self.cache.prepare_batch(running_batch)
