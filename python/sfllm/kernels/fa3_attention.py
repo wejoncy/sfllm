@@ -251,7 +251,7 @@ def _combine_paged_attention_kernel(
     tl.store(Out + row // Q_HEADS * O_STRIDE + row % Q_HEADS * O_HEAD_STRIDE + dim, out)
 
 
-def _triton_paged_attention_fwd(
+def _paged_attention_fwd(
     q, out, k, v, metadata, scale
 ):
     """Short causal GQA using split KV traversal and output combine."""
@@ -347,7 +347,7 @@ def fa3_attention_fwd(
         == v_buffer.stride(-1) == out.stride(-1) == 1
         and torch.cuda.get_device_capability(q.device)[0] == 9
     ):
-        return _triton_paged_attention_fwd(
+        return _paged_attention_fwd(
             q, out, k_buffer, v_buffer, metadata, softmax_scale,
         )
     result = flash_attn_with_kvcache(

@@ -9,7 +9,7 @@ import torch
     not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] != 9,
     reason="Short paged attention is enabled on Hopper.",
 )
-def test_triton_paged_attention_varlen_and_graph_replay():
+def test_paged_attention_varlen_and_graph_replay():
     from sfllm.kernels.fa3_attention import fa3_attention_fwd
 
     torch.manual_seed(42)
