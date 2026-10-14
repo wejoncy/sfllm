@@ -16,9 +16,9 @@ import torch.nn.functional as F
 from torch import nn
 
 try:
-    from flashinfer import top_k as _flashinfer_top_k
+    from sfllm.kernels.topk import pruned_topk as _decode_top_k
 except ImportError:
-    _flashinfer_top_k = None
+    _decode_top_k = None
 
 from sfllm.engine.forward_params import ForwardBatch
 from sfllm.kernels.dflash2 import dflash2_selector_greedy_walk
@@ -427,12 +427,12 @@ class DFlash2DraftModel(nn.Module):
             top_k = self.dflash_config.selector_top_k
         shape = (*hidden_states.shape[:-1], top_k)
         logits = self.compute_logits(hidden_states, target_head_weight, quantized_hidden)
-        if _flashinfer_top_k is None:
+        if _decode_top_k is None:
             values, ids = torch.topk(
                 logits, top_k, dim=-1, sorted=True
             )
         else:
-            values, ids = _flashinfer_top_k(
+            values, ids = _decode_top_k(
                 logits,
                 top_k,
                 sorted=True,
