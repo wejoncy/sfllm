@@ -3,6 +3,8 @@ import triton
 import triton.language as tl
 from sgl_kernel.flash_attn import flash_attn_with_kvcache
 
+from sfllm.kernels.short_query_attention import _short_query_paged_attention_fwd
+
 
 @triton.jit
 def _build_page_table_kernel(
@@ -102,6 +104,26 @@ def fa3_attention_fwd(
     return_softmax_lse: bool = False,
     window_size: tuple[int, int] = (-1, -1),
 ) -> torch.Tensor:
+    # Hopper short-query GQA benefits from reusing KV across query heads.
+    # Keep FA3's persistent scheduler for small batches and other layouts.
+    if (
+        1 <= metadata.max_query_len <= 8
+        and metadata.cache_seqlens.numel() >= 8
+        and causal
+        and window_size == (-1, -1)
+        and logit_cap == 0
+        and not return_softmax_lse
+        and q.dtype == k_buffer.dtype == v_buffer.dtype == torch.bfloat16
+        and q.shape[2] == k_buffer.shape[2] == v_buffer.shape[2] == 256
+        and q.shape[1] == k_buffer.shape[1] * 4
+        and v_buffer.shape[1] == k_buffer.shape[1]
+        and q.stride(-1) == k_buffer.stride(-1)
+        == v_buffer.stride(-1) == out.stride(-1) == 1
+        and torch.cuda.get_device_capability(q.device)[0] == 9
+    ):
+        return _short_query_paged_attention_fwd(
+            q, out, k_buffer, v_buffer, metadata, softmax_scale,
+        )
     result = flash_attn_with_kvcache(
         q,
         k_buffer.view(k_buffer.shape[0], 1, k_buffer.shape[1], k_buffer.shape[2]),
