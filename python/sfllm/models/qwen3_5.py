@@ -565,8 +565,7 @@ class Qwen3_5Model(nn.Module):
             )
             residual_output = None
             if layer_id in self.layers_to_capture:
-                if (forward_batch.forward_mode == ForwardMode.TARGET_VERIFY
-                        and layer_id + 1 < len(self.layers)
+                if (layer_id + 1 < len(self.layers)
                         and self.layers[layer_id + 1].input_layernorm.fp8_output):
                     residual_output = torch.empty_like(hidden_states)
                     aux_hidden_states.append(residual_output)

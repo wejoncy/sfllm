@@ -4,7 +4,7 @@
   python benchmark/bench_fp8_norm.py --baseline /tmp/fp8-baseline.py
 
 Times eight independent calls per graph, not a model forward or serving QPS.
-The auxiliary case includes the standalone residual addition that the fused norm replaces in target verification.
+The auxiliary case includes the standalone residual addition used when capturing auxiliary hidden states.
 """
 
 import argparse
