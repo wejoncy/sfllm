@@ -58,11 +58,11 @@ class GatedDeltaNetState:
         )
         self.indices = torch.arange(1, max_requests + 1, dtype=torch.int32, device=device)
         self.current_slots = self.read_slots = self.write_slots = None
-        self.intermediate_conv = self.journal = None
+        self.conv_journal = self.journal = None
         self.checkpoint_ssm = self.checkpoint_conv = None
         if spec_steps:
-            self.intermediate_conv = torch.empty(
-                (layers, max_requests, spec_steps, *conv_shape), dtype=dtype, device=device,
+            self.conv_journal = torch.empty(
+                (layers, max_requests, spec_steps, conv_shape[0]), dtype=dtype, device=device,
             )
             if use_journal:
                 heads, value_dim, key_dim = ssm_shape
