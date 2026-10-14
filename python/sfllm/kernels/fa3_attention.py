@@ -89,7 +89,7 @@ def build_page_table(
 
 
 @triton.jit
-def _short_paged_attention_tile(
+def _paged_attention_tile(
     Q, K, V, Table, Lens, Indptr, Partial, Lse,
     q_stride: tl.constexpr,
     q_head_stride: tl.constexpr,
@@ -179,7 +179,7 @@ def _short_paged_attention_tile(
 
 
 @triton.jit
-def _short_paged_attention_kernel(
+def _paged_attention_kernel(
     Q, K, V, Table, Lens, Indptr, Partial, Lse,
     q_stride: tl.constexpr,
     q_head_stride: tl.constexpr,
@@ -206,14 +206,14 @@ def _short_paged_attention_kernel(
     length = tl.load(Indptr + req + 1) - tl.load(Indptr + req)
     if MAX_Q == 8 and Q_HEADS // KV_HEADS == 4:
         if length <= 4:
-            _short_paged_attention_tile(Q, K, V, Table, Lens, Indptr, Partial, Lse, q_stride, q_head_stride, k_stride, k_head_stride, v_stride, v_head_stride, table_stride, TOKENS, Q_HEADS, KV_HEADS, DIM, 4, SPLITS, SCALE, 16, BN)
+            _paged_attention_tile(Q, K, V, Table, Lens, Indptr, Partial, Lse, q_stride, q_head_stride, k_stride, k_head_stride, v_stride, v_head_stride, table_stride, TOKENS, Q_HEADS, KV_HEADS, DIM, 4, SPLITS, SCALE, 16, BN)
         else:
-            _short_paged_attention_tile(Q, K, V, Table, Lens, Indptr, Partial, Lse, q_stride, q_head_stride, k_stride, k_head_stride, v_stride, v_head_stride, table_stride, TOKENS, Q_HEADS, KV_HEADS, DIM, MAX_Q, SPLITS, SCALE, BM, BN)
+            _paged_attention_tile(Q, K, V, Table, Lens, Indptr, Partial, Lse, q_stride, q_head_stride, k_stride, k_head_stride, v_stride, v_head_stride, table_stride, TOKENS, Q_HEADS, KV_HEADS, DIM, MAX_Q, SPLITS, SCALE, BM, BN)
     else:
-        _short_paged_attention_tile(Q, K, V, Table, Lens, Indptr, Partial, Lse, q_stride, q_head_stride, k_stride, k_head_stride, v_stride, v_head_stride, table_stride, TOKENS, Q_HEADS, KV_HEADS, DIM, MAX_Q, SPLITS, SCALE, BM, BN)
+        _paged_attention_tile(Q, K, V, Table, Lens, Indptr, Partial, Lse, q_stride, q_head_stride, k_stride, k_head_stride, v_stride, v_head_stride, table_stride, TOKENS, Q_HEADS, KV_HEADS, DIM, MAX_Q, SPLITS, SCALE, BM, BN)
 
 @triton.jit
-def _combine_short_paged_attention_kernel(
+def _combine_paged_attention_kernel(
     Partial, Lse, Out, Indptr,
     ROWS: tl.constexpr,
     Q_HEADS: tl.constexpr,
@@ -251,7 +251,7 @@ def _combine_short_paged_attention_kernel(
     tl.store(Out + row // Q_HEADS * O_STRIDE + row % Q_HEADS * O_HEAD_STRIDE + dim, out)
 
 
-def _short_paged_attention_fwd(
+def _triton_paged_attention_fwd(
     q, out, k, v, metadata, scale
 ):
     """Short causal GQA using split KV traversal and output combine."""
@@ -267,7 +267,7 @@ def _short_paged_attention_fwd(
     partial = torch.empty((splits, n, heads, dim), device=q.device, dtype=torch.float32)
     lse = torch.empty((splits, n, heads), device=q.device, dtype=torch.float32)
     enable_pdl = 1 <= n <= 192
-    _short_paged_attention_kernel[batch, kv_heads, splits](
+    _paged_attention_kernel[batch, kv_heads, splits](
         q,
         k,
         v,
@@ -297,7 +297,7 @@ def _short_paged_attention_fwd(
         num_stages=3,
         launch_pdl=enable_pdl,
     )
-    _combine_short_paged_attention_kernel[n * heads,](
+    _combine_paged_attention_kernel[n * heads,](
         partial,
         lse,
         out,
@@ -347,7 +347,7 @@ def fa3_attention_fwd(
         == v_buffer.stride(-1) == out.stride(-1) == 1
         and torch.cuda.get_device_capability(q.device)[0] == 9
     ):
-        return _short_paged_attention_fwd(
+        return _triton_paged_attention_fwd(
             q, out, k_buffer, v_buffer, metadata, softmax_scale,
         )
     result = flash_attn_with_kvcache(
