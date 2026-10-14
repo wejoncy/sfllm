@@ -15,6 +15,7 @@
  */
 
 #include <ATen/cuda/Exceptions.h>
+#include <ATen/cuda/CUDAContext.h>
 #include <c10/cuda/CUDAGuard.h>
 #include <c10/cuda/CUDAStream.h>
 #include <torch/all.h>
@@ -350,8 +351,10 @@ void gemma_qk_norm_rope(
       "K cache, V cache, and cache locations must be provided together");
   const std::optional<at::Tensor> value =
       save_kv_cache ? std::make_optional(v) : std::nullopt;
+  const bool enable_pdl =
+      at::cuda::getDeviceProperties(q.get_device())->major >= 9;
   apply_rope_pos_ids_cos_sin_cache_impl(
-      q, k, q_rope, k_rope, cos_sin_cache, pos_ids, false, false,
+      q, k, q_rope, k_rope, cos_sin_cache, pos_ids, false, enable_pdl,
       value, k_buffer, v_buffer, kv_cache_loc,
       &q_norm_weight, &k_norm_weight, epsilon, 1.0);
 }
