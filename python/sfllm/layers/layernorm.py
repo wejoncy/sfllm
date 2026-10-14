@@ -164,11 +164,15 @@ class GemmaRMSNorm(CustomOp):
         self,
         x: torch.Tensor,
         residual: Optional[torch.Tensor] = None,
+        residual_output: Optional[torch.Tensor] = None,
+        *, prefetch_inputs: bool = False,
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
         orig_dtype = x.dtype
         if residual is not None:
             x = x + residual
             residual = x
+            if residual_output is not None:
+                residual_output.copy_(residual)
 
         x = x.float()
         variance = x.pow(2).mean(dim=-1, keepdim=True)
@@ -183,6 +187,8 @@ class GemmaRMSNorm(CustomOp):
         self,
         x: torch.Tensor,
         residual: Optional[torch.Tensor] = None,
+        residual_output: Optional[torch.Tensor] = None,
+        *, prefetch_inputs: bool = False,
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
         # Both CUDA paths keep normalization and (1 + weight) in FP32.
         # Residual addition is fused into the same kernel.
@@ -192,6 +198,8 @@ class GemmaRMSNorm(CustomOp):
                 eps=self.variance_epsilon,
                 output_dtypes=self.output_dtypes,
                 input_scales=tuple(method.input_scale for method in self.quant_methods),
+                residual_output=residual_output,
+                prefetch_inputs=prefetch_inputs,
             )
             return output if residual is None else (output, residual)
         if (
@@ -204,6 +212,7 @@ class GemmaRMSNorm(CustomOp):
             out = gemma_rmsnorm_quant_fp8(
                 x, self.weight, residual, self.variance_epsilon,
                 output_dtypes=(None,),
+                prefetch_inputs=prefetch_inputs,
             )
         elif residual is None:
             out = _flashinfer_norm.gemma_rmsnorm(
@@ -216,6 +225,8 @@ class GemmaRMSNorm(CustomOp):
             out = x
         if len(self.quant_methods) > 1:
             out = (out,) * len(self.quant_methods)
+        if residual_output is not None:
+            residual_output.copy_(residual)
         return out if residual is None else (out, residual)
 
 class Gemma3RMSNorm(CustomOp):
