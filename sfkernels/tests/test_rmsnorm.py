@@ -145,7 +145,7 @@ def test_fp8_norm_residual_capture_cuda_graph(rows, input_scale):
     def run():
         return gemma_rmsnorm_quant_fp8(
             x, weight, residual, output_dtypes=(torch.float8_e4m3fn, None),
-            input_scales=(scale, None), residual_output=aux, prefetch_inputs=True,
+            input_scales=(scale, None), residual_output=aux,
         )
 
     run()

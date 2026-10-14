@@ -221,7 +221,6 @@ class Qwen3_5GatedDeltaNet(nn.Module):
             core = rmsnorm_silu_gate_quant_fp8(
                 core, weight=self.norm, gate=z, eps=self.rms_norm_eps,
                 input_scale=self.out_proj.quant_method.input_scale,
-                prefetch_inputs=True,  # Recurrence has already waited for z's producer.
             )
         else:
             core = gated_rmsnorm(core, z, self.norm, self.rms_norm_eps).view(
@@ -342,7 +341,6 @@ class Qwen3_5Attention(nn.Module):
             if self.fp8_output:
                 output = sigmoid_mul_quant_fp8(
                     output, gate=gate, input_scale=self.o_proj.quant_method.input_scale,
-                    prefetch_inputs=True,
                 )
             else:
                 sf_kernel.fused_sigmoid_mul(output, gate)
@@ -417,7 +415,6 @@ class Qwen3_5DecoderLayer(nn.Module):
         else:
             hidden_states, residual = self.input_layernorm(
                 hidden_states, residual, residual_output=residual_output,
-                prefetch_inputs=True,  # The preceding GEMM writes only hidden_states.
             )
         if self.layer_type == "full_attention":
             hidden_states = self.self_attn(positions, hidden_states, forward_batch)
@@ -429,7 +426,7 @@ class Qwen3_5DecoderLayer(nn.Module):
                 query_start_loc_i64,
             )
         hidden_states, residual = self.post_attention_layernorm(
-            hidden_states, residual, prefetch_inputs=True,
+            hidden_states, residual
         )
         hidden_states = self.mlp(hidden_states)
         return hidden_states, residual

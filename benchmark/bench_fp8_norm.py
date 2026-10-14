@@ -20,12 +20,9 @@ from sfllm.layers.quantization import fp8_kernel as candidate
 def capture(module, case, ops, optimized):
     def run(x, weight, residual, gate):
         if case == "gate":
-            kwargs = {"prefetch_inputs": True} if optimized else {}
-            return module.rmsnorm_silu_gate_quant_fp8(x, weight, gate, **kwargs)
+            return module.rmsnorm_silu_gate_quant_fp8(x, weight, gate)
         aux = None
         kwargs = {}
-        if optimized:
-            kwargs["prefetch_inputs"] = True
         if case == "aux":
             if optimized:
                 aux = torch.empty_like(x)

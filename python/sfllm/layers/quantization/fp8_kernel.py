@@ -405,11 +405,10 @@ def _launch_fp8_kernel(
     x: torch.Tensor, *, weight=None, residual=None, gate=None,
     eps: float = 1e-6, gemma: bool = False, silu_mul: bool = False,
     output_dtypes=(fp8_dtype,), input_scales=(None,), residual_output=None,
-    prefetch_inputs: bool = False,
 ):
     """Produce outputs in one kernel.
 
-    Prefetch requires gates/residuals ready before the producer releases this grid.
+    Gates/residuals must be ready before the activation producer releases this grid.
     """
     heads = x.shape[1] if x.ndim == 3 else (gate.shape[1] if gate is not None and gate.ndim == 3 else 1)
     width = x.shape[-1] // (2 if silu_mul else 1) // (heads if x.ndim == 2 else 1)
@@ -448,7 +447,7 @@ def _launch_fp8_kernel(
         triton.next_power_of_2(heads), triton.next_power_of_2(width),
         tuple(scale is not None for scale in input_scales), fp8_max,
         Aux=residual_output, aux_strides=aux_strides, ENABLE_PDL=enable_pdl,
-        PREFETCH_INPUTS=prefetch_inputs and enable_pdl,
+        PREFETCH_INPUTS=enable_pdl,
         num_warps=num_warps,
         enable_fp_fusion=False,
         launch_pdl=enable_pdl,
@@ -462,7 +461,7 @@ def _launch_fp8_kernel(
 
 def gemma_rmsnorm_quant_fp8(x, weight, residual=None, eps=1e-6,
                           output_dtypes=(fp8_dtype,), input_scales=(None,),
-                          residual_output=None, *, prefetch_inputs=False):
+                          residual_output=None):
     """Return normalized inputs per projection; update residual if given.
 
     Static FP8 preserves BF16/FP16 intermediate rounding, which FlashInfer's
@@ -470,15 +469,12 @@ def gemma_rmsnorm_quant_fp8(x, weight, residual=None, eps=1e-6,
     """
     return _launch_fp8_kernel(x, weight=weight, residual=residual, eps=eps, gemma=True,
                              output_dtypes=output_dtypes, input_scales=input_scales,
-                             residual_output=residual_output, prefetch_inputs=prefetch_inputs)
+                             residual_output=residual_output)
 
 
-def rmsnorm_silu_gate_quant_fp8(
-    x, weight, gate, eps=1e-6, input_scale=None, *, prefetch_inputs=False,
-):
+def rmsnorm_silu_gate_quant_fp8(x, weight, gate, eps=1e-6, input_scale=None):
     """Return headwise RMSNorm(x) * SiLU(gate) as (FP8, scale)."""
-    return _launch_fp8_kernel(x, weight=weight, gate=gate, eps=eps, input_scales=(input_scale,),
-                             prefetch_inputs=prefetch_inputs)
+    return _launch_fp8_kernel(x, weight=weight, gate=gate, eps=eps, input_scales=(input_scale,))
 
 
 def silu_and_mul_quant_fp8(x, input_scale=None):
@@ -486,9 +482,9 @@ def silu_and_mul_quant_fp8(x, input_scale=None):
     return _launch_fp8_kernel(x, silu_mul=True, input_scales=(input_scale,))
 
 
-def sigmoid_mul_quant_fp8(x, gate, input_scale=None, *, prefetch_inputs=False):
+def sigmoid_mul_quant_fp8(x, gate, input_scale=None):
     """Return x * sigmoid(gate) as (FP8, scale)."""
-    return _launch_fp8_kernel(x, gate=gate, input_scales=(input_scale,), prefetch_inputs=prefetch_inputs)
+    return _launch_fp8_kernel(x, gate=gate, input_scales=(input_scale,))
 
 
 def sglang_per_token_quant_fp8(

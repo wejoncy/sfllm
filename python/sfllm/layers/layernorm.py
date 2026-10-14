@@ -165,7 +165,6 @@ class GemmaRMSNorm(CustomOp):
         x: torch.Tensor,
         residual: Optional[torch.Tensor] = None,
         residual_output: Optional[torch.Tensor] = None,
-        *, prefetch_inputs: bool = False,
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
         orig_dtype = x.dtype
         if residual is not None:
@@ -188,7 +187,6 @@ class GemmaRMSNorm(CustomOp):
         x: torch.Tensor,
         residual: Optional[torch.Tensor] = None,
         residual_output: Optional[torch.Tensor] = None,
-        *, prefetch_inputs: bool = False,
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
         # Both CUDA paths keep normalization and (1 + weight) in FP32.
         # Residual addition is fused into the same kernel.
@@ -199,7 +197,6 @@ class GemmaRMSNorm(CustomOp):
                 output_dtypes=self.output_dtypes,
                 input_scales=tuple(method.input_scale for method in self.quant_methods),
                 residual_output=residual_output,
-                prefetch_inputs=prefetch_inputs,
             )
             return output if residual is None else (output, residual)
         if (
@@ -212,7 +209,6 @@ class GemmaRMSNorm(CustomOp):
             out = gemma_rmsnorm_quant_fp8(
                 x, self.weight, residual, self.variance_epsilon,
                 output_dtypes=(None,),
-                prefetch_inputs=prefetch_inputs,
             )
         elif residual is None:
             out = _flashinfer_norm.gemma_rmsnorm(
