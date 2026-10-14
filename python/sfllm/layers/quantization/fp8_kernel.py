@@ -329,6 +329,9 @@ def _norm_activation_fp8_kernel(
     GEMMA: gl.constexpr, SILU_MUL: gl.constexpr,
     BLOCK_H: gl.constexpr, BLOCK_D: gl.constexpr,
     STATIC_SCALE: gl.constexpr, FP8_MAX: gl.constexpr,
+    Aux=None, aux_strides: gl.constexpr = (0, 0, 0),
+    ENABLE_PDL: gl.constexpr = False,
+    PREFETCH_INPUTS: gl.constexpr = False,
 ):
     row = gl.program_id(0)
     if heads > 1:
@@ -340,24 +343,43 @@ def _norm_activation_fp8_kernel(
     mask = (h[:, None] < heads) & (d[None, :] < width)
     offsets = h[:, None] * width + d[None, :]
     x_offsets = row * x_strides[0] + h[:, None] * x_strides[1] + d[None, :] * x_strides[2]
-    x = gl.load(X + x_offsets,
-                mask=mask, other=0).to(gl.float32)
+    # Weights are immutable; optional gate/residual prefetch requires caller-proven readiness.
+    if W is not None:
+        weight = gl.load(W + d * weight_stride, mask=d < width, other=0).to(gl.float32)
     if R is not None:
         residual_offsets = (row * residual_strides[0] + h[:, None] * residual_strides[1]
                             + d[None, :] * residual_strides[2])
-        x += gl.load(R + residual_offsets, mask=mask, other=0).to(gl.float32)
+        if PREFETCH_INPUTS:
+            residual_value = gl.load(R + residual_offsets, mask=mask, other=0).to(gl.float32)
+    if Gate is not None and PREFETCH_INPUTS:
+        gate = gl.load(Gate + row * gate_strides[0] + h[:, None] * gate_strides[1]
+                       + d[None, :] * gate_strides[2],
+                       mask=mask, other=0).to(gl.float32)
+    if ENABLE_PDL:
+        gl.inline_asm_elementwise("griddepcontrol.wait; // $0", "=r", [], dtype=gl.int32, is_pure=False, pack=1)
+        gl.inline_asm_elementwise("griddepcontrol.launch_dependents; // $0", "=r", [], dtype=gl.int32, is_pure=False, pack=1)
+    x = gl.load(X + x_offsets,
+                mask=mask, other=0).to(gl.float32)
+    if R is not None:
+        if not PREFETCH_INPUTS:
+            residual_value = gl.load(R + residual_offsets, mask=mask, other=0).to(gl.float32)
+        x += residual_value
         gl.store(R + residual_offsets, x, mask=mask)
+        if Aux is not None:
+            aux_offsets = (row * aux_strides[0] + h[:, None] * aux_strides[1]
+                           + d[None, :] * aux_strides[2])
+            gl.store(Aux + aux_offsets, x, mask=mask)
     if W is not None:
         inv_rms = gl.rsqrt(gl.sum(x * x, axis=1) / width + eps)
-        weight = gl.load(W + d * weight_stride, mask=d < width, other=0).to(gl.float32)
         x = x * inv_rms[:, None] * (weight[None, :] + GEMMA)
     if SILU_MUL:
         up = gl.load(X + x_offsets + width * x_strides[2], mask=mask, other=0).to(gl.float32)
         x = x / (1.0 + gl.exp(-x)) * up
     if Gate is not None:
-        gate = gl.load(Gate + row * gate_strides[0] + h[:, None] * gate_strides[1]
-                       + d[None, :] * gate_strides[2],
-                       mask=mask, other=0).to(gl.float32)
+        if not PREFETCH_INPUTS:
+            gate = gl.load(Gate + row * gate_strides[0] + h[:, None] * gate_strides[1]
+                           + d[None, :] * gate_strides[2],
+                           mask=mask, other=0).to(gl.float32)
         if W is not None:
             x *= gate / (1.0 + gl.exp(-gate))
         else:
@@ -382,9 +404,12 @@ def _norm_activation_fp8_kernel(
 def _launch_fp8_kernel(
     x: torch.Tensor, *, weight=None, residual=None, gate=None,
     eps: float = 1e-6, gemma: bool = False, silu_mul: bool = False,
-    output_dtypes=(fp8_dtype,), input_scales=(None,),
+    output_dtypes=(fp8_dtype,), input_scales=(None,), residual_output=None,
 ):
-    """Produce each requested FP8 or original-precision output in one kernel."""
+    """Produce outputs in one kernel.
+
+    Gates/residuals must be ready before the activation producer releases this grid.
+    """
     heads = x.shape[1] if x.ndim == 3 else (gate.shape[1] if gate is not None and gate.ndim == 3 else 1)
     width = x.shape[-1] // (2 if silu_mul else 1) // (heads if x.ndim == 2 else 1)
     outputs = tuple(
@@ -401,15 +426,31 @@ def _launch_fp8_kernel(
         if t is not None else (0, 0, 0)
         for t in (x, residual, gate)
     )
+    enable_pdl = (x.is_cuda and torch.version.hip is None
+                  and 0 < x.shape[0] <= 192
+                  and torch.cuda.get_device_capability(x.device)[0] >= 9)
     num_warps = 4 if heads * width <= 4096 else 8
+    if (enable_pdl and heads == 32 and width == 128
+            and weight is not None and residual is None and gate is not None):
+        num_warps = 8
+    aux_strides = (0, 0, 0)
+    if residual_output is not None:
+        if residual is None or residual_output.shape != x.shape:
+            raise ValueError("Residual output requires a residual and the activation shape")
+        aux_strides = (residual_output.stride(0),
+                       residual_output.stride(1) if residual_output.ndim == 3
+                       else width * residual_output.stride(-1), residual_output.stride(-1))
     _norm_activation_fp8_kernel[(x.shape[0],)](
         x, weight, residual, gate, outputs, scales,
         *strides, weight.stride(0) if weight is not None else 0,
         heads, width, eps, gemma, silu_mul,
         triton.next_power_of_2(heads), triton.next_power_of_2(width),
         tuple(scale is not None for scale in input_scales), fp8_max,
+        Aux=residual_output, aux_strides=aux_strides, ENABLE_PDL=enable_pdl,
+        PREFETCH_INPUTS=enable_pdl,
         num_warps=num_warps,
         enable_fp_fusion=False,
+        launch_pdl=enable_pdl,
     )
     results = tuple(
         (output, scale) if dtype is not None else output
@@ -419,14 +460,16 @@ def _launch_fp8_kernel(
 
 
 def gemma_rmsnorm_quant_fp8(x, weight, residual=None, eps=1e-6,
-                          output_dtypes=(fp8_dtype,), input_scales=(None,)):
+                          output_dtypes=(fp8_dtype,), input_scales=(None,),
+                          residual_output=None):
     """Return normalized inputs per projection; update residual if given.
 
     Static FP8 preserves BF16/FP16 intermediate rounding, which FlashInfer's
     direct FP32-to-FP8 norm output does not provide.
     """
     return _launch_fp8_kernel(x, weight=weight, residual=residual, eps=eps, gemma=True,
-                             output_dtypes=output_dtypes, input_scales=input_scales)
+                             output_dtypes=output_dtypes, input_scales=input_scales,
+                             residual_output=residual_output)
 
 
 def rmsnorm_silu_gate_quant_fp8(x, weight, gate, eps=1e-6, input_scale=None):

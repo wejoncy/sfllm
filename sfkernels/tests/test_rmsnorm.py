@@ -3,6 +3,7 @@ import pytest
 import sf_kernel
 from sfllm.layers.layernorm import GemmaRMSNorm, RMSNorm
 import sfllm.layers.layernorm as layernorm
+from sfllm.layers.quantization.fp8_kernel import gemma_rmsnorm_quant_fp8
 
 # Skip all tests in this module if CUDA is not available
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
@@ -129,3 +130,92 @@ def test_gated_rmsnorm_strided(shape, dtype):
     sf_kernel.gated_rmsnorm(output, values, gate, weight, 1e-6)
 
     torch.testing.assert_close(output, expected, atol=1e-3, rtol=1e-2)
+
+
+@pytest.mark.parametrize("rows", [1, 64, 192, 193])
+@pytest.mark.parametrize("input_scale", [None, 0.02])
+def test_fp8_norm_residual_capture_cuda_graph(rows, input_scale):
+    # Capture the sum before norm updates the residual, then replay with new data.
+    x = torch.randn(rows, 2560, device="cuda", dtype=torch.bfloat16)
+    residual = torch.randn_like(x)
+    weight = torch.randn(2560, device="cuda", dtype=x.dtype)
+    aux = torch.empty_like(x)
+    scale = None if input_scale is None else torch.tensor(input_scale, device="cuda")
+
+    def run():
+        return gemma_rmsnorm_quant_fp8(
+            x, weight, residual, output_dtypes=(torch.float8_e4m3fn, None),
+            input_scales=(scale, None), residual_output=aux,
+        )
+
+    run()
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        actual = run()
+    for _ in range(3):
+        x.normal_()
+        residual.normal_()
+        expected_sum = x + residual
+        expected = gemma_rmsnorm_quant_fp8(
+            x, weight, residual.clone(), output_dtypes=(torch.float8_e4m3fn, None),
+            input_scales=(scale, None),
+        )
+        graph.replay()
+        torch.testing.assert_close(aux, expected_sum, rtol=0, atol=0)
+        torch.testing.assert_close(residual, expected_sum, rtol=0, atol=0)
+        torch.testing.assert_close(actual[0][0].float(), expected[0][0].float(), rtol=0, atol=0)
+        torch.testing.assert_close(actual[0][1], expected[0][1], rtol=0, atol=0)
+        torch.testing.assert_close(actual[1], expected[1], rtol=0, atol=0)
+
+
+def test_fp8_norm_waits_for_dependent_residual_and_gate():
+    if torch.version.hip is not None or torch.cuda.get_device_capability()[0] < 9:
+        pytest.skip("PDL requires SM90 or newer")
+    import triton
+    import triton.language as tl
+    from sfllm.layers.quantization.fp8_kernel import _norm_activation_fp8_kernel
+
+    @triton.jit
+    def producer(S, X, R, G, N: tl.constexpr, B: tl.constexpr):
+        tl.extra.cuda.gdc_wait()
+        tl.extra.cuda.gdc_launch_dependents()
+        idx = tl.program_id(0) * B + tl.arange(0, B)
+        value = tl.load(S + idx, idx < N, 0)
+        tl.store(X + idx, value * 2, idx < N)
+        tl.store(R + idx, value * 3, idx < N)
+        tl.store(G + idx, value * 4, idx < N)
+
+    rows, width = 32, 256
+    src = torch.randn(rows, width, device="cuda", dtype=torch.bfloat16)
+    weight = torch.randn(width, device="cuda", dtype=src.dtype)
+    buffers = [(torch.empty_like(src), torch.empty_like(src), torch.empty_like(src))
+               for _ in range(2)]
+    outputs = [torch.empty_like(src, dtype=torch.float8_e4m3fn) for _ in range(2)]
+    scales = [torch.empty(rows, 1, device="cuda") for _ in range(2)]
+    strides = (width, width, 1)
+
+    def run(index):
+        x, residual, gate = buffers[index]
+        pdl = bool(index)
+        producer[(triton.cdiv(src.numel(), 256),)](
+            src, x, residual, gate, src.numel(), 256, launch_pdl=pdl,
+        )
+        _norm_activation_fp8_kernel[(rows,)](
+            x, weight, residual, gate, (outputs[index],), (scales[index],),
+            strides, strides, strides, 1, 1, width, 1e-6, False, False, 1, width,
+            (False,), 448., ENABLE_PDL=pdl, num_warps=4, launch_pdl=pdl,
+            enable_fp_fusion=False,
+        )
+
+    for index in (0, 1):
+        run(index)
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        for index in (0, 1):
+            run(index)
+    for _ in range(3):
+        src.normal_()
+        graph.replay()
+        torch.testing.assert_close(outputs[0].float(), outputs[1].float(), rtol=0, atol=0)
+        torch.testing.assert_close(scales[0], scales[1], rtol=0, atol=0)
+        torch.testing.assert_close(buffers[0][1], buffers[1][1], rtol=0, atol=0)

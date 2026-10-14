@@ -234,7 +234,7 @@ def test_model_verification_and_commit(monkeypatch, dtype, steps, varlen):
                 cfg,
             )
 
-        def forward(self, positions, hidden, batch, residual, *args):
+        def forward(self, positions, hidden, batch, residual, *args, residual_output=None):
             return self.linear_attn(hidden, batch, *args), residual
 
     monkeypatch.setattr(qwen.Qwen3_5Model, "decoder_layer_class", Layer)

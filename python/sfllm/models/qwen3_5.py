@@ -407,12 +407,15 @@ class Qwen3_5DecoderLayer(nn.Module):
         residual: Optional[torch.Tensor],
         query_start_loc: Optional[torch.Tensor],
         query_start_loc_i64: Optional[torch.Tensor],
+        residual_output: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         if residual is None:
             residual = hidden_states
             hidden_states = self.input_layernorm(hidden_states)
         else:
-            hidden_states, residual = self.input_layernorm(hidden_states, residual)
+            hidden_states, residual = self.input_layernorm(
+                hidden_states, residual, residual_output=residual_output,
+            )
         if self.layer_type == "full_attention":
             hidden_states = self.self_attn(positions, hidden_states, forward_batch)
         else:
@@ -516,6 +519,7 @@ class Qwen3_5Model(nn.Module):
         hidden_states = self.embed_tokens(input_ids) if input_embeds is None else input_embeds
         residual = None
         aux_hidden_states = []
+        residual_output = None
         query_start_loc = None
         query_start_loc_i64 = None
         if forward_batch.forward_mode == ForwardMode.EXTEND:
@@ -554,9 +558,16 @@ class Qwen3_5Model(nn.Module):
                 residual,
                 query_start_loc,
                 query_start_loc_i64,
+                residual_output=residual_output,
             )
+            residual_output = None
             if layer_id in self.layers_to_capture:
-                aux_hidden_states.append(hidden_states + residual)
+                if (layer_id + 1 < len(self.layers)
+                        and self.layers[layer_id + 1].input_layernorm.fp8_output):
+                    residual_output = torch.empty_like(hidden_states)
+                    aux_hidden_states.append(residual_output)
+                else:
+                    aux_hidden_states.append(hidden_states + residual)
         if residual is not None:
             hidden_states, _ = self.norm(hidden_states, residual)
         else:
