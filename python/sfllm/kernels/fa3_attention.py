@@ -13,10 +13,12 @@ def _build_page_table_kernel(
     page_table,
     cache_seqlens,
     page_table_stride: tl.constexpr,
+    page_table_capacity: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
     APPEND_QUERY: tl.constexpr,
 ):
     batch_idx = tl.program_id(0)
+    block_idx = tl.program_id(1)
     prefix_start = tl.load(kv_indptr + batch_idx).to(tl.int64)
     prefix_end = tl.load(kv_indptr + batch_idx + 1).to(tl.int64)
     prefix_len = prefix_end - prefix_start
@@ -28,32 +30,35 @@ def _build_page_table_kernel(
     else:
         total_len = prefix_len
 
-    tl.store(cache_seqlens + batch_idx, total_len)
-    for offset in range(0, total_len, BLOCK_SIZE):
-        offsets = offset + tl.arange(0, BLOCK_SIZE)
-        mask = offsets < total_len
-        if APPEND_QUERY:
-            from_prefix = offsets < prefix_len
-            prefix_offsets = tl.minimum(offsets, prefix_len - 1)
-            query_offsets = tl.maximum(offsets - prefix_len, 0)
-            prefix_locs = tl.load(
-                kv_indices + prefix_start + prefix_offsets,
-                mask=mask & from_prefix,
-                other=0,
-            )
-            query_locs = tl.load(
-                out_cache_loc + query_start + query_offsets,
-                mask=mask & ~from_prefix,
-                other=0,
-            )
-            locs = tl.where(from_prefix, prefix_locs, query_locs)
-        else:
-            locs = tl.load(kv_indices + prefix_start + offsets, mask=mask, other=0)
-        tl.store(
-            page_table + batch_idx * page_table_stride + offsets,
-            locs.to(tl.int32),
-            mask=mask,
+    if block_idx == 0:
+        tl.store(cache_seqlens + batch_idx, total_len)
+    offset = block_idx * BLOCK_SIZE
+    if offset >= total_len:
+        return
+    offsets = offset + tl.arange(0, BLOCK_SIZE)
+    mask = (offsets < total_len) & (offsets < page_table_capacity)
+    if APPEND_QUERY:
+        from_prefix = offsets < prefix_len
+        prefix_offsets = tl.minimum(offsets, prefix_len - 1)
+        query_offsets = tl.maximum(offsets - prefix_len, 0)
+        prefix_locs = tl.load(
+            kv_indices + prefix_start + prefix_offsets,
+            mask=mask & from_prefix,
+            other=0,
         )
+        query_locs = tl.load(
+            out_cache_loc + query_start + query_offsets,
+            mask=mask & ~from_prefix,
+            other=0,
+        )
+        locs = tl.where(from_prefix, prefix_locs, query_locs)
+    else:
+        locs = tl.load(kv_indices + prefix_start + offsets, mask=mask, other=0)
+    tl.store(
+        page_table + batch_idx * page_table_stride + offsets,
+        locs.to(tl.int32),
+        mask=mask,
+    )
 
 
 def build_page_table(
@@ -66,7 +71,9 @@ def build_page_table(
     *,
     append_query: bool,
 ) -> None:
-    _build_page_table_kernel[(page_table.shape[0],)](
+    _build_page_table_kernel[
+        (page_table.shape[0], triton.cdiv(page_table.shape[1], 1024))
+    ](
         kv_indices,
         kv_indptr,
         out_cache_loc,
@@ -74,7 +81,8 @@ def build_page_table(
         page_table,
         cache_seqlens,
         page_table.stride(0),
-        BLOCK_SIZE=256,
+        page_table_capacity=page_table.shape[1],
+        BLOCK_SIZE=1024,
         APPEND_QUERY=append_query,
         num_warps=4,
     )
