@@ -144,7 +144,6 @@ class DFlash2Attention(Qwen3Attention):
         )
 
 
-@torch.compile(dynamic=True)
 def _grouped_conv(
     hidden_states: torch.Tensor,
     delta: torch.Tensor,
@@ -170,6 +169,7 @@ def _grouped_conv(
     return output.flatten(-2)
 
 
+@torch._dynamo.mark_static
 class DFlash2GroupedConv(nn.Module):
     """Block-local dynamic depthwise convolution used by DFlash2."""
 
@@ -189,6 +189,7 @@ class DFlash2GroupedConv(nn.Module):
             int(hidden_size), 2 * self.taps * self.num_groups, bias=False
         )
 
+    @torch.compile(dynamic=True)
     def _convolve(
         self, hidden_states: torch.Tensor, coefficients: torch.Tensor, side: int
     ) -> torch.Tensor:
