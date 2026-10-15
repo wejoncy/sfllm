@@ -1439,7 +1439,7 @@ class GatedDeltaNetBackend:
                 cu_seqlens=query_start_loc_i64,
                 use_qk_l2norm_in_kernel=False,
                 output_state=output_state,
-                use_cp=True,
+                use_cp=False,
             )
         if plan is not None:
             return _finish_gdn_prefill(
@@ -1468,6 +1468,8 @@ class GatedDeltaNetBackend:
         ssm_state_indices: torch.Tensor = None,
         ssm_output_indices: torch.Tensor = None,
         ssm_journal: GDNJournal = None,
+        ssm_journal_steps: torch.Tensor = None,
+        ssm_journal_epoch: torch.Tensor = None,
         cu_seqlens: torch.Tensor = None,
         forward_batch=None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -1514,7 +1516,8 @@ class GatedDeltaNetBackend:
                 mixed_qkv, decay, beta, a_log, dt_bias, ssm_states,
                 ssm_state_indices if ssm_state_indices is not None else state_indices,
                 num_k_heads, ssm_journal, cu_seqlens, request_order,
-                precomputed=True, output_dtype=projected_qkvz.dtype,
+                ssm_journal_steps, ssm_journal_epoch, precomputed=True,
+                verify_bound=verify_bound, output_dtype=projected_qkvz.dtype,
             )
             return core, z
         mixed_qkv, z, b, a = fused_qkvzba_conv_decode(
@@ -1535,6 +1538,7 @@ class GatedDeltaNetBackend:
             core = packed_gdn_journal_verify(
                 mixed_qkv, a, b, a_log, dt_bias, ssm_states, state_indices,
                 num_k_heads, ssm_journal, cu_seqlens, request_order,
+                ssm_journal_steps, ssm_journal_epoch, verify_bound=verify_bound,
             )
         # BF16 verification has one implementation, independent of ordinary decode.
         elif cu_seqlens is not None or self.decode_backend == "triton" or (

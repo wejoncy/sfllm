@@ -42,7 +42,7 @@ def test_varlen_verify_outputs_and_states(kind, conv_width, h, hv, k, v):
     writes = torch.arange(slots, slots + batch * capacity, device="cuda",
                           dtype=torch.int32).view(batch, capacity)
     journal = tuple(torch.empty(*shape, device="cuda") for shape in (
-        (1, batch, hv, capacity, v), (1, batch, hv, capacity, k),
+        (1, batch, hv, capacity, v), (1, batch, h, capacity, k),
         (1, batch, hv, capacity),
     )) if kind == "journal" else None
     backend = GatedDeltaNetBackend("triton", "triton")
@@ -151,18 +151,16 @@ def test_varlen_verify_outputs_and_states(kind, conv_width, h, hv, k, v):
                                    atol=1e-6 if kind == "bf16" else 2e-7)
 
 
-@pytest.mark.parametrize("kind,attention_backend,varlen,conv_width", [
-    ("journal", "fa3", True, 4),
-    ("fp32", "fa3", True, 4),
-    ("bf16", "fa3", True, 4),
-    ("journal", "triton", True, 4),
-    ("journal", "fa3", False, 4),
-    ("bf16", "triton", False, 4),
-    ("journal", "fa3", True, 3),
-    ("journal", "triton", False, 3),
+@pytest.mark.parametrize("kind,attention_backend,varlen", [
+    ("journal", "fa3", True),
+    ("fp32", "fa3", True),
+    ("bf16", "fa3", True),
+    ("journal", "triton", True),
+    ("journal", "fa3", False),
+    ("bf16", "triton", False),
 ])
 @torch.inference_mode()
-def test_target_forward_and_commit_cuda_graph(monkeypatch, kind, attention_backend, varlen, conv_width):
+def test_target_forward_and_commit_cuda_graph(monkeypatch, kind, attention_backend, varlen):
     from types import SimpleNamespace
 
     from transformers import Qwen3_5Config, Qwen3_5TextConfig
@@ -193,9 +191,8 @@ def test_target_forward_and_commit_cuda_graph(monkeypatch, kind, attention_backe
         vocab_size=128, hidden_size=128, intermediate_size=256, num_hidden_layers=3,
         layer_types=["linear_attention", "full_attention", "linear_attention"],
         num_attention_heads=2, num_key_value_heads=1, head_dim=64,
-        linear_num_key_heads=4, linear_num_value_heads=8,
-        linear_key_head_dim=128, linear_value_head_dim=128,
-        linear_conv_kernel_dim=conv_width,
+        linear_num_key_heads=2, linear_num_value_heads=4,
+        linear_key_head_dim=64, linear_value_head_dim=64,
         max_position_embeddings=256,
         rope_parameters={"rope_type": "default", "rope_theta": 10000.,
                          "partial_rotary_factor": .5},
@@ -268,7 +265,9 @@ def test_target_forward_and_commit_cuda_graph(monkeypatch, kind, attention_backe
     if backbone.recurrent_state.journal is None:
         state_buffers.append(backbone.recurrent_state.current_slots)
     else:
-        state_buffers.extend(backbone.recurrent_state.journal)
+        state_buffers.extend((backbone.recurrent_state.journal_steps,
+                              backbone.recurrent_state.journal_epoch,
+                              *backbone.recurrent_state.journal))
 
     def run():
         before_order_calls = order_calls

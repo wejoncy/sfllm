@@ -60,3 +60,12 @@ try:
 except AttributeError:
     print("Warning: CUDA kernels not available. Functions may not be registered properly.")
     __all__ = []
+
+# Hopper GEMM is optional at build time; other architectures keep their
+# existing quantized matmul implementation.
+if hasattr(torch.ops.sfkernels, "fp8_scaled_mm_sm90"):
+    fp8_scaled_mm_sm90 = torch.ops.sfkernels.fp8_scaled_mm_sm90
+    __all__.append("fp8_scaled_mm_sm90")
+if hasattr(torch.ops.sfkernels, "fp8_gate_up_sm90"):
+    fp8_gate_up_sm90 = torch.ops.sfkernels.fp8_gate_up_sm90
+    __all__.append("fp8_gate_up_sm90")

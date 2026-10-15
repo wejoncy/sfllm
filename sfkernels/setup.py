@@ -14,6 +14,7 @@
 # ==============================================================================
 
 import os
+import importlib.util
 import platform
 import shutil
 import subprocess
@@ -27,6 +28,22 @@ from torch.utils.cpp_extension import BuildExtension, CUDAExtension
 
 root = Path(__file__).parent.resolve()
 arch = platform.machine().lower()
+
+
+def find_cutlass():
+    """Use the build environment's FlashInfer headers, without runtime JIT."""
+    candidates = []
+    if os.environ.get("CUTLASS_PATH"):
+        candidates.append(Path(os.environ["CUTLASS_PATH"]))
+    spec = importlib.util.find_spec("flashinfer")
+    if spec is not None and spec.origin:
+        candidates.append(Path(spec.origin).parent / "data" / "cutlass")
+    return next(
+        (p for p in candidates if (p / "include/cutlass/cutlass.h").is_file()), None
+    )
+
+
+cutlass_root = find_cutlass()
 
 
 def _get_version():
@@ -69,7 +86,11 @@ class CMakeBuild(build_ext):
 
         # Keep the build directory stable -> incremental rebuilds.
         gpu_target = os.environ.get("GPU_TARGET")
-        if gpu_target is None and torch.cuda.is_available() and torch.version.hip is None:
+        if (
+            gpu_target is None
+            and torch.cuda.is_available()
+            and torch.version.hip is None
+        ):
             try:
                 prop = torch.cuda.get_device_properties(0)
                 gpu_target = str(prop.major * 10 + prop.minor)
@@ -84,7 +105,11 @@ class CMakeBuild(build_ext):
         except Exception:
             torch_cuda_arch_list = "8.6"
 
-        torch_cuda_arch_list = os.environ.get("TORCH_CUDA_ARCH_LIST", torch_cuda_arch_list)
+        torch_cuda_arch_list = os.environ.get(
+            "TORCH_CUDA_ARCH_LIST", torch_cuda_arch_list
+        )
+        if gpu_target == "90" and cutlass_root is not None:
+            torch_cuda_arch_list = "9.0a"
 
         operator_namespace = os.environ.get("OPERATOR_NAMESPACE", "sfkernels")
 
@@ -100,6 +125,8 @@ class CMakeBuild(build_ext):
             f"-DCMAKE_PREFIX_PATH={torch.utils.cmake_prefix_path}",
             f"-DTORCH_CUDA_ARCH_LIST={torch_cuda_arch_list}",
         ]
+        if cutlass_root is not None:
+            cmake_args += [f"-DCUTLASS_PATH={cutlass_root}"]
 
         build_args = ["--config", cfg]
         if use_ninja:
@@ -111,8 +138,12 @@ class CMakeBuild(build_ext):
         if "CMAKE_BUILD_PARALLEL_LEVEL" not in os.environ:
             build_args += ["--", f"-j{os.cpu_count() or 8}"]
 
-        subprocess.check_call(["cmake", ext.sourcedir, *cmake_args], cwd=build_temp, env=cmake_env)
-        subprocess.check_call(["cmake", "--build", ".", *build_args], cwd=build_temp, env=cmake_env)
+        subprocess.check_call(
+            ["cmake", ext.sourcedir, *cmake_args], cwd=build_temp, env=cmake_env
+        )
+        subprocess.check_call(
+            ["cmake", "--build", ".", *build_args], cwd=build_temp, env=cmake_env
+        )
 
         # CMake builds an untagged module name (e.g. common_ops.pyd). The setuptools
         # build pipeline expects an ABI-tagged filename (e.g. common_ops.cp312-win_amd64.pyd)
@@ -190,7 +221,9 @@ else:
         cxx_flags = ["-O3"]
         libraries = ["hiprtc", "amdhip64", "c10", "torch", "torch_python"]
         extra_link_args = [
-            "-Wl,-rpath,$ORIGIN/../../torch/lib", f"-L/usr/lib/{arch}-linux-gnu"]
+            "-Wl,-rpath,$ORIGIN/../../torch/lib",
+            f"-L/usr/lib/{arch}-linux-gnu",
+        ]
         nvcc_flags = [
             "-DNDEBUG",
             f"-DOPERATOR_NAMESPACE={operator_namespace}",
@@ -206,7 +239,9 @@ else:
         # Linux specific flags
         cxx_flags = ["-O3", "-fopenmp", "-lgomp", "-std=c++17"]
         extra_link_args = [
-            "-Wl,-rpath,$ORIGIN/../../torch/lib", f"-L/usr/lib/{arch}-linux-gnu"]
+            "-Wl,-rpath,$ORIGIN/../../torch/lib",
+            f"-L/usr/lib/{arch}-linux-gnu",
+        ]
         libraries = ["c10", "torch", "torch_python"]
     else:
         assert False, "Unsupported platform or CUDA/HIP not available."
@@ -217,6 +252,23 @@ if gpu_target not in ["70", "86", "80", "90", "gfx942"]:
         f"Warning: Unsupported GPU architecture detected '{gpu_target}'. Expected 'sm70' or 'sm86'."
     )
     sys.exit(1)
+
+if gpu_target == "90" and torch.version.hip is None and cutlass_root is not None:
+    sources += [
+        "csrc/gemm/fp8_scaled_mm_sm90.cu",
+    ]
+    include_dirs += [cutlass_root / "include", cutlass_root / "tools/util/include"]
+    nvcc_flags = [
+        flag.replace("compute_90,code=sm_90", "compute_90a,code=sm_90a")
+        for flag in nvcc_flags
+    ]
+    nvcc_flags += [
+        "-DSFKERNELS_ENABLE_SM90_GEMM",
+        "-DCUTLASS_ENABLE_GDC_FOR_SM90",
+        "--expt-relaxed-constexpr",
+        "--expt-extended-lambda",
+    ]
+    cxx_flags.append("-DSFKERNELS_ENABLE_SM90_GEMM")
 
 # NVCC flags - platform specific
 if os.name == "nt":

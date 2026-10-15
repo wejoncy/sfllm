@@ -5,6 +5,7 @@ from sgl_kernel.flash_attn import get_scheduler_metadata
 
 from sfllm.engine.forward_params import ForwardBatch, ForwardMode
 from sfllm.kernels.fa3_attention import build_page_table, fa3_attention_fwd
+from sfllm.layers.quantization.fp8_kernel import sigmoid_mul_quant_fp8
 from sfllm.layers.verify_attention import prepare_verify_attention, verify_attention
 
 
@@ -156,6 +157,8 @@ class FA3AttentionBackend:
         layer,
         forward_batch: ForwardBatch,
         save_kv_cache: bool = True,
+        output_gate: torch.Tensor = None,
+        output_scale: torch.Tensor = None,
         **kwargs,
     ) -> torch.Tensor:
         if kwargs:
@@ -168,9 +171,12 @@ class FA3AttentionBackend:
                 metadata=self.forward_metadata,
             )
             if output is not None:
-                return output
+                return (sigmoid_mul_quant_fp8(output, output_gate, output_scale)
+                        if output_gate is not None else output)
         if forward_batch.past_key_values is None:
-            return torch.zeros_like(q)
+            output = torch.zeros_like(q)
+            return (sigmoid_mul_quant_fp8(output, output_gate, output_scale)
+                    if output_gate is not None else output)
         if forward_batch.custom_mask is not None:
             raise NotImplementedError("FA3 does not support custom attention masks.")
         if save_kv_cache:
@@ -191,4 +197,6 @@ class FA3AttentionBackend:
             layer_id=layer.layer_id,
             window_size=layer.window_size,
             logit_cap=layer.logit_cap,
+            output_gate=output_gate,
+            output_scale=output_scale,
         )

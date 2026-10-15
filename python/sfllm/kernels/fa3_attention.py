@@ -4,6 +4,7 @@ import triton.language as tl
 from sgl_kernel.flash_attn import flash_attn_with_kvcache
 
 from sfllm.kernels.short_query_attention import _short_query_paged_attention_fwd
+from sfllm.layers.quantization.fp8_kernel import sigmoid_mul_quant_fp8
 
 
 @triton.jit
@@ -103,8 +104,10 @@ def fa3_attention_fwd(
     logit_cap: float = 0.0,
     return_softmax_lse: bool = False,
     window_size: tuple[int, int] = (-1, -1),
+    output_gate: torch.Tensor = None,
+    output_scale: torch.Tensor = None,
 ) -> torch.Tensor:
-    # Hopper short-query GQA benefits from reusing KV across query heads.
+    # Short-query GQA benefits from reusing KV across query heads.
     # Keep FA3's persistent scheduler for small batches and other layouts.
     if (
         1 <= metadata.max_query_len <= 8
@@ -119,10 +122,11 @@ def fa3_attention_fwd(
         and v_buffer.shape[1] == k_buffer.shape[1]
         and q.stride(-1) == k_buffer.stride(-1)
         == v_buffer.stride(-1) == out.stride(-1) == 1
-        and torch.cuda.get_device_capability(q.device)[0] == 9
+        and torch.cuda.get_device_capability(q.device)[0] >= 9
     ):
         return _short_query_paged_attention_fwd(
             q, out, k_buffer, v_buffer, metadata, softmax_scale,
+            output_gate=output_gate, output_scale=output_scale,
         )
     result = flash_attn_with_kvcache(
         q,
@@ -143,4 +147,6 @@ def fa3_attention_fwd(
     )
     if return_softmax_lse:
         return result
+    if output_gate is not None:
+        return sigmoid_mul_quant_fp8(out.view(out.shape[0], -1), output_gate, output_scale)
     return out.view(out.shape[0], -1)

@@ -487,6 +487,80 @@ def sigmoid_mul_quant_fp8(x, gate, input_scale=None):
     return _launch_fp8_kernel(x, gate=gate, input_scales=(input_scale,))
 
 
+@gluon.jit
+def _quantize_from_tile_max_kernel(
+    X,
+    Max,
+    Q,
+    Scale,
+    WIDTH: gl.constexpr,
+    TILES: gl.constexpr,
+    BW: gl.constexpr,
+    BT: gl.constexpr,
+    ENABLE_PDL: gl.constexpr,
+):
+    if ENABLE_PDL:
+        gl.inline_asm_elementwise(
+            "griddepcontrol.wait; // $0", "=r", [], dtype=gl.int32, is_pure=False, pack=1
+        )
+        gl.inline_asm_elementwise(
+            "griddepcontrol.launch_dependents; // $0",
+            "=r",
+            [],
+            dtype=gl.int32,
+            is_pure=False,
+            pack=1,
+        )
+    row = gl.program_id(0)
+    layout: gl.constexpr = gl.BlockedLayout([1], [32], [gl.num_warps()], [0])
+    tiles = gl.arange(0, BT, layout=layout)
+    maximum = gl.max(gl.load(Max + row * TILES + tiles, tiles < TILES, 0.0), 0)
+    scale = gl.div_rn(maximum, 448.0)
+    gl.store(Scale + row, scale)
+    inverse = gl.where(scale == 0.0, 0.0, gl.div_rn(1.0, scale))
+    dim = gl.arange(0, BW, layout=layout)
+    value = gl.load(X + row * WIDTH + dim, dim < WIDTH, 0.0).to(gl.float32)
+    value = gl.minimum(gl.maximum(value * inverse, -448.0), 448.0)
+    gl.store(Q + row * WIDTH + dim, value, dim < WIDTH)
+
+
+def quantize_from_tile_max(x: torch.Tensor, tile_max: torch.Tensor):
+    """Quantize a fused GEMM activation using its FP32 tile maxima."""
+    if (
+        x.ndim != 2
+        or not x.is_contiguous()
+        or tile_max.ndim != 2
+        or (not tile_max.is_contiguous())
+        or (tile_max.shape[0] != x.shape[0])
+        or (tile_max.shape[1] == 0)
+        or (tile_max.dtype != torch.float32)
+        or (tile_max.device != x.device)
+    ):
+        raise ValueError("Fused activation and tile maxima must be contiguous matching row tensors")
+    quant = torch.empty(x.shape, device=x.device, dtype=fp8_dtype)
+    scale = torch.empty((x.shape[0], 1), device=x.device, dtype=torch.float32)
+    enable_pdl = (
+        x.is_cuda
+        and torch.version.hip is None
+        and (1 <= x.shape[0] <= 192)
+        and (torch.cuda.get_device_capability(x.device)[0] >= 9)
+    )
+    _quantize_from_tile_max_kernel[x.shape[0],](
+        x,
+        tile_max,
+        quant,
+        scale,
+        x.shape[1],
+        tile_max.shape[1],
+        triton.next_power_of_2(x.shape[1]),
+        triton.next_power_of_2(tile_max.shape[1]),
+        enable_pdl,
+        num_warps=8,
+        enable_fp_fusion=False,
+        launch_pdl=enable_pdl,
+    )
+    return (quant, scale)
+
 def sglang_per_token_quant_fp8(
     x: torch.Tensor,
     dtype: torch.dtype = fp8_dtype,

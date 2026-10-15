@@ -25,6 +25,14 @@ limitations under the License.
 #include <tuple>
 #include <vector>
 
+#ifdef SFKERNELS_ENABLE_SM90_GEMM
+at::Tensor fp8_scaled_mm_sm90(const at::Tensor& input, const at::Tensor& weight,
+                            const at::Tensor& input_scale, const at::Tensor& weight_scale,
+                            int64_t config, bool enable_pdl);
+std::vector<at::Tensor> fp8_gate_up_sm90(const at::Tensor& input, const at::Tensor& weight,
+                                      const at::Tensor& input_scale, const at::Tensor& weight_scale,
+                                      bool enable_pdl);
+#endif
 
 
 void verify_tree_greedy(

@@ -5,6 +5,11 @@ import os
 import torch
 
 from sfllm.kernels.gdn import scatter_recurrent_state, update_recurrent_state_indices
+from sfllm.kernels.gdn_journal import (
+    gdn_journal_capacity,
+    replay_gdn_journal,
+    reset_journal_pending,
+)
 
 from .storage import Slots
 
@@ -44,7 +49,7 @@ class GatedDeltaNetState:
     No model inspection, checkpoint matching, or eviction belongs here.
     """
 
-    def __init__(self, backends, ssm_shape, conv_shape, *, max_requests,
+    def __init__(self, backends, ssm_shape, conv_shape, *, num_k_heads, max_requests,
                  spec_steps, ssm_dtype, dtype, device):
         self.backends = backends
         layers = len(backends)
@@ -59,6 +64,7 @@ class GatedDeltaNetState:
         self.indices = torch.arange(1, max_requests + 1, dtype=torch.int32, device=device)
         self.current_slots = self.read_slots = self.write_slots = None
         self.conv_journal = self.journal = None
+        self.journal_steps = self.journal_epoch = None
         self.checkpoint_ssm = self.checkpoint_conv = None
         if spec_steps:
             self.conv_journal = torch.empty(
@@ -66,10 +72,20 @@ class GatedDeltaNetState:
             )
             if use_journal:
                 heads, value_dim, key_dim = ssm_shape
-                shape = (layers, max_requests, heads, spec_steps)
-                self.journal = tuple(
-                    torch.empty((*shape, *tail), dtype=torch.float32, device=device)
-                    for tail in ((value_dim,), (key_dim,), ())
+                capacity = gdn_journal_capacity(spec_steps)
+                shape = (layers, max_requests, heads, capacity)
+                self.journal = (
+                    torch.empty((*shape, value_dim), dtype=torch.float32, device=device),
+                    torch.empty((layers, 2, max_requests, num_k_heads, capacity, key_dim),
+                                dtype=torch.float32, device=device),
+                    torch.empty((layers, 2, max_requests, heads, capacity),
+                                dtype=torch.float32, device=device),
+                )
+                self.journal_steps = torch.full(
+                    (max_requests + 1,), -1, dtype=torch.int32, device=device,
+                )
+                self.journal_epoch = torch.zeros(
+                    max_requests + 1, dtype=torch.int32, device=device,
                 )
             else:
                 self.current_slots = (
@@ -87,6 +103,17 @@ class GatedDeltaNetState:
             backend.checkpoint_states = ssm[layer], conv[layer]
             # Capture includes restores; eager misses select the zero-state path.
             backend.use_initial_state = True
+
+    def reset_journal(self, indices):
+        reset_journal_pending(indices, self.journal_steps, self.journal_epoch)
+
+    def flush_journal(self, indices):
+        if self.journal is not None:
+            replay_gdn_journal(
+                self.ssm, self.journal, indices,
+                self.journal_steps, self.journal_epoch,
+            )
+            self.reset_journal(indices)
 
     def tensor(self, values):
         return torch.tensor(values, dtype=torch.int32, device='cpu', pin_memory=True).to(self.ssm.device, non_blocking=True)
