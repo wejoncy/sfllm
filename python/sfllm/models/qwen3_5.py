@@ -16,10 +16,10 @@ import sf_kernel
 from sfllm.engine.forward_params import ForwardBatch, ForwardMode
 from sfllm.engine.cache.state import GatedDeltaNetState
 from sfllm.kernels.gdn import (
-    GatedDeltaNetBackend, gated_rmsnorm, scatter_recurrent_state,
+    GatedDeltaNetBackend, gated_rmsnorm,
     update_recurrent_state_indices,
 )
-from sfllm.kernels.gdn_journal import replay_gdn_journal
+from sfllm.kernels.gdn_journal import commit_conv_journal, replay_gdn_journal
 from sfllm.layers.layernorm import GemmaRMSNorm
 from sfllm.layers.quantization.fp8_kernel import (
     rmsnorm_silu_gate_quant_fp8,
@@ -69,7 +69,7 @@ class Qwen3_5GatedDeltaNet(nn.Module):
         self.conv_states = None
         self.ssm_states = None
         self.state_indices = None
-        self.intermediate_conv = None
+        self.conv_journal = None
         self.ssm_state_indices = None
         self.ssm_output_indices = None
         self.ssm_journal = None
@@ -188,7 +188,7 @@ class Qwen3_5GatedDeltaNet(nn.Module):
         elif mode == ForwardMode.TARGET_VERIFY:
             core, z = self.backend.decode(
                 projected_qkvz, projected_ba,
-                intermediate_conv=self.intermediate_conv[:num_sequences],
+                conv_journal=self.conv_journal[:num_sequences],
                 ssm_output_indices=(
                     self.ssm_output_indices[:num_sequences]
                     if self.ssm_output_indices is not None else None
@@ -487,7 +487,7 @@ class Qwen3_5Model(nn.Module):
         for i, attn in enumerate(attentions):
             attn.conv_states, attn.ssm_states = state.conv[i], state.ssm[i]
             attn.state_indices = state.indices
-            attn.intermediate_conv = state.intermediate_conv[i] if state.intermediate_conv is not None else None
+            attn.conv_journal = state.conv_journal[i] if state.conv_journal is not None else None
             attn.ssm_journal = tuple(t[i] for t in state.journal) if state.journal is not None else None
             attn.ssm_state_indices, attn.ssm_output_indices = state.read_slots, state.write_slots
         self.recurrent_state = state
@@ -629,8 +629,8 @@ class Qwen3_5ForConditionalGeneration(nn.Module, HasBatchState):
         """Commit the anchor and accepted drafts; the bonus is the next anchor."""
         state = self.model.recurrent_state
         indices = state.indices[:accepted_steps.shape[0]]
-        scatter_recurrent_state(
-            state.intermediate_conv, state.conv,
+        commit_conv_journal(
+            state.conv_journal, state.conv,
             indices, accepted_steps,
         )
         if state.journal is not None:

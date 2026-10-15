@@ -19,6 +19,57 @@ from triton.experimental.gluon import language as gl
 GDNJournal = Tuple[torch.Tensor, torch.Tensor, torch.Tensor]
 
 
+@triton.jit
+def _commit_conv_journal_kernel(
+    raw, states, indices, accepted_steps,
+    raw_layer_stride: tl.constexpr, raw_row_stride: tl.constexpr,
+    raw_step_stride: tl.constexpr, state_layer_stride: tl.constexpr,
+    state_slot_stride: tl.constexpr, state_slots: tl.constexpr,
+    indices_stride: tl.constexpr, accepts_stride: tl.constexpr,
+    width: tl.constexpr, history: tl.constexpr, verify_bound: tl.constexpr,
+    block: tl.constexpr,
+):
+    row = tl.program_id(0)
+    layer = tl.program_id(2).to(tl.int64)
+    slot = tl.load(indices + row * indices_stride).to(tl.int64)
+    step = tl.minimum(tl.load(accepted_steps + row * accepts_stride), verify_bound - 1)
+    if slot <= 0 or slot >= state_slots or step < 0:
+        return
+    dim = tl.program_id(1) * block + tl.arange(0, block)
+    mask = dim < width
+    state = states + layer * state_layer_stride + slot * state_slot_stride
+    journal = raw + layer * raw_layer_stride + row * raw_row_stride
+    # Read the old history before overwriting its oldest entry.
+    for tap in tl.static_range(history):
+        source_step = step + tap - history + 1
+        if source_step < 0:
+            value = tl.load(state + dim * history + source_step + history, mask, other=0)
+        else:
+            value = tl.load(journal + source_step * raw_step_stride + dim, mask, other=0)
+        tl.store(state + dim * history + tap, value, mask)
+
+
+def commit_conv_journal(
+    raw: torch.Tensor,
+    states: torch.Tensor,
+    state_indices: torch.Tensor,
+    accepted_steps: torch.Tensor,
+) -> None:
+    """Reconstruct accepted convolution history across all layers in one launch."""
+    layers, _, width, history = states.shape
+    batch = state_indices.numel()
+    if not batch or not layers:
+        return
+    block = 512
+    _commit_conv_journal_kernel[(batch, triton.cdiv(width, block), layers)](
+        raw, states, state_indices, accepted_steps,
+        raw.stride(0), raw.stride(1), raw.stride(2),
+        states.stride(0), states.stride(1), states.shape[1],
+        state_indices.stride(0), accepted_steps.stride(0),
+        width, history, raw.shape[2], block, num_warps=4,
+    )
+
+
 # This separate specialization leaves the existing decode/verify kernels intact.
 @gluon.jit
 def _packed_gdn_journal_kernel(
@@ -51,9 +102,12 @@ def _packed_gdn_journal_kernel(
     block_k: gl.constexpr,
     block_v: gl.constexpr,
     layout_warps: gl.constexpr,
+    precomputed: gl.constexpr,
+    enable_pdl: gl.constexpr,
+    num_tokens,
 ):
-    value_tile = gl.program_id(0)
-    batch_head = gl.program_id(1)
+    value_tile = gl.program_id(1) if precomputed else gl.program_id(0)
+    batch_head = gl.program_id(0) if precomputed else gl.program_id(1)
     batch = batch_head // num_v_heads
     if request_order is not None:
         batch = gl.load(request_order + batch)
@@ -69,9 +123,12 @@ def _packed_gdn_journal_kernel(
     else:
         begin = batch * steps
         length = steps
+    length = gl.minimum(length, gl.maximum(num_tokens - begin, 0))
 
-    # Map K reductions within groups of eight lanes; warps divide the V rows.
-    layout: gl.constexpr = gl.BlockedLayout([1, 4], [4, 8], [layout_warps, 1], [1, 0])
+    if precomputed:
+        layout: gl.constexpr = gl.BlockedLayout([1, 8], [8, 4], [layout_warps, 1], [1, 0])
+    else:
+        layout: gl.constexpr = gl.BlockedLayout([1, 4], [4, 8], [layout_warps, 1], [1, 0])
     key_offsets = gl.arange(0, block_k, layout=gl.SliceLayout(0, layout))
     value_offsets = value_tile * block_v + gl.arange(
         0, block_v, layout=gl.SliceLayout(1, layout)
@@ -80,8 +137,22 @@ def _packed_gdn_journal_kernel(
     value_mask = value_offsets < head_v_dim
     state_mask = value_mask[:, None] & key_mask[None, :]
 
+    if precomputed and cu_seqlens is not None:
+        active_tokens = gl.load(cu_seqlens + gl.num_programs(0) // num_v_heads)
+        if active_tokens < num_tokens:
+            for pad_step in range(capacity):
+                pad_token = batch * capacity + pad_step
+                gl.store(
+                    output + (pad_token * num_v_heads + value_head) * head_v_dim + value_offsets,
+                    0.0, mask=value_mask & (pad_token >= active_tokens) & (pad_token < num_tokens),
+                )
+
     slot = gl.load(state_indices + batch * stride_indices).to(gl.int64)
     if slot <= 0:
+        if enable_pdl:
+            gl.inline_asm_elementwise(
+                "griddepcontrol.wait; // $0", "=r", [], dtype=gl.int32, is_pure=False, pack=1
+            )
         for step in range(length):
             token = begin + step
             output_ptr = output + (token * num_v_heads + value_head) * head_v_dim
@@ -95,6 +166,14 @@ def _packed_gdn_journal_kernel(
     )
     state_ptr = states + slot * stride_state + state_offsets
     state = gl.load(state_ptr, mask=state_mask, other=0.0).to(gl.float32)
+    # Convolution does not write SSM state, so preload it before waiting for QKV.
+    if enable_pdl:
+        gl.inline_asm_elementwise(
+            "griddepcontrol.wait; // $0", "=r", [], dtype=gl.int32, is_pure=False, pack=1
+        )
+        gl.inline_asm_elementwise(
+            "griddepcontrol.launch_dependents; // $0", "=r", [], dtype=gl.int32, is_pure=False, pack=1
+        )
     for step in range(length):
         token = begin + step
         qkv_ptr = mixed_qkv + token * stride_qkv
@@ -117,22 +196,27 @@ def _packed_gdn_journal_kernel(
             other=0.0,
         ).to(gl.float32)
 
-        q *= gl.rsqrt(gl.sum(q * q, axis=0) + 1e-6) * scale
-        k *= gl.rsqrt(gl.sum(k * k, axis=0) + 1e-6)
-        gate_a = gl.load(a + token * stride_a + value_head).to(gl.float32)
-        gate_b = gl.load(b + token * stride_b + value_head).to(gl.float32)
-        decay_log = gl.load(a_log + value_head).to(gl.float32)
-        bias = gl.load(dt_bias + value_head).to(gl.float32)
-        softplus_arg = gate_a + bias
-        softplus = gl.where(
-            softplus_arg <= 20.0,
-            gl.log(1.0 + gl.exp(softplus_arg)),
-            softplus_arg,
-        )
-        decay = gl.exp(-gl.exp(decay_log) * softplus)
+        if precomputed:
+            decay = gl.load(a + token * stride_a + value_head)
+            beta = gl.load(b + token * stride_b + value_head)
+        else:
+            q *= gl.rsqrt(gl.sum(q * q, axis=0) + 1e-6) * scale
+            k *= gl.rsqrt(gl.sum(k * k, axis=0) + 1e-6)
+            gate_a = gl.load(a + token * stride_a + value_head).to(gl.float32)
+            gate_b = gl.load(b + token * stride_b + value_head).to(gl.float32)
+            decay_log = gl.load(a_log + value_head).to(gl.float32)
+            bias = gl.load(dt_bias + value_head).to(gl.float32)
+            softplus_arg = gate_a + bias
+            softplus = gl.where(
+                softplus_arg <= 20.0,
+                gl.log(1.0 + gl.exp(softplus_arg)),
+                softplus_arg,
+            )
+            decay = gl.exp(-gl.exp(decay_log) * softplus)
+            beta = tl.sigmoid(gate_b)
         state *= decay
         prediction = gl.sum(state * k[None, :], axis=1)
-        correction = (v - prediction) * tl.sigmoid(gate_b)
+        correction = (v - prediction) * beta
         state += correction[:, None] * k[None, :]
         result = gl.sum(state * q[None, :], axis=1)
         output_ptr = output + (token * num_v_heads + value_head) * head_v_dim
@@ -157,6 +241,9 @@ def packed_gdn_journal_verify(
     journal: GDNJournal,
     cu_seqlens: torch.Tensor = None,
     request_order: torch.Tensor = None,
+    *,
+    precomputed: bool = False,
+    output_dtype: torch.dtype = None,
 ) -> torch.Tensor:
     """Verify a linear block without writing full candidate state snapshots.
 
@@ -187,25 +274,31 @@ def packed_gdn_journal_verify(
         raise ValueError("GDN verification requires a nonempty, equal-width block per row")
     else:
         steps = num_tokens // batch
-    output = mixed_qkv.new_empty((num_tokens, num_v_heads, head_v_dim))
+    output = mixed_qkv.new_empty((num_tokens, num_v_heads, head_v_dim), dtype=output_dtype or mixed_qkv.dtype)
     # Keep the register footprint small while distributing V rows over two warps.
     # The resulting FP32 reduction order can differ slightly from snapshot verify.
-    block_v = min(triton.next_power_of_2(head_v_dim), 16)
+    block_v = min(triton.next_power_of_2(head_v_dim), 64 if precomputed else 16)
     num_warps = 2
+    enable_pdl = (precomputed and 0 < num_tokens <= 192 and states.is_cuda
+                  and torch.version.hip is None
+                  and torch.cuda.get_device_capability(states.device)[0] >= 9)
     # Keep common blocks' index arithmetic small without imposing a size limit.
     wide_offsets = max(
         num_tokens * max(mixed_qkv.stride(0), a.stride(0), b.stride(0),
                          num_v_heads * head_v_dim),
         updates.numel(), keys.numel(), decays.numel(),
     ) >= 2**31
-    _packed_gdn_journal_kernel[(triton.cdiv(head_v_dim, block_v), batch * num_v_heads)](
+    grid = ((batch * num_v_heads, triton.cdiv(head_v_dim, block_v)) if precomputed
+            else (triton.cdiv(head_v_dim, block_v), batch * num_v_heads))
+    _packed_gdn_journal_kernel[grid](
         mixed_qkv, a, b, a_log, dt_bias, output, states, state_indices,
         updates, keys, decays,
         mixed_qkv.stride(0), a.stride(0), b.stride(0), states.stride(0),
         state_indices.stride(0), cu_seqlens, request_order, capacity, wide_offsets, head_k_dim**-0.5,
         num_k_heads, num_v_heads, head_k_dim, head_v_dim, steps,
         triton.next_power_of_2(head_k_dim), block_v, layout_warps=num_warps,
-        num_warps=num_warps, num_stages=3,
+        precomputed=precomputed, enable_pdl=enable_pdl, num_tokens=num_tokens,
+        num_warps=num_warps, num_stages=3, launch_pdl=enable_pdl,
     )
     return output
 

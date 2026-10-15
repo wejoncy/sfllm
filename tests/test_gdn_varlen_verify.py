@@ -6,14 +6,20 @@ import torch
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
 
 
-@pytest.mark.parametrize("kind", ["journal", "fp32", "bf16"])
-def test_varlen_verify_outputs_and_states(kind):
-    from sfllm.kernels.gdn import GatedDeltaNetBackend, scatter_recurrent_state
-    from sfllm.kernels.gdn_journal import replay_gdn_journal
+@pytest.mark.parametrize("kind,conv_width,h,hv,k,v", [
+    ("journal", 4, 2, 4, 64, 80),
+    ("fp32", 4, 2, 4, 64, 80),
+    ("bf16", 4, 2, 4, 64, 80),
+    ("journal", 3, 4, 8, 128, 128),
+    ("journal", 4, 4, 8, 128, 128),
+])
+def test_varlen_verify_outputs_and_states(kind, conv_width, h, hv, k, v):
+    from sfllm.kernels.gdn import GatedDeltaNetBackend
+    from sfllm.kernels.gdn_journal import commit_conv_journal, replay_gdn_journal
 
     torch.manual_seed(81)
-    batch, capacity, h, hv, k, v = 20, 8, 2, 4, 64, 80
-    slots, conv_width = batch + 5, 4
+    batch, capacity = 20, 8
+    slots = batch + 5
     lengths = torch.tensor([(i * 3) % 8 + 1 for i in range(batch)])
     tokens = int(lengths.sum())
     cu = torch.empty(batch + 1, device="cuda", dtype=torch.int64)
@@ -31,8 +37,8 @@ def test_varlen_verify_outputs_and_states(kind):
     state = (initial.clone() if kind == "journal" else
              torch.cat((initial, initial.new_empty(batch * capacity, hv, v, k))))
     conv = initial_conv.clone()
-    intermediate = torch.empty(1, batch, capacity, conv_dim, conv_width - 1,
-                              device="cuda", dtype=torch.bfloat16)
+    conv_journal = torch.empty(1, batch, capacity, conv_dim,
+                               device="cuda", dtype=torch.bfloat16)
     writes = torch.arange(slots, slots + batch * capacity, device="cuda",
                           dtype=torch.int32).view(batch, capacity)
     journal = tuple(torch.empty(*shape, device="cuda") for shape in (
@@ -46,7 +52,7 @@ def test_varlen_verify_outputs_and_states(kind):
             x, gates, conv_weight=weight, conv_states=conv, ssm_states=state,
             state_indices=indices, a_log=a_log, dt_bias=bias, num_k_heads=h,
             num_v_heads=hv, head_k_dim=k, head_v_dim=v,
-            intermediate_conv=intermediate[0],
+            conv_journal=conv_journal[0],
             ssm_output_indices=writes if journal is None else None,
             ssm_journal=tuple(t[0] for t in journal) if journal is not None else None,
             cu_seqlens=cu,
@@ -73,7 +79,7 @@ def test_varlen_verify_outputs_and_states(kind):
         if journal is None:
             state[slots:].fill_(17)
         conv.copy_(initial_conv)
-        intermediate.fill_(17)
+        conv_journal.fill_(17)
         if journal is not None:
             for tensor in journal:
                 tensor.fill_(17)
@@ -103,14 +109,15 @@ def test_varlen_verify_outputs_and_states(kind):
             expected_state.append(row_state)
             begin += length
             if slot > 0 and length:
-                assert torch.equal(intermediate[0, row, :length], torch.stack(row_conv))
+                assert torch.equal(conv_journal[0, row, :length],
+                                   x[begin - length:begin, :conv_dim])
                 if journal is None:
                     torch.testing.assert_close(
                         state[writes[row, :length]], torch.stack(row_state), rtol=1e-2, atol=1e-6,
                     )
-            assert bool((intermediate[0, row, length:] == 17).all())
+            assert bool((conv_journal[0, row, length:] == 17).all())
             if slot <= 0:
-                assert bool((intermediate[0, row] == 17).all())
+                assert bool((conv_journal[0, row] == 17).all())
             if journal is not None:
                 for tensor in journal:
                     assert bool((tensor[0, row, :, length:] == 17).all())
@@ -129,7 +136,7 @@ def test_varlen_verify_outputs_and_states(kind):
             if slot > 0 and step >= 0:
                 expected_final[slot] = expected_state[row][step]
                 expected_final_conv[slot] = expected_conv[row][step]
-        scatter_recurrent_state(intermediate, conv.unsqueeze(0), indices.contiguous(), last)
+        commit_conv_journal(conv_journal, conv.unsqueeze(0), indices.contiguous(), last)
         assert torch.equal(conv, expected_final_conv)
         if journal is not None:
             replay_gdn_journal(state.unsqueeze(0), journal, indices, last)
@@ -144,16 +151,18 @@ def test_varlen_verify_outputs_and_states(kind):
                                    atol=1e-6 if kind == "bf16" else 2e-7)
 
 
-@pytest.mark.parametrize("kind,attention_backend,varlen", [
-    ("journal", "fa3", True),
-    ("fp32", "fa3", True),
-    ("bf16", "fa3", True),
-    ("journal", "triton", True),
-    ("journal", "fa3", False),
-    ("bf16", "triton", False),
+@pytest.mark.parametrize("kind,attention_backend,varlen,conv_width", [
+    ("journal", "fa3", True, 4),
+    ("fp32", "fa3", True, 4),
+    ("bf16", "fa3", True, 4),
+    ("journal", "triton", True, 4),
+    ("journal", "fa3", False, 4),
+    ("bf16", "triton", False, 4),
+    ("journal", "fa3", True, 3),
+    ("journal", "triton", False, 3),
 ])
 @torch.inference_mode()
-def test_target_forward_and_commit_cuda_graph(monkeypatch, kind, attention_backend, varlen):
+def test_target_forward_and_commit_cuda_graph(monkeypatch, kind, attention_backend, varlen, conv_width):
     from types import SimpleNamespace
 
     from transformers import Qwen3_5Config, Qwen3_5TextConfig
@@ -184,8 +193,9 @@ def test_target_forward_and_commit_cuda_graph(monkeypatch, kind, attention_backe
         vocab_size=128, hidden_size=128, intermediate_size=256, num_hidden_layers=3,
         layer_types=["linear_attention", "full_attention", "linear_attention"],
         num_attention_heads=2, num_key_value_heads=1, head_dim=64,
-        linear_num_key_heads=2, linear_num_value_heads=4,
-        linear_key_head_dim=64, linear_value_head_dim=64,
+        linear_num_key_heads=4, linear_num_value_heads=8,
+        linear_key_head_dim=128, linear_value_head_dim=128,
+        linear_conv_kernel_dim=conv_width,
         max_position_embeddings=256,
         rope_parameters={"rope_type": "default", "rope_theta": 10000.,
                          "partial_rotary_factor": .5},
@@ -203,6 +213,10 @@ def test_target_forward_and_commit_cuda_graph(monkeypatch, kind, attention_backe
     args.spec_adaptive_verify = None if varlen else "d4t4"
     backbone.recurrent_state.ssm.normal_(0, .1)
     backbone.recurrent_state.conv.normal_(0, .1)
+    if backbone.recurrent_state.journal is not None:
+        # Compare untouched journal capacity too, using a finite sentinel.
+        for tensor in backbone.recurrent_state.journal:
+            tensor.fill_(17)
 
     order_calls = 0
     original_order = gdn.gdn_verify_request_order
@@ -253,6 +267,8 @@ def test_target_forward_and_commit_cuda_graph(monkeypatch, kind, attention_backe
     state_buffers = [backbone.recurrent_state.ssm, backbone.recurrent_state.conv]
     if backbone.recurrent_state.journal is None:
         state_buffers.append(backbone.recurrent_state.current_slots)
+    else:
+        state_buffers.extend(backbone.recurrent_state.journal)
 
     def run():
         before_order_calls = order_calls

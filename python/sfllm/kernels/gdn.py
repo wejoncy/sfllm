@@ -501,6 +501,270 @@ def gated_rmsnorm(
     return out
 
 
+@tg.jit
+def _decode_convolve(
+    projection,
+    conv_states,
+    conv_weight,
+    slot,
+    begin,
+    step,
+    columns,
+    mask,
+    stride_projection: gl.constexpr,
+    stride_state: gl.constexpr,
+    kernel_width: gl.constexpr,
+    valid,
+):
+    x = gl.load(projection + (begin + step) * stride_projection + columns, mask, other=0)
+    acc = gl.full(columns.shape, 0.0, gl.float32, columns.type.layout)
+    for tap in gl.static_range(kernel_width - 1):
+        hist = step + tap
+        initial = gl.load(
+            conv_states + slot * stride_state + columns * (kernel_width - 1) + hist,
+            mask & valid & (hist < kernel_width - 1),
+            other=0,
+        )
+        proposed = gl.load(
+            projection + (begin + hist - kernel_width + 1) * stride_projection + columns,
+            mask & valid & (hist >= kernel_width - 1),
+            other=0,
+        )
+        old = gl.where(hist < kernel_width - 1, initial, proposed)
+        weight = gl.load(conv_weight + columns * kernel_width + tap, mask, other=0)
+        acc = acc + (old.to(gl.float32) * weight.to(gl.float32)).to(projection.dtype.element_ty).to(
+            gl.float32
+        )
+    last = gl.load(conv_weight + columns * kernel_width + kernel_width - 1, mask, other=0)
+    acc = acc + (x.to(gl.float32) * last.to(gl.float32)).to(projection.dtype.element_ty).to(
+        gl.float32
+    )
+    silu = (acc / (1.0 + gl.exp(-acc))).to(projection.dtype.element_ty).to(gl.float32)
+    return (gl.where(valid, silu, x.to(gl.float32)), x)
+
+
+@tg.jit(do_not_specialize=["num_tokens"])
+def _split_prepare_gdn_journal_kernel(
+    projection,
+    gates,
+    conv_states,
+    conv_weight,
+    state_indices,
+    cu_seqlens,
+    a_log,
+    dt_bias,
+    mixed_qkv,
+    output_gate,
+    decays,
+    betas,
+    raw_journal,
+    stride_projection: gl.constexpr,
+    stride_gates: gl.constexpr,
+    stride_state: gl.constexpr,
+    state_slots: gl.constexpr,
+    num_k_heads: gl.constexpr,
+    num_v_heads: gl.constexpr,
+    head_k_dim: gl.constexpr,
+    head_v_dim: gl.constexpr,
+    kernel_width: gl.constexpr,
+    verify_bound: gl.constexpr,
+    block_heads: gl.constexpr,
+    layout_warps: gl.constexpr,
+    num_tokens,
+    stride_indices: gl.constexpr,
+    equal_steps: gl.constexpr,
+    ENABLE_PDL: gl.constexpr,
+):
+    if ENABLE_PDL:
+        gl.inline_asm_elementwise(
+            "griddepcontrol.wait; // $0", "=r", [], dtype=gl.int32, is_pure=False, pack=1
+        )
+    request = gl.program_id(0)
+    head_tile = gl.program_id(1)
+    step = gl.program_id(2)
+    if cu_seqlens is not None:
+        begin = gl.load(cu_seqlens + request)
+        end = gl.minimum(gl.load(cu_seqlens + request + 1), num_tokens)
+        active_tokens = gl.load(cu_seqlens + gl.num_programs(0))
+    else:
+        begin = request * equal_steps
+        end = begin + equal_steps
+        active_tokens = num_tokens
+    token = begin + step
+    slot = gl.load(state_indices + request * stride_indices).to(gl.int64)
+    valid = (slot > 0) & (slot < state_slots)
+    layout: gl.constexpr = gl.BlockedLayout([1, 1], [1, 32], [layout_warps, 1], [1, 0])
+    norm_layout: gl.constexpr = gl.BlockedLayout([1, 8], [8, 4], [layout_warps, 1], [1, 0])
+    heads = head_tile * block_heads + gl.arange(0, block_heads, layout=gl.SliceLayout(1, layout))
+    head_offsets = gl.arange(0, head_k_dim, layout=gl.SliceLayout(0, layout))
+    columns = heads[:, None] * head_k_dim + head_offsets[None, :]
+    mask = heads[:, None] < 2 * num_k_heads + num_v_heads
+    qkv_dim: gl.constexpr = 2 * num_k_heads * head_k_dim + num_v_heads * head_v_dim
+    if cu_seqlens is not None:
+        pad_token = request * verify_bound + step
+        if (pad_token >= active_tokens) & (pad_token < num_tokens):
+            gl.store(mixed_qkv + pad_token * qkv_dim + columns, 0.0, mask)
+            if head_tile * block_heads >= 2 * num_k_heads:
+                value_heads = heads - 2 * num_k_heads
+                gl.store(
+                    output_gate
+                    + (pad_token * num_v_heads + value_heads[:, None]) * head_v_dim
+                    + head_offsets[None, :],
+                    0.0,
+                    mask,
+                )
+                gl.store(
+                    decays + pad_token * num_v_heads + value_heads, 0.0, value_heads < num_v_heads
+                )
+                gl.store(
+                    betas + pad_token * num_v_heads + value_heads, 0.0, value_heads < num_v_heads
+                )
+    if token >= end:
+        return
+    if ENABLE_PDL:
+        gl.inline_asm_elementwise(
+            "griddepcontrol.launch_dependents; // $0",
+            "=r",
+            [],
+            dtype=gl.int32,
+            is_pure=False,
+            pack=1,
+        )
+    value, raw = _decode_convolve(
+        projection,
+        conv_states,
+        conv_weight,
+        slot,
+        begin,
+        step,
+        columns,
+        mask,
+        stride_projection,
+        stride_state,
+        kernel_width,
+        valid,
+    )
+    gl.store(raw_journal + (request * verify_bound + step) * qkv_dim + columns, raw, mask & valid)
+    if head_tile * block_heads < 2 * num_k_heads:
+        norm_heads = head_tile * block_heads + gl.arange(
+            0, block_heads, layout=gl.SliceLayout(1, norm_layout)
+        )
+        norm_offsets = gl.arange(0, head_k_dim, layout=gl.SliceLayout(0, norm_layout))
+        normalized = gl.convert_layout(value, norm_layout)
+        factor = gl.rsqrt(gl.sum(normalized * normalized, 1) + 1e-06)
+        if head_tile * block_heads < num_k_heads:
+            factor = factor * head_k_dim ** (-0.5)
+        normalized *= factor[:, None]
+        gl.store(
+            mixed_qkv + token * qkv_dim + norm_heads[:, None] * head_k_dim + norm_offsets[None, :],
+            normalized,
+            norm_heads[:, None] < 2 * num_k_heads,
+        )
+    else:
+        gl.store(mixed_qkv + token * qkv_dim + columns, value, mask)
+        value_heads = heads - 2 * num_k_heads
+        z = gl.load(
+            projection
+            + token * stride_projection
+            + qkv_dim
+            + value_heads[:, None] * head_v_dim
+            + head_offsets[None, :],
+            mask,
+            other=0,
+        )
+        gl.store(
+            output_gate
+            + (token * num_v_heads + value_heads[:, None]) * head_v_dim
+            + head_offsets[None, :],
+            z,
+            mask,
+        )
+        gate_a = gl.load(
+            gates + token * stride_gates + num_v_heads + value_heads,
+            value_heads < num_v_heads,
+            other=0,
+        ).to(gl.float32)
+        gate_b = gl.load(
+            gates + token * stride_gates + value_heads, value_heads < num_v_heads, other=0
+        ).to(gl.float32)
+        decay_scale = gl.exp(
+            gl.load(a_log + value_heads, value_heads < num_v_heads, other=0).to(gl.float32)
+        )
+        bias = gl.load(dt_bias + value_heads, value_heads < num_v_heads, other=0).to(gl.float32)
+        softplus_input = gate_a + bias
+        softplus = gl.where(
+            softplus_input <= 20.0, gl.log(1.0 + gl.exp(softplus_input)), softplus_input
+        )
+        decay = gl.exp(-decay_scale * softplus)
+        gl.store(decays + token * num_v_heads + value_heads, decay, value_heads < num_v_heads)
+        gl.store(
+            betas + token * num_v_heads + value_heads, tl.sigmoid(gate_b), value_heads < num_v_heads
+        )
+
+
+def _prepare_gdn_journal(
+    x,
+    ba,
+    states,
+    weight,
+    indices,
+    cu_seqlens,
+    a_log,
+    dt_bias,
+    journal,
+    num_k_heads,
+    num_v_heads,
+    head_k_dim,
+    head_v_dim,
+):
+    tokens = x.shape[0]
+    requests = indices.numel()
+    bound = journal.shape[1]
+    steps = tokens // requests if cu_seqlens is None else bound
+    dim = 2 * num_k_heads * head_k_dim + num_v_heads * head_v_dim
+    mixed = torch.empty((tokens, dim), dtype=torch.float32, device=x.device)
+    gate = torch.empty((tokens, num_v_heads, head_v_dim), dtype=x.dtype, device=x.device)
+    decay = torch.empty((tokens, num_v_heads), dtype=torch.float32, device=x.device)
+    beta = torch.empty_like(decay)
+    enable_pdl = torch.version.hip is None and torch.cuda.get_device_capability(x.device)[0] >= 9
+    _split_prepare_gdn_journal_kernel[
+        requests, triton.cdiv(2 * num_k_heads + num_v_heads, 4), bound
+    ](
+        x,
+        ba,
+        states,
+        weight,
+        indices,
+        cu_seqlens,
+        a_log,
+        dt_bias,
+        mixed,
+        gate,
+        decay,
+        beta,
+        journal,
+        x.stride(0),
+        ba.stride(0),
+        states.stride(0),
+        states.shape[0],
+        num_k_heads,
+        num_v_heads,
+        head_k_dim,
+        head_v_dim,
+        weight.shape[1],
+        bound,
+        4,
+        2,
+        tokens,
+        indices.stride(0),
+        steps,
+        enable_pdl,
+        num_warps=2,
+        num_stages=2,
+        launch_pdl=enable_pdl,
+    )
+    return (mixed, gate, decay, beta)
+
 @triton.jit
 def _fused_qkvzba_conv_decode_kernel(
     mixed_qkv,
@@ -512,7 +776,7 @@ def _fused_qkvzba_conv_decode_kernel(
     conv_states,
     conv_weight,
     state_indices,
-    intermediate_conv,
+    conv_journal,
     cu_seqlens,
     stride_qkvz,
     stride_ba,
@@ -544,7 +808,7 @@ def _fused_qkvzba_conv_decode_kernel(
         batch = token // steps
         step = token % steps
         begin = batch * steps
-        cache_token = token
+        cache_token = batch * cache_steps + step
     offsets = tl.program_id(1) * block + tl.arange(0, block)
     qkv_mask = offsets < qkv_dim
     x = tl.load(
@@ -564,7 +828,7 @@ def _fused_qkvzba_conv_decode_kernel(
             mask=qkv_mask & valid_slot & (history_pos < kernel_width - 1),
             other=0.0,
         )
-        if intermediate_conv is not None:
+        if conv_journal is not None:
             proposed_value = tl.load(
                 projected_qkvz + (begin + history_pos - kernel_width + 1)
                 * stride_qkvz + offsets,
@@ -572,9 +836,6 @@ def _fused_qkvzba_conv_decode_kernel(
                 other=0.0,
             )
             state_value = tl.where(history_pos < kernel_width - 1, state_value, proposed_value)
-            if pos > 0:
-                tl.store(intermediate_conv + (cache_token * qkv_dim + offsets) * (kernel_width - 1) + pos - 1,
-                         state_value, mask=qkv_mask & valid_slot)
         weight_value = tl.load(
             conv_weight + offsets * stride_weight_dim + pos,
             mask=qkv_mask,
@@ -594,9 +855,10 @@ def _fused_qkvzba_conv_decode_kernel(
         mask=qkv_mask,
     )
 
-    if intermediate_conv is not None:
-        state = intermediate_conv + (cache_token * qkv_dim + offsets) * (kernel_width - 1)
-        stride_state_pos = 1
+    if conv_journal is not None:
+        # Keep only raw inputs. Commit reconstructs the last history window.
+        tl.store(conv_journal + cache_token * qkv_dim + offsets, x,
+                 mask=qkv_mask & valid_slot)
     else:
         for pos in tl.static_range(kernel_width - 2):
             next_value = tl.load(
@@ -609,12 +871,12 @@ def _fused_qkvzba_conv_decode_kernel(
                 next_value,
                 mask=qkv_mask & valid_slot,
             )
-    if kernel_width > 1:
-        tl.store(
-            state + (kernel_width - 2) * stride_state_pos,
-            x,
-            mask=qkv_mask & valid_slot,
-        )
+        if kernel_width > 1:
+            tl.store(
+                state + (kernel_width - 2) * stride_state_pos,
+                x,
+                mask=qkv_mask & valid_slot,
+            )
 
     z_mask = offsets < value_dim
     z_value = tl.load(
@@ -653,7 +915,7 @@ def fused_qkvzba_conv_decode(
     state_indices: torch.Tensor,
     num_v_heads: int,
     head_v_dim: int,
-    intermediate_conv: torch.Tensor = None,
+    conv_journal: torch.Tensor = None,
     cu_seqlens: torch.Tensor = None,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """Fuse QKVZ/BA unpacking with indexed causal-Conv1D decode."""
@@ -673,10 +935,16 @@ def fused_qkvzba_conv_decode(
     )
     a = torch.empty_like(b)
     block = 256
-    cache_steps = intermediate_conv.shape[1] if intermediate_conv is not None else 1
+    cache_steps = conv_journal.shape[1] if conv_journal is not None else 1
+    equal_steps = 1
+    if cu_seqlens is None and conv_journal is not None:
+        requests = state_indices.numel()
+        if not requests or batch % requests or not 0 < batch // requests <= cache_steps:
+            raise ValueError("Equal-width convolution must fit its verification journal")
+        equal_steps = batch // requests
     if cu_seqlens is not None:
-        if intermediate_conv is None:
-            raise ValueError("Packed varlen convolution requires verification snapshots")
+        if conv_journal is None:
+            raise ValueError("Packed varlen convolution requires a conv journal")
         grid = (state_indices.numel(), triton.cdiv(qkv_dim, block), cache_steps)
     else:
         grid = (batch, triton.cdiv(qkv_dim, block))
@@ -692,7 +960,7 @@ def fused_qkvzba_conv_decode(
         conv_states,
         conv_weight,
         state_indices,
-        intermediate_conv,
+        conv_journal,
         cu_seqlens,
         projected_qkvz.stride(0),
         projected_ba.stride(0),
@@ -706,10 +974,10 @@ def fused_qkvzba_conv_decode(
         num_v_heads=num_v_heads,
         num_state_slots=conv_states.shape[0],
         kernel_width=conv_weight.shape[1],
-        steps=cache_steps,
+        steps=equal_steps,
         cache_steps=cache_steps,
         block=block,
-        num_warps=8,
+        num_warps=4 if cu_seqlens is not None else 8,
         num_stages=2,
     )
     return mixed_qkv, z, b, a
@@ -1196,7 +1464,7 @@ class GatedDeltaNetBackend:
         num_v_heads: int,
         head_k_dim: int,
         head_v_dim: int,
-        intermediate_conv: torch.Tensor = None,
+        conv_journal: torch.Tensor = None,
         ssm_state_indices: torch.Tensor = None,
         ssm_output_indices: torch.Tensor = None,
         ssm_journal: GDNJournal = None,
@@ -1207,6 +1475,48 @@ class GatedDeltaNetBackend:
         if cu_seqlens is not None:
             request_order = (forward_batch._gdn_verify_order if forward_batch is not None
                              else gdn_verify_request_order(cu_seqlens))
+        verify_bound = conv_journal.shape[1] if conv_journal is not None else None
+        requests = state_indices.numel()
+        fast_journal = (
+            ssm_journal is not None and conv_journal is not None
+            and projected_qkvz.is_cuda and torch.version.hip is None
+            and 0 < projected_qkvz.shape[0] <= 192
+            and projected_qkvz.dtype == torch.bfloat16
+            and torch.cuda.get_device_capability(projected_qkvz.device)[0] >= 9
+            and head_k_dim == head_v_dim == 128
+            and num_k_heads > 0
+            and num_k_heads % 4 == num_v_heads % 4 == 0
+            and num_v_heads % num_k_heads == 0
+            and conv_weight.ndim == 2
+            and conv_weight.shape[0] == 2 * num_k_heads * head_k_dim
+                                        + num_v_heads * head_v_dim
+            and conv_weight.shape[1] == conv_states.shape[-1] + 1
+            and conv_weight.is_contiguous() and conv_states.is_contiguous()
+            and conv_journal.is_contiguous() and ssm_states.is_contiguous()
+            and ssm_states.dtype == torch.float32 and requests > 0
+            and conv_journal.shape[0] >= requests
+            and projected_qkvz.stride(-1) == projected_ba.stride(-1) == 1
+            and projected_qkvz.shape[1] == 2 * num_k_heads * head_k_dim
+                                          + 2 * num_v_heads * head_v_dim
+            and projected_ba.shape == (projected_qkvz.shape[0], 2 * num_v_heads)
+            and (cu_seqlens is None or (cu_seqlens.numel() == requests + 1
+                                       and cu_seqlens.is_contiguous()))
+            and projected_qkvz.shape[0] <= requests * verify_bound
+            and (cu_seqlens is not None or projected_qkvz.shape[0] % requests == 0)
+        )
+        if fast_journal:
+            mixed_qkv, z, decay, beta = _prepare_gdn_journal(
+                projected_qkvz, projected_ba, conv_states, conv_weight,
+                state_indices, cu_seqlens, a_log, dt_bias, conv_journal,
+                num_k_heads, num_v_heads, head_k_dim, head_v_dim,
+            )
+            core = packed_gdn_journal_verify(
+                mixed_qkv, decay, beta, a_log, dt_bias, ssm_states,
+                ssm_state_indices if ssm_state_indices is not None else state_indices,
+                num_k_heads, ssm_journal, cu_seqlens, request_order,
+                precomputed=True, output_dtype=projected_qkvz.dtype,
+            )
+            return core, z
         mixed_qkv, z, b, a = fused_qkvzba_conv_decode(
             projected_qkvz,
             projected_ba,
@@ -1215,7 +1525,7 @@ class GatedDeltaNetBackend:
             state_indices,
             num_v_heads,
             head_v_dim,
-            intermediate_conv,
+            conv_journal,
             cu_seqlens,
         )
         if ssm_state_indices is not None:
