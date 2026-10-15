@@ -50,7 +50,7 @@ def test_journal_prefixes_and_successive_rounds(steps, geometry):
     # the allocated pitch, not the runtime batch or block length.
     journal = (
         torch.empty(layers, capacity, hv, steps + 3, v, device=device),
-        torch.empty(layers, capacity, hv, steps + 3, k, device=device),
+        torch.empty(layers, capacity, h, steps + 3, k, device=device),
         torch.empty(layers, capacity, hv, steps + 3, device=device),
     )
     a_log = torch.randn(layers, hv, device=device) * .2
@@ -115,7 +115,7 @@ def test_journal_cuda_graph_uses_current_indices_and_acceptance():
     state = torch.randn(2, 12, hv, v, k, device="cuda", dtype=dtype) * .1
     initial = state.clone()
     journal = tuple(torch.empty(*shape, device="cuda") for shape in (
-        (2, 8, hv, steps, v), (2, 8, hv, steps, k), (2, 8, hv, steps),
+        (2, 8, hv, steps, v), (2, 8, h, steps, k), (2, 8, hv, steps),
     ))
     x = torch.randn(batch * steps, 2 * h * k + hv * v, device="cuda", dtype=torch.bfloat16)
     a = torch.randn(batch * steps, hv, device="cuda", dtype=torch.bfloat16)
@@ -176,7 +176,7 @@ def test_journal_matches_flashinfer_across_rounds(steps):
     reference = torch.zeros(batch * (steps + 1) + 1, hv, v, k, device="cuda")
     reference[base.long()] = state[0, 1:]
     journal = tuple(torch.empty(*shape, device="cuda") for shape in (
-        (1, batch, hv, steps, v), (1, batch, hv, steps, k), (1, batch, hv, steps),
+        (1, batch, hv, steps, v), (1, batch, h, steps, k), (1, batch, hv, steps),
     ))
     a_log = torch.randn(hv, device="cuda") * .2
     bias = torch.randn(hv, device="cuda", dtype=torch.bfloat16)
@@ -209,6 +209,7 @@ def test_journal_matches_flashinfer_across_rounds(steps):
 def test_model_verification_and_commit(monkeypatch, dtype, steps, varlen):
     import sfllm.models.qwen3_5 as qwen
     from sfllm.engine.forward_params import ForwardMode
+    from sfllm.kernels.gdn_journal import replay_gdn_journal
 
     # Construct real GDN layers; bypass unrelated full-attention/MLP weights.
     args = SimpleNamespace(
@@ -277,6 +278,9 @@ def test_model_verification_and_commit(monkeypatch, dtype, steps, varlen):
             indices = torch.tensor([4, 1, 6], device="cuda", dtype=torch.int32)
         for wrapper in models:
             wrapper.model.recurrent_state.indices[:3].copy_(indices)
+        if mode == ForwardMode.EXTEND:
+            # Direct model calls bypass ModelRunner's new-request preparation.
+            candidate.model.recurrent_state.reset_journal(indices)
         lengths = ([1, count, max(1, count // 2)]
                    if varlen and mode == ForwardMode.TARGET_VERIFY else [count] * 3)
         cu = torch.tensor([0, *lengths], device="cuda", dtype=torch.int32).cumsum(0)
@@ -304,7 +308,14 @@ def test_model_verification_and_commit(monkeypatch, dtype, steps, varlen):
         candidate_slots = (valid if dtype == "float32"
                            else candidate.model.recurrent_state.current_slots[valid].long())
         compare_state = assert_state_close if dtype == "float32" else assert_bits_equal
-        compare_state(candidate.model.recurrent_state.ssm[:, candidate_slots],
+        candidate_ssm = candidate.model.recurrent_state.ssm
+        if mode == ForwardMode.TARGET_VERIFY and candidate.model.recurrent_state.journal is not None:
+            # Commit is deferred until the next verify or ordinary decode.
+            candidate_ssm = candidate_ssm.clone()
+            state = candidate.model.recurrent_state
+            replay_gdn_journal(candidate_ssm, state.journal, indices,
+                               state.journal_steps, state.journal_epoch)
+        compare_state(candidate_ssm[:, candidate_slots],
                       baseline.model.recurrent_state.ssm[:, baseline_slots])
         if dtype == "float32":
             # The first layer has identical inputs; later layers receive the

@@ -39,6 +39,9 @@ class SiluAndMul(CustomOp):
         return F.silu(x[..., :d]) * x[..., d:]
 
     def forward_cuda(self, x: torch.Tensor) -> torch.Tensor:
+        if isinstance(x, tuple):
+            # The preceding projection already fused SiLU and quantization.
+            return x
         if self.fp8_output:
             return silu_and_mul_quant_fp8(x, input_scale=self.output_quantization.input_scale)
         d = x.shape[-1] // 2

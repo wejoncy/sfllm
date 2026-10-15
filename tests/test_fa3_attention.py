@@ -6,8 +6,8 @@ import torch
 
 
 @pytest.mark.skipif(
-    not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] != 9,
-    reason="Short paged attention is enabled on Hopper.",
+    not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] < 9,
+    reason="Short paged attention requires SM90 or newer.",
 )
 def test_short_query_paged_attention_varlen_and_graph_replay():
     from sfllm.kernels.fa3_attention import fa3_attention_fwd

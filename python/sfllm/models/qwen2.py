@@ -24,6 +24,7 @@ from torch import nn
 from sfllm.layers.activations import SiluAndMul
 from sfllm.layers.radix_attention import RadixAttention
 from sfllm.layers.quantization import QuantizationConfig
+from sfllm.layers.quantization.fp8 import Fp8LinearMethod
 from sfllm.layers.linear import QKVParallelLinear, RowParallelLinear,MergedColumnParallelLinear
 from sfllm.layers.rotary_embedding import get_rope
 from sfllm.layers.layernorm import RMSNorm
@@ -67,6 +68,11 @@ class Qwen2MLP(nn.Module):
                 "Only silu is supported for now."
             )
         self.act_fn = SiluAndMul(quant_method=self.down_proj.quant_method)
+        if (isinstance(self.gate_up_proj.quant_method, Fp8LinearMethod)
+                and isinstance(self.down_proj.quant_method, Fp8LinearMethod)
+                and self.act_fn.fp8_output
+                and self.down_proj.quant_method.quant_config.activation_scheme == "dynamic"):
+            self.gate_up_proj.quant_method.fuse_silu = True
 
     def forward(self, x):
         gate_up, _ = self.gate_up_proj(x)

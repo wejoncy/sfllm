@@ -9,6 +9,13 @@
 
 TORCH_LIBRARY_FRAGMENT(sfkernels, m) {
 
+#ifdef SFKERNELS_ENABLE_SM90_GEMM
+  m.def("fp8_scaled_mm_sm90(Tensor input, Tensor weight, Tensor input_scale, Tensor weight_scale, int config=1, bool enable_pdl=True) -> Tensor");
+  m.impl("fp8_scaled_mm_sm90", torch::kCUDA, &fp8_scaled_mm_sm90);
+  m.def("fp8_gate_up_sm90(Tensor input, Tensor weight, Tensor input_scale, Tensor weight_scale, bool enable_pdl=True) -> Tensor[]");
+  m.impl("fp8_gate_up_sm90", torch::kCUDA, &fp8_gate_up_sm90);
+#endif
+
       /*
    * From csrc/speculative
    */

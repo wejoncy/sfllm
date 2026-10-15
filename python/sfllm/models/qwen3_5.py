@@ -19,7 +19,7 @@ from sfllm.kernels.gdn import (
     GatedDeltaNetBackend, gated_rmsnorm,
     update_recurrent_state_indices,
 )
-from sfllm.kernels.gdn_journal import commit_conv_journal, replay_gdn_journal
+from sfllm.kernels.gdn_journal import commit_conv_journal
 from sfllm.layers.layernorm import GemmaRMSNorm
 from sfllm.layers.quantization.fp8_kernel import (
     rmsnorm_silu_gate_quant_fp8,
@@ -73,6 +73,8 @@ class Qwen3_5GatedDeltaNet(nn.Module):
         self.ssm_state_indices = None
         self.ssm_output_indices = None
         self.ssm_journal = None
+        self.ssm_journal_steps = None
+        self.ssm_journal_epoch = None
         self.fused_in_proj = (
             quant_config is None or quant_config.weight_strategy == "channel"
         )
@@ -194,6 +196,8 @@ class Qwen3_5GatedDeltaNet(nn.Module):
                     if self.ssm_output_indices is not None else None
                 ),
                 ssm_journal=self.ssm_journal,
+                ssm_journal_steps=self.ssm_journal_steps,
+                ssm_journal_epoch=self.ssm_journal_epoch,
                 cu_seqlens=query_start_loc,
                 forward_batch=forward_batch,
                 **common,
@@ -335,8 +339,10 @@ class Qwen3_5Attention(nn.Module):
         output = self.attn(
             q_out.view(tokens, -1), k_out.view(tokens, -1), v,
             forward_batch, save_kv_cache=False,
+            output_gate=gate if self.fp8_output else None,
+            output_scale=self.o_proj.quant_method.input_scale if self.fp8_output else None,
         )
-        if gate is not None:
+        if gate is not None and not isinstance(output, tuple):
             output = output.view(-1, self.q_size)
             if self.fp8_output:
                 output = sigmoid_mul_quant_fp8(
@@ -476,6 +482,7 @@ class Qwen3_5Model(nn.Module):
             (2 * config.linear_num_key_heads * config.linear_key_head_dim
              + config.linear_num_value_heads * config.linear_value_head_dim,
              config.linear_conv_kernel_dim - 1),
+            num_k_heads=config.linear_num_key_heads,
             max_requests=args.max_running_requests,
             spec_steps=(args.speculative_num_draft_tokens
                         if args.speculative_algorithm in ("dflash2", "dspark") else 0),
@@ -489,6 +496,8 @@ class Qwen3_5Model(nn.Module):
             attn.state_indices = state.indices
             attn.conv_journal = state.conv_journal[i] if state.conv_journal is not None else None
             attn.ssm_journal = tuple(t[i] for t in state.journal) if state.journal is not None else None
+            attn.ssm_journal_steps = state.journal_steps
+            attn.ssm_journal_epoch = state.journal_epoch
             attn.ssm_state_indices, attn.ssm_output_indices = state.read_slots, state.write_slots
         self.recurrent_state = state
         return state
@@ -499,15 +508,16 @@ class Qwen3_5Model(nn.Module):
         padded_batch_size = batch_size + scheduled_batch.forward_batch.padded_token
         indices = [sequence.request_index + 1 for sequence in scheduled_batch]
         batch_key = (padded_batch_size, tuple(indices))
-        if batch_key == self.prepared_state_batch:
-            return
-        indices.extend([-1] * (state.indices.numel() - batch_size))
-        # The pinned allocator retains storage until the async copy completes.
-        state.indices.copy_(
-            torch.tensor(indices, dtype=torch.int32, device="cpu", pin_memory=True),
-            non_blocking=True,
-        )
-        self.prepared_state_batch = batch_key
+        if batch_key != self.prepared_state_batch:
+            indices.extend([-1] * (state.indices.numel() - batch_size))
+            # The pinned allocator retains storage until the async copy completes.
+            state.indices.copy_(
+                torch.tensor(indices, dtype=torch.int32, device="cpu", pin_memory=True),
+                non_blocking=True,
+            )
+            self.prepared_state_batch = batch_key
+        if scheduled_batch.forward_batch.forward_mode == ForwardMode.EXTEND:
+            state.reset_journal(state.indices[:batch_size])
 
     def forward(
         self,
@@ -535,6 +545,8 @@ class Qwen3_5Model(nn.Module):
             # variable-width requests must use the same captured operations.
             query_start_loc = forward_batch.qo_indptr
         state = self.recurrent_state
+        if state.journal is not None and forward_batch.forward_mode == ForwardMode.DECODE:
+            state.flush_journal(state.indices[:hidden_states.shape[0]])
         if state.write_slots is not None:
             if forward_batch.forward_mode == ForwardMode.EXTEND:
                 batch_size = query_start_loc.shape[0] - 1
@@ -630,14 +642,11 @@ class Qwen3_5ForConditionalGeneration(nn.Module, HasBatchState):
         state = self.model.recurrent_state
         indices = state.indices[:accepted_steps.shape[0]]
         commit_conv_journal(
-            state.conv_journal, state.conv,
-            indices, accepted_steps,
+            state.conv_journal, state.conv, indices, accepted_steps,
+            state.journal_steps, state.journal_epoch,
+            journal_capacity=state.journal[0].shape[-2] if state.journal is not None else None,
         )
-        if state.journal is not None:
-            replay_gdn_journal(
-                state.ssm, state.journal, indices, accepted_steps,
-            )
-        else:
+        if state.journal is None:
             update_recurrent_state_indices(
                 state.current_slots, indices,
                 state.read_slots, state.write_slots,

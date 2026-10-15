@@ -542,7 +542,7 @@ def test_published_checkpoint_restore_survives_eviction(snapshot_slots, exact_hi
     monkeypatch.setenv('SFLLM_GDN_JOURNAL', '0')
     backends = [GatedDeltaNetBackend('triton', 'triton') for _ in range(2)]
     state = GatedDeltaNetState(
-        backends, (1, 8, 8), (8, 3), max_requests=2,
+        backends, (1, 8, 8), (8, 3), num_k_heads=1, max_requests=2,
         spec_steps=2 if snapshot_slots else 0,
         ssm_dtype=torch.float32, dtype=torch.float32, device='cuda',
     )

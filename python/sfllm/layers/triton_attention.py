@@ -8,6 +8,7 @@ from sfllm.kernels.extend_attention import (
     extend_attention_fwd,
 )
 from sfllm.utils.nutils import get_device_core_count
+from sfllm.layers.quantization.fp8_kernel import sigmoid_mul_quant_fp8
 import triton
 
 class TritonAttention:
@@ -174,11 +175,13 @@ class TritonAttention:
         layer,
         forward_batch: ForwardBatch,
         save_kv_cache: bool = True,
+        output_gate: torch.Tensor = None,
+        output_scale: torch.Tensor = None,
         **kwargs,
     ):
         """Run forward on an attention layer."""
         if forward_batch.forward_mode == ForwardMode.DECODE:
-            return self.forward_decode(
+            output = self.forward_decode(
                 q,
                 k,
                 v,
@@ -188,7 +191,7 @@ class TritonAttention:
                 **kwargs,
             )
         else:
-            return self.forward_extend(
+            output = self.forward_extend(
                 q,
                 k,
                 v,
@@ -197,3 +200,5 @@ class TritonAttention:
                 save_kv_cache=save_kv_cache,
                 **kwargs,
             )
+        return (sigmoid_mul_quant_fp8(output, output_gate, output_scale)
+                if output_gate is not None else output)

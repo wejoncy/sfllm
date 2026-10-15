@@ -17,6 +17,13 @@ set(OPERATOR_NAMESPACE "sfkernels" CACHE STRING "Namespace used by TORCH_LIBRARY
 find_package(Python3 REQUIRED COMPONENTS Development.Module)
 find_package(Torch REQUIRED)
 
+set(CUTLASS_PATH "$ENV{CUTLASS_PATH}" CACHE PATH "CUTLASS headers (defaults to installed FlashInfer)")
+if(NOT CUTLASS_PATH)
+  execute_process(COMMAND "${Python3_EXECUTABLE}" -c
+    "import importlib.util,pathlib; s=importlib.util.find_spec('flashinfer'); print(pathlib.Path(s.origin).parent/'data'/'cutlass' if s and s.origin else '')"
+    OUTPUT_VARIABLE CUTLASS_PATH OUTPUT_STRIP_TRAILING_WHITESPACE)
+endif()
+
 set(SFKERNELS_INCLUDE_DIRS
   "${CMAKE_CURRENT_SOURCE_DIR}/include"
   "${CMAKE_CURRENT_SOURCE_DIR}/csrc"
@@ -34,6 +41,14 @@ set(SFKERNELS_SOURCES
 )
 
 add_library(common_ops MODULE ${SFKERNELS_SOURCES})
+
+if(GPU_TARGET STREQUAL "90" AND EXISTS "${CUTLASS_PATH}/include/cutlass/cutlass.h")
+  target_sources(common_ops PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/csrc/gemm/fp8_scaled_mm_sm90.cu")
+  target_include_directories(common_ops PRIVATE "${CUTLASS_PATH}/include" "${CUTLASS_PATH}/tools/util/include")
+  target_compile_definitions(common_ops PRIVATE SFKERNELS_ENABLE_SM90_GEMM CUTLASS_ENABLE_GDC_FOR_SM90)
+  target_compile_options(common_ops PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--expt-extended-lambda>)
+  set_property(TARGET common_ops PROPERTY CUDA_ARCHITECTURES 90a)
+endif()
 
 target_include_directories(common_ops PRIVATE ${SFKERNELS_INCLUDE_DIRS} ${TORCH_INCLUDE_DIRS})
 

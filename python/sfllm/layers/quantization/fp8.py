@@ -2,6 +2,7 @@ import logging
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
 
 import torch
+import sf_kernel
 from torch.nn import Module
 from torch.nn.parameter import Parameter
 
@@ -17,6 +18,7 @@ from sfllm.utils import get_tensor_model_parallel_world_size,get_tensor_model_pa
 
 from sfllm.layers.quantization.fp8_kernel import (
     fp8_dtype,
+    quantize_from_tile_max,
     sglang_per_token_quant_fp8,
     triton_scaled_mm,
 )
@@ -185,6 +187,7 @@ class Fp8LinearMethod(LinearMethodBase):
 
     def __init__(self, quant_config: Union[Fp8Config, ]):
         self.quant_config = quant_config
+        self.fuse_silu = False
 
         self.block_quant = self.quant_config.weight_block_size is not None
         self.input_dtype = None if self.block_quant else fp8_dtype
@@ -401,6 +404,24 @@ class Fp8LinearMethod(LinearMethodBase):
                     layer.weight_scale.expand(layer.weight.shape[1], 1).contiguous(),
                     requires_grad=False,
                 )
+            if (self.fuse_silu and self.torch_rowwise_gemm
+                    and hasattr(sf_kernel, "fp8_gate_up_sm90")
+                    and layer.params_dtype == torch.bfloat16
+                    and layer.weight.dtype == torch.float8_e4m3fn
+                    and layer.weight.shape[0] % 16 == layer.weight.shape[1] % 64 == 0
+                    and len(layer.logical_widths) == 2
+                    and layer.logical_widths[0] == layer.logical_widths[1]
+                    and layer.weight_scale.numel() == layer.weight.shape[1]):
+                inner, columns = layer.weight.shape
+                # Adjacent groups of eight gate/up channels share a GEMM tile.
+                packed = (layer.weight.T.view(torch.uint8)
+                          .reshape(2, columns // 16, 8, inner)
+                          .permute(1, 0, 2, 3).contiguous()
+                          .reshape(columns, inner).view(layer.weight.dtype).T)
+                scales = (layer.weight_scale.reshape(2, columns // 16, 8)
+                          .permute(1, 0, 2).contiguous().reshape(columns, 1))
+                layer.register_buffer("silu_weight", packed)
+                layer.register_buffer("silu_weight_scale", scales)
 
     def apply(
         self,
@@ -420,11 +441,43 @@ class Fp8LinearMethod(LinearMethodBase):
 
         if isinstance(x, tuple):
             quantized, scale = x
-            # Hopper's rowwise GEMM helps large rectangular prefill projections
-            # and moderate decode expansions. Decode contractions favor SGL's
-            # tiling.
             rows = quantized.shape[0]
             inner, columns = layer.weight.shape
+            if (48 <= rows <= 64 and bias is None
+                    and hasattr(layer, "silu_weight")
+                    and quantized.dtype == torch.float8_e4m3fn
+                    and quantized.is_contiguous() and scale.is_contiguous()
+                    and scale.dtype == torch.float32 and scale.numel() == rows):
+                activation, tile_max = sf_kernel.fp8_gate_up_sm90(
+                    quantized, layer.silu_weight, scale, layer.silu_weight_scale, True,
+                )
+                return quantize_from_tile_max(activation, tile_max)
+            if (
+                self.torch_rowwise_gemm
+                and self.scaled_mm is fp8_scaled_mm
+                and hasattr(sf_kernel, "fp8_scaled_mm_sm90")
+                and 0 < rows <= 192
+                and (columns <= inner or (48 <= rows <= 64 and columns <= 8 * inner))
+                and inner % 16 == columns % 16 == 0
+                and layer.params_dtype == torch.bfloat16
+                and bias is None
+                and quantized.dtype == layer.weight.dtype == torch.float8_e4m3fn
+                and scale.numel() == rows
+                and scale.dtype == layer.weight_scale.dtype == torch.float32
+                and layer.weight_scale.numel() == columns
+                and scale.is_contiguous() and layer.weight_scale.is_contiguous()
+                and quantized.is_contiguous()
+                and layer.weight.stride() == (1, inner)
+            ):
+                if columns > inner:
+                    config = 0 if columns >= 6 * inner else 1
+                elif rows < 48 or 64 < rows <= 96:
+                    config = 2
+                else:
+                    config = 4 if rows <= 64 else 6
+                return sf_kernel.fp8_scaled_mm_sm90(
+                    quantized, layer.weight, scale, layer.weight_scale, config, True,
+                )
             if (
                 self.torch_rowwise_gemm
                 and self.scaled_mm is fp8_scaled_mm
