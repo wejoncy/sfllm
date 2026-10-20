@@ -1,0 +1,10 @@
+{
+  "gpu": "NVIDIA H100 NVL, 580.178.04, 95830 MiB",
+  "gpu_count_used": 1,
+  "cuda_visible_devices": "0",
+  "precision": {
+    "target": "FP8 per-channel weights / dynamic per-token input quantization",
+    "runtime_dtype": "bfloat16",
+    "ssm_state": "float32"
+  }
+}

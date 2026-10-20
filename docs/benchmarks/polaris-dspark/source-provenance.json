@@ -1,0 +1,59 @@
+{
+  "sfllm": {
+    "fixed8": {
+      "git_head": "17555935c3237ad1cf4afdd756943ae3f503dfa1",
+      "source_file_count": 272,
+      "source_hash_map_sha256": "8a6d3baaea0a4c5828eec1434354e446fce8d1597eff6e654b99b5c42af43228"
+    },
+    "d8t6": {
+      "git_head": "17555935c3237ad1cf4afdd756943ae3f503dfa1",
+      "source_file_count": 272,
+      "source_hash_map_sha256": "8a6d3baaea0a4c5828eec1434354e446fce8d1597eff6e654b99b5c42af43228"
+    },
+    "d8t5": {
+      "git_head": "17555935c3237ad1cf4afdd756943ae3f503dfa1",
+      "source_file_count": 272,
+      "source_hash_map_sha256": "8a6d3baaea0a4c5828eec1434354e446fce8d1597eff6e654b99b5c42af43228"
+    },
+    "fixed4": {
+      "git_head": "17555935c3237ad1cf4afdd756943ae3f503dfa1",
+      "source_file_count": 272,
+      "source_hash_map_sha256": "8a6d3baaea0a4c5828eec1434354e446fce8d1597eff6e654b99b5c42af43228"
+    },
+    "d8t4.5": {
+      "git_head": "17555935c3237ad1cf4afdd756943ae3f503dfa1",
+      "source_file_count": 272,
+      "source_hash_map_sha256": "8a6d3baaea0a4c5828eec1434354e446fce8d1597eff6e654b99b5c42af43228"
+    }
+  },
+  "sglang": {
+    "fixed8": {
+      "git_head": "e262b44eef1f2bf83e34345276e2bb91a086587e",
+      "repo": "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/upstream-sglang-e262b44",
+      "worktree_clean": true,
+      "source_file_count": 5062,
+      "source_hash_map_sha256": "2ee5748576a79d2fa189623f88ccf485f9cad62a59653d0fb4afe2fcc8a38096"
+    },
+    "fixed6": {
+      "git_head": "e262b44eef1f2bf83e34345276e2bb91a086587e",
+      "repo": "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/upstream-sglang-e262b44",
+      "worktree_clean": true,
+      "source_file_count": 5062,
+      "source_hash_map_sha256": "2ee5748576a79d2fa189623f88ccf485f9cad62a59653d0fb4afe2fcc8a38096"
+    },
+    "fixed4": {
+      "git_head": "e262b44eef1f2bf83e34345276e2bb91a086587e",
+      "repo": "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/upstream-sglang-e262b44",
+      "worktree_clean": true,
+      "source_file_count": 5062,
+      "source_hash_map_sha256": "2ee5748576a79d2fa189623f88ccf485f9cad62a59653d0fb4afe2fcc8a38096"
+    },
+    "fixed8-cap80": {
+      "git_head": "e262b44eef1f2bf83e34345276e2bb91a086587e",
+      "repo": "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/upstream-sglang-e262b44",
+      "worktree_clean": true,
+      "source_file_count": 5062,
+      "source_hash_map_sha256": "2ee5748576a79d2fa189623f88ccf485f9cad62a59653d0fb4afe2fcc8a38096"
+    }
+  }
+}

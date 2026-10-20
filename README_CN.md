@@ -4,6 +4,21 @@
 
 一个生产就绪的高性能大语言模型推理框架，提供与OpenAI兼容的API接口。
 
+## 性能对比
+
+![SFLLM 与原版 SGLang 的吞吐和生成延迟对比](docs/assets/polaris-dspark-comparison.png)
+
+单张 H100 NVL，DSpark 投机解码；使用相同的 Polaris 随机 300 条输入
+（seed 42）、FP8 目标模型、BF16 激活和 FP32 循环状态，并发覆盖 1–64。
+每个点分别选择该框架、该并发下已测候选中的最快配置，再用全部 300 条
+进行一次正式测量。实测版本为 SFLLM
+[`1755593`](https://github.com/wejoncy/sfllm/commit/17555935c3237ad1cf4afdd756943ae3f503dfa1)
+（`qwen35_specfic` 分支）和官方 SGLang
+[`e262b44`](https://github.com/sgl-project/sglang/commit/e262b44eef1f2bf83e34345276e2bb91a086587e)。
+
+SGLang 使用**官方未修改的源码**，配置筛选包含原生 adaptive 策略。
+测试口径、详细结果、源码版本及完整命令见[benchmark 说明](docs/benchmarks/polaris-dspark.md)。
+
 ## 项目背景
 
 SFLLM (Serving Framework for Large Language Models) 旨在为大语言模型提供高效可扩展的推理服务。项目专注于通过智能批处理、CUDA优化和内存高效实现来最大化GPU利用率并降低推理延迟。

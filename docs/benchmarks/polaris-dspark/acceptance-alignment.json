@@ -1,0 +1,40 @@
+[
+  {
+    "config": "fixed4",
+    "client_concurrency": 64,
+    "runs": {
+      "sfllm": {
+        "requests": 128,
+        "output_tokens": 69734,
+        "verify_calls": 25996,
+        "mean_accept_length_excluding_first_token": 2.6775657793506693
+      },
+      "sglang": {
+        "requests": 128,
+        "output_tokens": 69648,
+        "verify_calls": 25793,
+        "mean_accept_length_excluding_first_token": 2.6953049276935603
+      }
+    },
+    "relative_difference": 0.006581499614617181
+  },
+  {
+    "config": "fixed8",
+    "client_concurrency": 64,
+    "runs": {
+      "sfllm": {
+        "requests": 128,
+        "output_tokens": 69235,
+        "verify_calls": 20960,
+        "mean_accept_length_excluding_first_token": 3.2970896946564885
+      },
+      "sglang": {
+        "requests": 128,
+        "output_tokens": 69830,
+        "verify_calls": 20904,
+        "mean_accept_length_excluding_first_token": 3.334385763490241
+      }
+    },
+    "relative_difference": 0.011185289129447717
+  }
+]

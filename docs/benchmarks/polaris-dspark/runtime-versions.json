@@ -1,0 +1,22 @@
+{
+  "sfllm": {
+    "torch": "2.13.0+cu130",
+    "torch_cuda": "13.0",
+    "triton": "3.7.1",
+    "flashinfer_path": "/workspace/sglang/.venv/lib/python3.12/site-packages/flashinfer/__init__.py",
+    "pythonpath": "/workspace/sfllm/python:/workspace/sfllm/sfkernels/python",
+    "flashinfer": "0.6.18",
+    "sglang_kernel": "0.4.6.post1",
+    "transformers": "5.12.1"
+  },
+  "sglang": {
+    "torch": "2.14.1+cu130",
+    "torch_cuda": "13.0",
+    "triton": "3.8.0",
+    "flashinfer_path": "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/deps/flashinfer/__init__.py",
+    "pythonpath": "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/upstream-sglang-e262b44/python:/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/deps",
+    "flashinfer": "0.7.2",
+    "sglang_kernel": "0.4.10",
+    "transformers": "5.19.0"
+  }
+}
