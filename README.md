@@ -40,6 +40,17 @@ SFLLM (Serving Framework for Large Language Models) is designed to provide effic
         to <img width="1509" height="481" alt="image" src="https://github.com/user-attachments/assets/a917fa16-cdd8-4ed5-a426-64aa7460edcc" />
 
 
+## Supported Models
+
+| Model | Support |
+| --- | --- |
+| Llama / Phi-3 / InternLM3 | Text generation |
+| Qwen2 / Qwen2.5 | Text generation |
+| Qwen3 (dense) | Text generation |
+| Qwen3.5 (dense) | Text generation; BF16 and FP8 (ModelOpt / compressed-tensors) |
+| Qwen3.5-35B-A3B | BF16 text generation (MoE) |
+| Qwen3.8-27B | BF16 text generation |
+
 ## Installation
 
 ### Prerequisites
@@ -62,10 +73,7 @@ pip install -r requirements.txt
 pip install -e .
 ```
 
-For FlashInfer GDN, FA3 and the Hopper CUTLASS MoE fast path, install
-`pip install -e '.[flashinfer]'`. Without these optional packages, Qwen3.5/3.8
-GDN models require `--linear-attn-backend triton`; Qwen3.5 MoE also supports
-`--moe-runner-backend triton_kernel` using the bundled source.
+Optional GPU backends: `pip install -e '.[flashinfer]'`.
 
 ## Quick Start
 
@@ -89,124 +97,6 @@ python python/sfllm/serving/app.py \
   --port 8081 \
   --dtype float16
 ```
-
-**AngelSlim EAGLE3 config note:** Our tests favor `rope_theta=10000` in the
-draft `config.json` for `AngelSlim/Qwen3-4B_eagle3` and
-`AngelSlim/Qwen3-1.7B_eagle3`. Their configs declare `1000000`, but
-[AngelSlim's published training code](https://github.com/Tencent/AngelSlim/blob/917de3ae8c3147ff158b1b7a9c40082808486ae9/angelslim/compressor/speculative/train/models/draft/llama_eagle3.py#L186-L190)
-uses RoPE's default base of `10000`. Keep the target at `1000000`;
-this correction is specific to these draft checkpoints.
-
-ShareGPT acceptance length (`1000000` → `10000`): **4B: 2.3871 → 2.4971**
-(1000 requests); **1.7B: 2.3170 → 2.4012** (32 requests). Both used BF16,
-FA3, EAGLE3 4/4/8, server concurrency 32, client concurrency 22, and EOS enabled;
-acceptance length excludes the prefill token. The tested 1.7B draft also needs
-`tie_word_embeddings=false`: its 32000-row output head cannot share the
-151936-row target embedding.
-
-**Qwen3.8-27B (text):**
-
-Qwen3.8-27B shares the dense Qwen3.5 implementation.
-[`qwen3_8.py`](python/sfllm/models/qwen3_8.py) provides a separate registered
-entry class; the official checkpoint loads via its declared
-`Qwen3_5ForConditionalGeneration` architecture. Its GDN `swish`
-output gate is SiLU; full attention continues to use sigmoid gating. SFLLM
-loads the language model and skips the vision encoder and MTP weights.
-
-```bash
-hf download Qwen/Qwen3.8-27B --local-dir /mnt/data/work/Qwen3.8-27B
-python python/sfllm/serving/app.py \
-  --model /mnt/data/work/Qwen3.8-27B --dtype bfloat16 \
-  --attention-backend fa3 --max-running-requests 8 --cuda-graph-max-bs 8 \
-  --port 8081
-```
-
-This BF16 configuration fits an H100 96 GB. It uses FP32 recurrent states
-and FlashInfer GDN by default. See [Qwen3.8 usage](docs/qwen3_8.md) for thinking
-controls and the current support scope.
-
-**Qwen3.5-35B-A3B (MoE, text):**
-
-[`qwen3_5_moe.py`](python/sfllm/models/qwen3_5_moe.py) adds the checkpoint's
-registered MoE architecture, reusing Qwen3.5 attention and recurrent states.
-The BF16 text model runs on one H100 NVL with GPU-resident routed and shared
-experts; vision and MTP weights are skipped. On Hopper, the default calls
-FlashInfer's tuned fused CUTLASS MoE, including the shared expert.
-`--moe-runner-backend triton_kernel` selects the vendored Triton v3.7.1 grouped
-GEMM implementation. With `--linear-attn-backend triton --attention-backend triton`,
-the model also runs without FlashInfer or `sglang-kernel`. The FlashInfer fast
-path retains its top-k GPU kernel, fused expert computation and tuning.
-
-```bash
-pip install -e '.[flashinfer]'
-hf download Qwen/Qwen3.5-35B-A3B --local-dir /mnt/data/work/Qwen3.5-35B-A3B
-python python/sfllm/serving/app.py \
-  --model /mnt/data/work/Qwen3.5-35B-A3B --dtype bfloat16 \
-  --attention-backend fa3 --max-running-requests 16 --cuda-graph-max-bs 16 \
-  --max-context-length 16384 --port 8084
-```
-
-See [Qwen3.5 MoE usage](docs/qwen3_5_moe.md) for memory measurements,
-thinking controls and validation scope. MoE quantization is not yet supported.
-
-**Qwen3.5 dense FP8:**
-
-Export a calibrated Hugging Face checkpoint with NVIDIA ModelOpt's
-`FP8_DEFAULT_CFG` and `export_hf_checkpoint`, then serve it with:
-
-```bash
-python python/sfllm/serving/app.py \
-  --model /path/to/Qwen3.5-4B-FP8 --dtype bfloat16 --quantization fp8 \
-  --max-running-requests 32 --cuda-graph-max-bs 32 --port 8081
-```
-
-The exported quantization config is detected automatically, so `--quantization fp8`
-is optional. Both `config.json` and legacy `hf_quant_config.json` metadata are
-supported. ModelOpt's excluded layers retain BF16, including the GDN a/b projections;
-FP8 KV-cache quantization is not supported.
-
-Qwen3.5 `compressed-tensors` exports using `FP8_DYNAMIC` (per-channel weights,
-per-token dynamic activations) are also detected automatically. Use the same
-command with `--dtype bfloat16`, including for exports whose config declares float32.
-
-For a compatible Qwen3.5 DFlash2 draft, add:
-
-```bash
-  --speculative-algorithm dflash2 \
-  --speculative-draft-model-path /path/to/dflash2-checkpoint \
-  --speculative-num-draft-tokens 5
-```
-
-The draft token count is configurable (2 to the checkpoint block size); omit it
-to use the checkpoint default. The selector top-k stays as configured in the checkpoint.
-
-For a Qwen3 DSpark draft (`DSparkDraftModel` or `Qwen3DSparkModel`), use:
-
-```bash
-  --attention-backend fa3 \
-  --speculative-algorithm dspark \
-  --speculative-draft-model-path /path/to/dspark-checkpoint \
-  --speculative-num-draft-tokens 6
-```
-
-This example uses 6 draft queries (anchor + 5 masks) to propose 5 tokens from the mask
-positions; the target verifies 6 tokens including the anchor. Omit the token count to use the checkpoint's gamma
-plus one (`dspark_block_size` takes precedence over `block_size`). Qwen3 and Qwen3.5
-targets, vanilla/gated/RNN Markov heads, and mixed sliding/full draft attention are
-supported. Decoding is fixed-width by default and greedy; confidence-head weights are unused.
-For vanilla Markov heads, `--speculative-dspark-topk 16` restricts draft proposals
-to the top 16 unary candidates and computes their transitions together. This can
-change draft acceptance; every emitted token is still verified by the target.
-The default, `-1`, runs original DSpark and scores the full vocabulary.
-For Qwen3.5, `--mamba-ssm-dtype bfloat16` explicitly selects BF16 recurrent
-states. The default uses the model config's SSM dtype, or FP32 if unspecified.
-GDN prefill and ordinary decode use their selected backends. BF16 speculative
-verification always uses Triton and needs no backend setting.
-
-Set `SFLLM_GDN_JOURNAL=1` to enable FP32 GDN speculative verification journals (off by default).
-Use `--spec-adaptive-verify d8t5` for draft width 8 and a shared verify budget of `round(batch_size * 5)` tokens, both including the anchor (`d6t5` and `d8t4.6` also supported); this overrides `--speculative-num-draft-tokens`. Omit it for unchanged fixed-width verification. DSpark requires positive `--speculative-dspark-topk`.
-
-Use `--speculative-draft-quantization fp8` to enable fused FP8 for eligible DFlash2/DSpark draft projections; target and SSM state precision remain unchanged. Omit it to keep the existing draft path.
 
 ### 2. Test the API
 

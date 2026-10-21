@@ -35,6 +35,17 @@ SFLLM (Serving Framework for Large Language Models) 旨在为大语言模型提�
 - **重叠调度**: 智能的计算与通信重叠调度，提高整体吞吐量
 - **Eagle3 CUDA图加速**: 结合CUDA图优化的Eagle3实现，极致性能表现
 
+## 支持的模型
+
+| 模型 | 支持范围 |
+| --- | --- |
+| Llama / Phi-3 / InternLM3 | 文本生成 |
+| Qwen2 / Qwen2.5 | 文本生成 |
+| Qwen3（dense） | 文本生成 |
+| Qwen3.5（dense） | 文本生成；BF16 和 FP8（ModelOpt / compressed-tensors） |
+| Qwen3.5-35B-A3B | BF16 文本生成（MoE） |
+| Qwen3.8-27B | BF16 文本生成 |
+
 ## 安装
 
 ### 环境要求
@@ -57,10 +68,7 @@ pip install -r requirements.txt
 pip install -e .
 ```
 
-FlashInfer GDN、FA3 和 Hopper CUTLASS MoE 高性能路径通过
-`pip install -e '.[flashinfer]'` 安装。未安装这些可选包时，Qwen3.5/3.8
-的 GDN 使用 `--linear-attn-backend triton`，Qwen3.5 MoE 可使用
-`--moe-runner-backend triton_kernel` 选择仓库内置源码。
+可选 GPU 后端：`pip install -e '.[flashinfer]'`。
 
 ## 快速开始
 
@@ -84,46 +92,6 @@ python python/sfllm/serving/app.py \
   --port 8081 \
   --dtype float16
 ```
-
-**Qwen3.8-27B 文本推理：**
-
-```bash
-hf download Qwen/Qwen3.8-27B --local-dir /mnt/data/work/Qwen3.8-27B
-python python/sfllm/serving/app.py \
-  --model /mnt/data/work/Qwen3.8-27B --dtype bfloat16 \
-  --attention-backend fa3 --max-running-requests 8 --cuda-graph-max-bs 8 \
-  --port 8081
-```
-
-独立的 [`qwen3_8.py`](python/sfllm/models/qwen3_8.py) 入口继承 Qwen3.5 实现。
-官方检查点按配置声明的 `Qwen3_5ForConditionalGeneration` 架构加载，
-加载语言模型，跳过视觉编码器和 MTP 权重。
-该 BF16 配置可在 H100 96 GB 上运行，默认使用 FP32 循环状态和 FlashInfer GDN。
-支持通过聊天模板参数控制思考模式，详见 [Qwen3.8 使用说明](docs/qwen3_8.md)。
-
-**Qwen3.5-35B-A3B MoE 文本推理：**
-
-独立的 [`qwen3_5_moe.py`](python/sfllm/models/qwen3_5_moe.py) 注册官方 MoE
-架构，复用 Qwen3.5 注意力和循环状态。BF16 文本模型可在一张 H100 NVL
-上运行，路由专家和共享专家均驻留 GPU，跳过视觉和 MTP 权重。
-Hopper 默认调用 FlashInfer 调优后的 fused CUTLASS MoE，融合共享专家。
-通过 `--moe-runner-backend triton_kernel` 可选择仓库内置的 Triton v3.7.1
-分组 GEMM 源码实现。配合 `--linear-attn-backend triton --attention-backend triton`，
-GDN 的 prefill/decode 和全注意力均走 Triton，无需安装 FlashInfer 或 `sglang-kernel`。
-FlashInfer 高性能路径保持原有 top-k GPU kernel、融合方式和调优参数。
-
-```bash
-pip install -e '.[flashinfer]'
-hf download Qwen/Qwen3.5-35B-A3B --local-dir /mnt/data/work/Qwen3.5-35B-A3B
-python python/sfllm/serving/app.py \
-  --model /mnt/data/work/Qwen3.5-35B-A3B --dtype bfloat16 \
-  --attention-backend fa3 --max-running-requests 16 --cuda-graph-max-bs 16 \
-  --max-context-length 16384 --port 8084
-```
-
-显存实测、思考模式和验证范围见 [Qwen3.5 MoE 使用说明](docs/qwen3_5_moe.md)。
-同卡内部数据集对照、SGLang 最快实测配置的启动命令和调优缓存也记录在该说明中。
-目前不支持 MoE 量化检查点。
 
 ### 2. 测试API
 
