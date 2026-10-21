@@ -2,6 +2,12 @@
 
 ![Throughput and generation latency](../assets/polaris-dspark-comparison.png)
 
+Configuration coverage is under review. The plotted runs use SFLLM selective
+draft FP8/top-k16 and SGLang BF16/full-vocabulary drafting. Supplementary
+same-precision and native-option checks are documented in the
+[alignment audit](polaris-dspark-alignment.md); they do not replace the formal
+300-request points below or establish a fully tuned SGLang performance limit.
+
 ## Scope and source revisions
 
 - SFLLM: [`17555935c3237ad1cf4afdd756943ae3f503dfa1`](https://github.com/wejoncy/sfllm/commit/17555935c3237ad1cf4afdd756943ae3f503dfa1), the measured `qwen35_specfic` branch, two commits ahead of the `main` base of this documentation PR.

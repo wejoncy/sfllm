@@ -8,6 +8,11 @@ A production-ready, high-performance serving framework for large language models
 
 ![SFLLM and unmodified upstream SGLang: throughput and generation latency](docs/assets/polaris-dspark-comparison.png)
 
+**Configuration coverage is under review.** These plotted runs use SFLLM
+selective draft FP8/top-k16 and SGLang BF16/full-vocabulary drafting.
+They establish results for the recorded candidates, not a fully tuned SGLang
+performance limit. See the [supplementary alignment audit](docs/benchmarks/polaris-dspark-alignment.md).
+
 DSpark on one H100 NVL, using the same 300 randomly sampled Polaris prompts
 (seed 42), an FP8 target, BF16 activations, and FP32 recurrent states.
 Client concurrency ranges from 1 to 64. Each point uses the fastest configuration
