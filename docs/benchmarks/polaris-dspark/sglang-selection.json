@@ -1,111 +1,191 @@
 {
   "1": {
-    "config": "fixed8",
-    "tuning": {
-      "fixed8": 420.5092417557861,
-      "fixed4": 359.54250468000697,
-      "fixed2": 246.70966887582946,
-      "fixed6": 404.64205928117826,
-      "fixed16": 344.0427573427793,
-      "fixed8-nobuffer": 364.8630950596597,
-      "native-adaptive": 382.0802788946507
+    "selected": "draft-flashinfer-fp8",
+    "scores": {
+      "draft-flashinfer": {
+        "tok_s": 489.87515832118333,
+        "summary": "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-corrected-flashinfer-20261021/draft-flashinfer/screen/c1/bench/summary.json"
+      },
+      "draft-flashinfer-fp8": {
+        "tok_s": 493.6013724161973,
+        "summary": "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-corrected-flashinfer-20261021/draft-flashinfer-fp8/screen/c1/bench/summary.json"
+      },
+      "draft-flashinfer-w6": {
+        "tok_s": 473.790480727681,
+        "summary": "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-corrected-flashinfer-20261021/draft-flashinfer-w6/screen/c1/bench/summary.json"
+      },
+      "draft-flashinfer-w4": {
+        "tok_s": 426.10828658342444,
+        "summary": "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-corrected-flashinfer-20261021/draft-flashinfer-w4/screen/c1/bench/summary.json"
+      }
     }
   },
   "4": {
-    "config": "fixed8",
-    "tuning": {
-      "fixed8": 1227.0793200133874,
-      "fixed4": 1104.4238764055265,
-      "fixed2": 794.0960935442266,
-      "fixed6": 1205.2755154133956,
-      "fixed16": 980.6650245346083,
-      "fixed8-nobuffer": 1071.3953802578267,
-      "native-adaptive": 1145.0206109480296
+    "selected": "draft-flashinfer",
+    "scores": {
+      "draft-flashinfer": {
+        "tok_s": 1438.412346667517,
+        "summary": "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-corrected-flashinfer-20261021/draft-flashinfer/screen/c4/bench/summary.json"
+      },
+      "draft-flashinfer-fp8": {
+        "tok_s": 1425.8059700246138,
+        "summary": "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-corrected-flashinfer-20261021/draft-flashinfer-fp8/screen/c4/bench/summary.json"
+      },
+      "draft-flashinfer-w6": {
+        "tok_s": 1399.3344757956506,
+        "summary": "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-corrected-flashinfer-20261021/draft-flashinfer-w6/screen/c4/bench/summary.json"
+      },
+      "draft-flashinfer-w4": {
+        "tok_s": 1277.3895477521332,
+        "summary": "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-corrected-flashinfer-20261021/draft-flashinfer-w4/screen/c4/bench/summary.json"
+      }
     }
   },
   "8": {
-    "config": "fixed8",
-    "tuning": {
-      "fixed8": 1620.907433064031,
-      "fixed4": 1477.1254584130634,
-      "fixed2": 1074.695529387689,
-      "fixed6": 1579.9823806559482,
-      "fixed16": 1322.4343210571965,
-      "fixed8-nobuffer": 1458.896980984281,
-      "native-adaptive": 1492.533951140402
+    "selected": "draft-flashinfer",
+    "scores": {
+      "draft-flashinfer": {
+        "tok_s": 2022.7134252977082,
+        "summary": "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-corrected-flashinfer-20261021/draft-flashinfer/screen/c8/bench/summary.json"
+      },
+      "draft-flashinfer-fp8": {
+        "tok_s": 2020.5839034291744,
+        "summary": "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-corrected-flashinfer-20261021/draft-flashinfer-fp8/screen/c8/bench/summary.json"
+      },
+      "draft-flashinfer-w6": {
+        "tok_s": 2001.3187094046382,
+        "summary": "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-corrected-flashinfer-20261021/draft-flashinfer-w6/screen/c8/bench/summary.json"
+      },
+      "draft-flashinfer-w4": {
+        "tok_s": 1886.2203881973578,
+        "summary": "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-corrected-flashinfer-20261021/draft-flashinfer-w4/screen/c8/bench/summary.json"
+      }
     }
   },
   "12": {
-    "config": "fixed8",
-    "tuning": {
-      "fixed8": 1734.4828324994603,
-      "fixed4": 1643.571557794763,
-      "fixed2": 1224.3496085570766,
-      "fixed6": 1716.7089771186265,
-      "fixed16": 1344.7117494287393,
-      "fixed8-nobuffer": 1609.2343666628665,
-      "native-adaptive": 1651.427735270164
+    "selected": "draft-flashinfer-w4",
+    "scores": {
+      "draft-flashinfer": {
+        "tok_s": 2257.6197501216348,
+        "summary": "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/alignment-audit-20261021/draft-flashinfer/check-c12/bench/summary.json"
+      },
+      "draft-flashinfer-fp8": {
+        "tok_s": 2301.0866699561766,
+        "summary": "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/alignment-audit-20261021/draft-flashinfer-fp8/check-c12/bench/summary.json"
+      },
+      "draft-flashinfer-w6": {
+        "tok_s": 2280.105917437548,
+        "summary": "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/alignment-audit-20261021/draft-flashinfer-w6/check-c12/bench/summary.json"
+      },
+      "draft-flashinfer-w4": {
+        "tok_s": 2305.219895294259,
+        "summary": "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/alignment-audit-20261021/draft-flashinfer-w4/check-c12/bench/summary.json"
+      }
     }
   },
   "16": {
-    "config": "fixed6",
-    "tuning": {
-      "fixed8": 1887.839730382958,
-      "fixed4": 1801.9819080845382,
-      "fixed2": 1340.5035150385743,
-      "fixed6": 1888.4573310146375,
-      "fixed16": 1469.332105112448,
-      "fixed8-nobuffer": 1784.0408129141647,
-      "native-adaptive": 1796.2893794760523
+    "selected": "draft-flashinfer-w4",
+    "scores": {
+      "draft-flashinfer": {
+        "tok_s": 2532.9716095199246,
+        "summary": "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-corrected-flashinfer-20261021/draft-flashinfer/screen/c16/bench/summary.json"
+      },
+      "draft-flashinfer-fp8": {
+        "tok_s": 2509.471824369262,
+        "summary": "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-corrected-flashinfer-20261021/draft-flashinfer-fp8/screen/c16/bench/summary.json"
+      },
+      "draft-flashinfer-w6": {
+        "tok_s": 2556.433796914126,
+        "summary": "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-corrected-flashinfer-20261021/draft-flashinfer-w6/screen/c16/bench/summary.json"
+      },
+      "draft-flashinfer-w4": {
+        "tok_s": 2585.354532776216,
+        "summary": "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-corrected-flashinfer-20261021/draft-flashinfer-w4/screen/c16/bench/summary.json"
+      }
     }
   },
   "24": {
-    "config": "fixed4",
-    "tuning": {
-      "fixed8": 1985.7802688972877,
-      "fixed4": 2006.353517094463,
-      "fixed2": 1521.1881479736696,
-      "fixed6": 1996.985443627795,
-      "fixed16": 1604.9322745273164,
-      "fixed8-nobuffer": 1858.73176569436,
-      "native-adaptive": 1974.0821805920184
+    "selected": "draft-flashinfer-w4",
+    "scores": {
+      "draft-flashinfer": {
+        "tok_s": 2673.8102577247887,
+        "summary": "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-corrected-flashinfer-20261021/draft-flashinfer/screen/c24/bench/summary.json"
+      },
+      "draft-flashinfer-fp8": {
+        "tok_s": 2688.9831472095448,
+        "summary": "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-corrected-flashinfer-20261021/draft-flashinfer-fp8/screen/c24/bench/summary.json"
+      },
+      "draft-flashinfer-w6": {
+        "tok_s": 2847.0089611915237,
+        "summary": "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-corrected-flashinfer-20261021/draft-flashinfer-w6/screen/c24/bench/summary.json"
+      },
+      "draft-flashinfer-w4": {
+        "tok_s": 2921.7344457930294,
+        "summary": "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-corrected-flashinfer-20261021/draft-flashinfer-w4/screen/c24/bench/summary.json"
+      }
     }
   },
   "32": {
-    "config": "fixed6",
-    "tuning": {
-      "fixed8": 2170.3746842435203,
-      "fixed4": 2076.074481743095,
-      "fixed2": 1606.574684439293,
-      "fixed6": 2213.517245986874,
-      "fixed16": 1683.1859085202368,
-      "fixed8-nobuffer": 2004.1728178583564,
-      "native-adaptive": 2112.799934976177
+    "selected": "draft-flashinfer-w4",
+    "scores": {
+      "draft-flashinfer": {
+        "tok_s": 3024.173726189193,
+        "summary": "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-corrected-flashinfer-20261021/draft-flashinfer/screen/c32/bench/summary.json"
+      },
+      "draft-flashinfer-fp8": {
+        "tok_s": 2875.299466002799,
+        "summary": "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-corrected-flashinfer-20261021/draft-flashinfer-fp8/screen/c32/bench/summary.json"
+      },
+      "draft-flashinfer-w6": {
+        "tok_s": 3070.1819738471,
+        "summary": "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-corrected-flashinfer-20261021/draft-flashinfer-w6/screen/c32/bench/summary.json"
+      },
+      "draft-flashinfer-w4": {
+        "tok_s": 3193.350362389005,
+        "summary": "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-corrected-flashinfer-20261021/draft-flashinfer-w4/screen/c32/bench/summary.json"
+      }
     }
   },
   "48": {
-    "config": "fixed8-cap80",
-    "tuning": {
-      "fixed4": 2094.069350838356,
-      "fixed2": 1683.1825379447355,
-      "fixed6": 2142.2245261333323,
-      "fixed16": 1668.3008685629272,
-      "fixed8-cap80": 2174.991584062137,
-      "fixed8-nobuffer": 2034.002947439857,
-      "native-adaptive": 2085.4215812975162,
-      "fixed8": 2157.987213746832
+    "selected": "draft-flashinfer-w4",
+    "scores": {
+      "draft-flashinfer": {
+        "tok_s": 3032.1727273074653,
+        "summary": "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-corrected-flashinfer-20261021/draft-flashinfer/screen/c48/bench/summary.json"
+      },
+      "draft-flashinfer-fp8": {
+        "tok_s": 3027.676377889774,
+        "summary": "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-corrected-flashinfer-20261021/draft-flashinfer-fp8/screen/c48/bench/summary.json"
+      },
+      "draft-flashinfer-w6": {
+        "tok_s": 3156.663213277763,
+        "summary": "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-corrected-flashinfer-20261021/draft-flashinfer-w6/screen/c48/bench/summary.json"
+      },
+      "draft-flashinfer-w4": {
+        "tok_s": 3264.575758130363,
+        "summary": "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-corrected-flashinfer-20261021/draft-flashinfer-w4/screen/c48/bench/summary.json"
+      }
     }
   },
   "64": {
-    "config": "fixed6",
-    "tuning": {
-      "fixed4": 2118.4837310494904,
-      "fixed2": 1677.8528952494564,
-      "fixed6": 2176.1731475087804,
-      "fixed16": 1649.6508732511081,
-      "fixed8-cap80": 2157.9711617801404,
-      "fixed8-nobuffer": 2060.4513770402727,
-      "native-adaptive": 2122.382817774866
+    "selected": "draft-flashinfer-w4",
+    "scores": {
+      "draft-flashinfer": {
+        "tok_s": 3278.0989286942427,
+        "summary": "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/alignment-audit-20261021/draft-flashinfer/check-c64/bench/summary.json"
+      },
+      "draft-flashinfer-fp8": {
+        "tok_s": 3251.945431447822,
+        "summary": "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/alignment-audit-20261021/draft-flashinfer-fp8/check-c64/bench/summary.json"
+      },
+      "draft-flashinfer-w6": {
+        "tok_s": 3413.278455097161,
+        "summary": "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/alignment-audit-20261021/draft-flashinfer-w6/check-c64/bench/summary.json"
+      },
+      "draft-flashinfer-w4": {
+        "tok_s": 3520.6194736220327,
+        "summary": "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/alignment-audit-20261021/draft-flashinfer-w4/check-c64/bench/summary.json"
+      }
     }
   }
 }

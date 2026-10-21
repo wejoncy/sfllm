@@ -1,56 +1,49 @@
-# Polaris comparison: configuration alignment audit
+# 原版 SGLang 性能差距：原因与修正结果
 
-These diagnostic screens use the same sampled prompts as the original comparison, but run 32 requests at concurrency 12 and 128 at concurrency 64. Each point runs once after a 128-request / concurrency-64 warmup and a cache flush. Do not substitute these numbers for the original 300-request formal curve.
+主要配置问题：此前强制指定了 Triton draft attention，遗漏了可正常运行的官方 FlashInfer draft 路径。此路径修正不涉及 SGLang 源码改动。官方源码锁定 `e262b44eef1f2bf83e34345276e2bb91a086587e`，每次有效运行均通过前后 SHA/逐文件哈希与 clean worktree 检查。
 
-Both engines keep the original target and six-layer draft checkpoints, input token lengths, temperature 0, max output 1000, seed 42, stop token 248044, context 16384, BF16 model dtype, and FP32 recurrent state. All successful checks validate prompt token lengths against the original sample and require every request to succeed.
+## 已完成的300条正式结果
 
-The same-draft ablation below still uses SGLang's default multimodal wrapper with raw text requests. It does not align the pure-text execution path; `lm-only` separately tests the native `--language-model-only` option. This option disables the multimodal mRoPE position path that rejected nonuniform compact verify lengths.
+同一 target/draft、同一份 Polaris 随机300条（seed42）、temperature0、输出上限1000、stop248044、BF16 activation、FP32 SSM；先预热，再清缓存。旧配置取原图对应的正式点。
 
-## Same draft precision, proposal policy and verify width
+| 并发 | 修正后配置 | 旧图 SG tok/s | 修正后 SG tok/s | 提升 | 接受长度 | 完成 |
+|---:|---|---:|---:|---:|---:|---:|
+| 12 | draft-flashinfer-w4 | 1776.65 | 2367.83 | 33.3% | 2.6853 | 300/300 |
+| 64 | draft-flashinfer-w4 | 2134.11 | 3429.20 | 60.7% | 2.6925 | 300/300 |
 
-The SFLLM diagnostic disables selective draft FP8 and top-k16 proposals, using BF16 draft and the original full-vocabulary greedy proposal path instead. Both engines verify width 8. SFLLM retains its engine optimizations, including GDN journal and its CUDA graph coverage. This is a diagnostic of the configuration mismatch, not the best-configuration comparison.
+## 控制草稿策略的诊断
 
-| Concurrency | Requests | SF BF16/full-vocab tok/s | SG BF16/full-vocab tok/s | SF accept | SG accept |
-| ---: | ---: | ---: | ---: | ---: | ---: |
-| 12 | 32 | 3310.60 | 1734.82 | 3.4819 | 3.4362 |
-| 64 | 128 | 4355.57 | 2168.48 | 3.3084 | 3.3527 |
+以下短测是原样本前32条/C12与前128条/C64，不与上面的300条混为同一测量。完整命令与请求级结果保存在各配置目录。
 
-Accept length uses `(output tokens - requests) / verify calls`, consistently for both engines.
+| 配置 | C12 tok/s | C64 tok/s | C12 接受长度 | C64 接受长度 |
+|---|---:|---:|---:|---:|
+| 旧 Triton/width8/BF16 | 1734.82 | 2168.48 | 3.4362 | 3.3527 |
+| draft-flashinfer | 2257.62 | 3278.10 | 3.4259 | 3.3426 |
+| draft-flashinfer-fp8 | 2301.09 | 3251.95 | 3.4162 | 3.3216 |
+| draft-flashinfer-w4 | 2305.22 | 3520.62 | 2.7360 | 2.7007 |
+| draft-flashinfer-w6 | 2280.11 | 3413.28 | 3.2154 | 3.1178 |
 
-## Unmodified SGLang native option checks
+同策略 SF（BF16 draft/full-vocab/width8）诊断：C12=3310.60 tok/s、accept3.4819；C64=4355.57 tok/s、accept3.3084。宽度4的正常接受长度约2.7；较短 verify 的有效接受长度不能直接与宽度8比较。
 
-| Native configuration | C12 tok/s | C64 tok/s | C12 accept | C64 accept |
-| --- | ---: | ---: | ---: | ---: |
-| baseline | 1734.82 | 2168.48 | 3.4362 | 3.3527 |
-| draft-fp8 | 1729.11 | 2196.66 | 3.4338 | 3.3369 |
-| tokenizer4 | 1736.86 | 2175.39 | 3.4362 | 3.3350 |
-| verify-triton | 1816.75 | 2137.48 | 3.5030 | 3.3213 |
+## 直接 profile 证据
 
-- `compact` did not produce a valid result: Server exited -9; see /mnt/data/jicwen/work/sglang-sfllm-migration-20261019/alignment-audit-20261021/compact/server.log
-  - `RuntimeError: shape '[64, 7, 16, 128]' is invalid for input of size 983040`
-  - `Exception: Capture cuda graph failed: shape '[64, 7, 16, 128]' is invalid for input of size 983040`
+独立 batch64 decode 图的草稿 attention kernel 时间总和：旧 Triton约40.75 ms/轮；官方 FlashInfer约4.26 ms/轮；SF约2.17 ms/轮。官方 FlashInfer的草稿图约7.87 ms/轮、target verify约26.24 ms/轮；SF完整循环图约27.17 ms/轮。
 
-- `compact-triton` did not produce a valid result: Command '['/workspace/sglang/.venv/bin/python', '-B', '/mnt/data/work/dspark_repro_download/qwe35_dspark_qaa/dspark_repro/benchmark/bench_sglang_raw.py', '--url', 'http://127.0.0.1:30000/generate', '--input', '/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-upstream-polaris-20261020/polaris-random300-seed42.jsonl', '--num-prompts', '128', '--concurrency', '64', '--max-new-tokens', '1000', '--temperature', '0', '--seed', '42', '--stop-token-id', '248044', '--request-timeout-seconds', '1800', '--output-dir', '/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/alignment-audit-20261021/compact-triton/warmup/bench', '--label', 'compact-triton-warmup']' returned non-zero exit status 1.
-  - `RuntimeError: shape '[64, -1]' is invalid for input of size 480`
+GDN 部分：SG约10.04 ms/轮、SF journal约7.49；conv：SG约2.48、SF约1.09。这里比较 kernel duration sums，node tracing 会增加开销，实时上下文长度也不是逐轮严格相等；不把这些数字替代无 profiler 的端到端吞吐或声称完整因果分解。捕获窗口 GPU kernel 活跃时间约95.4%（修正SG）与98.4%（SF），剩余差距不能主要归因于CPU空转；同步API时长也不等于CPU额外开销。
 
-- `compile` did not produce a valid result: Server exited -9; see /mnt/data/jicwen/work/sglang-sfllm-migration-20261019/alignment-audit-20261021/compile/server.log
-  - `Exception: Capture cuda graph failed: CUDA error: operation failed due to a previous error during capture`
+## 官方路径兼容性检查
 
-The baseline uses the original official checkout and native Triton draft attention, FA3 target attention, FlashInfer GDN, greedy drafting, overlap scheduling, prefix caching, and CUDA graphs. The explicit Mamba pool provides at least 64 running-request slots. Each alternative changes only its named native option; commands and before/after source manifests are retained alongside this report. No serving source is edited.
+- FA3：`flashattention_backend.py:231` 调用通用 resolver，而 `spec_info.py:298` 对 DSpark draft 无条件减1；`model_runner.py:875` 对 sample_from_anchor=false 保留完整宽度8。运行时接受长度约1.16–1.22，已拒绝。没有给运行中的官方 SGLang 打补丁。
+- Compact adaptive：通过原生 JSON model override 声明 language_model_only=true 后解决 mRoPE reshape；完成B1/4/8/16/32/64各4种预算的实际成本拟合。官方GDN继承 `supports_ragged_verify_graph=False`，target退回eager；不含SIMULATE环境变量的新服务在真实128条Polaris预热后段，`dspark_kv_inject -> project_target_hidden -> F.linear` 报CUDA/CUBLAS execution failed，整组排除。
+- ReplaySSM：当前官方对GDN+DSPARK明确要求KDA，配置拒绝，不能假装已开启。
 
-The previous native cap-accept adaptive screen covered all nine original concurrencies with a native SPS cost table through B64. Cap-accept still physically verifies width 8. The compact check uses that same table and native compact mode; its graph fallback or compatibility must be judged from its actual logs, not inferred from the flag.
+## 文件
 
-The compact-triton exploratory check, if present, reuses the existing FlashInfer-based SPS table rather than claiming a Triton-specific optimum. A change of verify backend requires refitting native SPS costs before a tuned adaptive-performance claim.
+- 各配置 `server-command.json`、`check-c*/bench/summary.json`、`formal-c*/bench/summary.json`：命令、统计与请求级结果。
+- `cause-profile-sglang/steady.nsys-rep`：旧Triton路径。
+- `cause-profile-sglang-flashinfer/steady.nsys-rep`：修正后官方路径。
+- `cause-profile-sfllm/steady.nsys-rep`：SF同策略路径。
+- profile目录 `kernel-analysis.json`：逐图、逐kernel时间。
+- `corrected-results.json`：本次完整机器可读结果。
 
-The earlier native ReplaySSM attempt was rejected with `--enable-linear-replayssm-spec with DSPARK/DFLASH requires a KDA model; got a non-KDA model.` It is not a usable native option for this GDN target in the tested revision.
-
-## Limits on the comparison
-
-- The original curve used SF selective draft FP8 and top-k16 versus SG BF16/full-vocabulary drafting. It is not a same-draft-precision ablation.
-- The original SF server used four tokenizer workers; SG used one. The tokenizer4 candidate tests this difference independently.
-- The original SG command did not enable `--language-model-only`, whereas SF loads its text model. Text-only static and compact checks are required before treating the native configuration review as complete.
-- Dependencies differ (versions recorded in results.json). The isolated, working environments are preserved.
-- The original C64 formal cache records show SF reused 141488 / 1351215 input tokens (10.47%); SG reported 132160 cached tokens (9.78%). Both started with flushed prefix caches.
-- A normal mean acceptance length and a clean source checkout do not establish globally optimal settings or token-for-token output equality. These screens do not establish statistical significance or isolate the cause of the remaining throughput gap.
-
-Full commands and machine-readable results: `results.json`. Full server logs, per-request client records, and before/after source manifests remain in this audit directory.
+修正后的九点正式曲线现已完成，并替换 README 图片；完整结果见 [benchmark](polaris-dspark.md)。SFLLM 沿用原九个已验证点，SGLang 每个并发点均按原生 FlashInfer draft 重新筛选。历史 Triton 曲线不再用作主图。

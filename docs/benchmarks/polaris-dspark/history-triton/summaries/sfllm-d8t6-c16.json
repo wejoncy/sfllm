@@ -1,0 +1,69 @@
+{
+  "label": "sfllm-d8t6-scored-c16",
+  "protocol": "sglang-generate",
+  "model": "dashqna-target",
+  "url": "http://127.0.0.1:30000/generate",
+  "concurrency": 16,
+  "max_new_tokens": 1000,
+  "temperature": 0.0,
+  "stop_token_ids": [
+    248044
+  ],
+  "request_count": 300,
+  "success_count": 300,
+  "failure_count": 0,
+  "valid": true,
+  "wall_time_seconds": 41.0693513849983,
+  "request_throughput_per_second": 7.304717261972225,
+  "input_token_throughput_per_second": 0.0,
+  "output_token_throughput_per_second": 3967.849369530693,
+  "total_input_tokens": 0,
+  "total_output_tokens": 162957,
+  "finish_reasons": {
+    "None": 300
+  },
+  "errors": {},
+  "e2e_seconds": {
+    "count": 300,
+    "mean": 2.16008487630034,
+    "p50": 2.1099181475292426,
+    "p90": 2.935646808176535,
+    "p95": 3.1603255060705124,
+    "p99": 3.611731919383163,
+    "max": 4.211198218050413
+  },
+  "ttft_seconds": {
+    "count": 300,
+    "mean": 0.11281834817569082,
+    "p50": 0.08017622149782255,
+    "p90": 0.17009509231429554,
+    "p95": 0.2255017939663958,
+    "p99": 0.7648183721042006,
+    "max": 0.7655939140240662
+  },
+  "tpot_seconds": {
+    "count": 300,
+    "mean": 0.0037787639072814853,
+    "p50": 0.0036872547385122675,
+    "p90": 0.004741738507102653,
+    "p95": 0.005439162838402804,
+    "p99": 0.0058264324906813535,
+    "max": 0.006976392065849562
+  },
+  "token_normalized_itl_seconds": {
+    "count": 162657,
+    "mean": 0.0037758665165995055,
+    "p50": 0.0018071539961965755,
+    "p90": 0.007783494982868433,
+    "p95": 0.011517292279417493,
+    "p99": 0.032292005584264816,
+    "max": 0.5786240329616703
+  },
+  "speculative": {
+    "accepted_drafts": 0,
+    "proposed_drafts": 0,
+    "verify_calls": 0,
+    "acceptance_rate": null,
+    "mean_accept_length": null
+  }
+}

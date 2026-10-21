@@ -1,34 +1,22 @@
 # Benchmark evidence
 
-`results.csv` / `results.json` contain the 18 scored points. Re-render with
-`python plot.py --output /tmp/comparison.png` (requires matplotlib). `summaries/` retains
-the client summaries, including output lengths and latency distributions.
-`commands.json` records the exact selected server commands, environment overrides,
-and client commands. Local absolute paths identify the measured checkpoint and
-sample; adapt these paths on another host.
+`results.json` / `results.csv` contain 18 formal points, 300 requests each.
+SGLang uses corrected native FlashInfer draft attention; SFLLM points are reused
+from the original validated run. `summaries/` contains exact client summaries.
+Re-render: `python plot.py --output /tmp/comparison.png` (matplotlib required).
 
-`protocol.json` includes all 300 zero-based source indices, sampling seed, and
-sample SHA256. Private model files and prompt text are excluded.
-`sfllm-selection.json` and `sglang-selection.json` retain every eligible candidate's
-screening throughput. The initial default-pool SGLang width 8 run was capacity 57;
-it is eligible only through client concurrency 48. An additional native 80-slot candidate
-was screened at concurrency 48 and 64. A native no_buffer prefix-cache width 8 candidate is screened at every concurrency,
-with overlap disabled as required by upstream.
-Width 16 uses no_buffer with 64 slots and static memory fraction 0.93 and prefill chunk 4096; other candidates use 0.9.
-All formal points have enough server slots.
+`commands.json` gives selected server/client commands and environment overrides.
+`sglang-selection.json` contains every corrected candidate score before formal
+measurement; `sfllm-selection.json` retains the original SFLLM search.
+`verification.json` records corrected source/capacity/input/acceptance checks.
+`protocol.json` includes sample indices and SHA256; prompt text is private.
 
-`native-adaptive-command.json` and `native-adaptive-screen.json` show the native
-adaptive candidate at all nine concurrencies. `native-sps.json` is fitted with the
-unmodified upstream profiler from the adjacent rounds. B1–B32 costs are reused
-from the first calibration; B64 costs are supplemented after native pool sizing.
-Acceptance simulation is used only for compute-cost profiling, never scored or
-tuning generation. Native GDN compact ragged graphs are unsupported at this SHA;
-the native adaptive candidate uses cap-accept.
+`history-triton/` preserves the superseded SGLang curve and native adaptive
+cap-accept sweep. Those numbers are not used as corrected FlashInfer results.
+The adjacent alignment report explains valid and failed native option checks.
+Existing native-cost/command files describe historical calibration, not a
+successful corrected compact-adaptive benchmark.
 
-`source-provenance.json`, `upstream-runtime-imports.json`, and
-`dependency-integrity.json` document source and runtime identity.
-`verification.json` records the completed workload/source/capacity/acceptance audit.
-Source hash-map digests use SHA256 of compact sorted JSON mapping paths to hashes.
-
-The SFLLM measured source revision is 1755593, available on qwen35_specfic, which
-is ahead of the main branch used as the base of this documentation-only PR.
+Runtime, hardware, source import, and dependency integrity metadata are retained.
+Local absolute paths identify the measured environment and must be adapted on
+another host. Full logs and per-request records remain in the experiment folder.

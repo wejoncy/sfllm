@@ -11,7 +11,7 @@ args.add_argument('--output', type=Path, default=ROOT/'comparison.png')
 output = args.parse_args().output
 output.parent.mkdir(parents=True, exist_ok=True)
 rows = json.loads((ROOT/'results.json').read_text())
-assert len(rows) == 18 and all(x['success'] == 300 and x['failures'] == 0 for x in rows)
+assert all(x['success'] == 300 and x['failures'] == 0 for x in rows)
 FRAMEWORKS = {'sfllm': ('SFLLM', '#1676bd', 'o'),
               'sglang': ('SGLang (unmodified upstream)', '#e06c26', 's')}
 plt.rcParams.update({'font.size': 11, 'axes.spines.top': False,
@@ -24,11 +24,12 @@ for framework, (label, color, marker) in FRAMEWORKS.items():
     series = [x for x in rows if x['framework'] == framework]
     if not series:
         continue
+    style = '-' if len(series) == 9 else 'None'
     axes[0].plot([x['concurrency'] for x in series], [x['output_tok_s'] for x in series],
-                 label=label, color=color, marker=marker, linewidth=2, markersize=6)
+                 label=label, color=color, marker=marker, linestyle=style, linewidth=2, markersize=6)
     # Connect operating points in concurrency order; annotate actual concurrency.
     axes[1].plot([x['output_tok_s'] for x in series], [x['tpot_p95_ms'] for x in series],
-                 label=label, color=color, marker=marker, linewidth=2, markersize=6)
+                 label=label, color=color, marker=marker, linestyle=style, linewidth=2, markersize=6)
     for x in series:
         axes[1].annotate(str(x['concurrency']), (x['output_tok_s'], x['tpot_p95_ms']),
                          xytext=(4, 5), textcoords='offset points', fontsize=8, color=color)
@@ -54,8 +55,14 @@ fig.suptitle('DSpark | Polaris random 300 | 1 x H100 NVL', fontsize=15, y=0.97)
 fig.text(0.5, 0.885, 'FP8 target / BF16 activations / FP32 SSM state | identical workload and generation limits',
          ha='center', fontsize=10, color='#555555')
 fig.text(0.5, 0.835, 'SFLLM 1755593 | SGLang official main e262b44eef (no local source changes)', ha='center', fontsize=9, color='#555555')
-fig.text(0.5, 0.045, 'Best among recorded candidates at each concurrency; one scored run per point.\n'
-         'TPOT point labels = concurrency.', ha='center', fontsize=9, color='#555555', linespacing=1.5)
+footer = ('Best among recorded candidates at each concurrency; one 300-request formal run per point.\n'
+          'Corrected SGLang: native FlashInfer draft attention. TPOT labels = concurrency.')
+if not complete:
+    measured = ', '.join(str(x['concurrency']) for x in rows if x['framework']=='sglang')
+    footer = f'Corrected SGLang measured at C={measured}; other points pending, no interpolation.\nNative FlashInfer draft attention; each shown point = 300 requests.'
+fig.text(0.5, 0.045, footer, ha='center', fontsize=9, color='#555555', linespacing=1.5)
 for ext in ['png', 'svg', 'pdf']:
     fig.savefig(output.with_suffix('.' + ext), dpi=180)
+svg = output.with_suffix('.svg')
+svg.write_text('\n'.join(line.rstrip() for line in svg.read_text().splitlines()) + '\n')
 plt.close(fig)

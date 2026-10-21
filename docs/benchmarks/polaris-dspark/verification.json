@@ -1,145 +1,178 @@
 {
-  "complete": true,
-  "scored_points": 18,
-  "all_scored_workloads_match": true,
-  "tokenized_input_lengths_match": true,
-  "selected_best_among_tested_candidates": true,
-  "simulation_in_scored_runs": false,
-  "official_sglang_source_clean": true,
-  "official_sglang_sha": "e262b44eef1f2bf83e34345276e2bb91a086587e",
-  "upstream_import_paths_verified": true,
-  "packaged_dependency_mismatches": 0,
-  "native_adaptive_screened_at_all_concurrencies": true,
-  "native_cost_covers_batch64": true,
-  "scored_server_capacity_covers_concurrency": true,
-  "dspark_acceptance_checks_passed": true,
-  "sample_sha256": "8932bd9c7191221b3f953dea3a3addf441f352be9ca60c920710cfd65bec8876",
-  "runs": [
+  "corrected_sglang_points": [
     {
-      "framework": "sfllm",
       "concurrency": 1,
-      "config": "fixed8",
-      "success": 300,
-      "tok_s": 760.5910337153481
+      "capacity": 80,
+      "source_sha": "e262b44eef1f2bf83e34345276e2bb91a086587e",
+      "clean": true,
+      "before_after_equal": true,
+      "source_hashes_sha256": "2ee5748576a79d2fa189623f88ccf485f9cad62a59653d0fb4afe2fcc8a38096",
+      "requests": 300,
+      "input_tokens": 1351215,
+      "accept_length": 3.319363953224576
     },
     {
-      "framework": "sfllm",
       "concurrency": 4,
-      "config": "fixed8",
-      "success": 300,
-      "tok_s": 2202.29186190626
+      "capacity": 80,
+      "source_sha": "e262b44eef1f2bf83e34345276e2bb91a086587e",
+      "clean": true,
+      "before_after_equal": true,
+      "source_hashes_sha256": "2ee5748576a79d2fa189623f88ccf485f9cad62a59653d0fb4afe2fcc8a38096",
+      "requests": 300,
+      "input_tokens": 1351215,
+      "accept_length": 3.335129443825096
     },
     {
-      "framework": "sfllm",
       "concurrency": 8,
-      "config": "d8t6",
-      "success": 300,
-      "tok_s": 3218.1392646952986
+      "capacity": 80,
+      "source_sha": "e262b44eef1f2bf83e34345276e2bb91a086587e",
+      "clean": true,
+      "before_after_equal": true,
+      "source_hashes_sha256": "2ee5748576a79d2fa189623f88ccf485f9cad62a59653d0fb4afe2fcc8a38096",
+      "requests": 300,
+      "input_tokens": 1351215,
+      "accept_length": 3.32009484291642
     },
     {
-      "framework": "sfllm",
       "concurrency": 12,
-      "config": "d8t5",
-      "success": 300,
-      "tok_s": 3794.3636601489065
+      "capacity": 80,
+      "source_sha": "e262b44eef1f2bf83e34345276e2bb91a086587e",
+      "clean": true,
+      "before_after_equal": true,
+      "source_hashes_sha256": "2ee5748576a79d2fa189623f88ccf485f9cad62a59653d0fb4afe2fcc8a38096",
+      "requests": 300,
+      "input_tokens": 1351215,
+      "accept_length": 2.6852758191621735
     },
     {
-      "framework": "sfllm",
       "concurrency": 16,
-      "config": "d8t6",
-      "success": 300,
-      "tok_s": 3967.849369530693
+      "capacity": 80,
+      "source_sha": "e262b44eef1f2bf83e34345276e2bb91a086587e",
+      "clean": true,
+      "before_after_equal": true,
+      "source_hashes_sha256": "2ee5748576a79d2fa189623f88ccf485f9cad62a59653d0fb4afe2fcc8a38096",
+      "requests": 300,
+      "input_tokens": 1351215,
+      "accept_length": 2.687659772251917
     },
     {
-      "framework": "sfllm",
       "concurrency": 24,
-      "config": "d8t5",
-      "success": 300,
-      "tok_s": 4377.746267986294
+      "capacity": 80,
+      "source_sha": "e262b44eef1f2bf83e34345276e2bb91a086587e",
+      "clean": true,
+      "before_after_equal": true,
+      "source_hashes_sha256": "2ee5748576a79d2fa189623f88ccf485f9cad62a59653d0fb4afe2fcc8a38096",
+      "requests": 300,
+      "input_tokens": 1351215,
+      "accept_length": 2.6941061457142386
     },
     {
-      "framework": "sfllm",
       "concurrency": 32,
-      "config": "d8t5",
-      "success": 300,
-      "tok_s": 4488.790938236833
+      "capacity": 80,
+      "source_sha": "e262b44eef1f2bf83e34345276e2bb91a086587e",
+      "clean": true,
+      "before_after_equal": true,
+      "source_hashes_sha256": "2ee5748576a79d2fa189623f88ccf485f9cad62a59653d0fb4afe2fcc8a38096",
+      "requests": 300,
+      "input_tokens": 1351215,
+      "accept_length": 2.683173712021136
     },
     {
-      "framework": "sfllm",
       "concurrency": 48,
-      "config": "fixed4",
-      "success": 300,
-      "tok_s": 4732.19706257477
+      "capacity": 80,
+      "source_sha": "e262b44eef1f2bf83e34345276e2bb91a086587e",
+      "clean": true,
+      "before_after_equal": true,
+      "source_hashes_sha256": "2ee5748576a79d2fa189623f88ccf485f9cad62a59653d0fb4afe2fcc8a38096",
+      "requests": 300,
+      "input_tokens": 1351215,
+      "accept_length": 2.686582599412864
     },
     {
-      "framework": "sfllm",
       "concurrency": 64,
-      "config": "d8t4.5",
-      "success": 300,
-      "tok_s": 4731.387608183571
-    },
-    {
-      "framework": "sglang",
-      "concurrency": 1,
-      "config": "fixed8",
-      "success": 300,
-      "tok_s": 407.8873903050247
-    },
-    {
-      "framework": "sglang",
-      "concurrency": 4,
-      "config": "fixed8",
-      "success": 300,
-      "tok_s": 1234.8648274523443
-    },
-    {
-      "framework": "sglang",
-      "concurrency": 8,
-      "config": "fixed8",
-      "success": 300,
-      "tok_s": 1622.1255651285771
-    },
-    {
-      "framework": "sglang",
-      "concurrency": 12,
-      "config": "fixed8",
-      "success": 300,
-      "tok_s": 1776.6457363861045
-    },
-    {
-      "framework": "sglang",
-      "concurrency": 16,
-      "config": "fixed6",
-      "success": 300,
-      "tok_s": 1924.2123025739875
-    },
-    {
-      "framework": "sglang",
-      "concurrency": 24,
-      "config": "fixed4",
-      "success": 300,
-      "tok_s": 1975.6653679508838
-    },
-    {
-      "framework": "sglang",
-      "concurrency": 32,
-      "config": "fixed6",
-      "success": 300,
-      "tok_s": 2096.43239833888
-    },
-    {
-      "framework": "sglang",
-      "concurrency": 48,
-      "config": "fixed8-cap80",
-      "success": 300,
-      "tok_s": 2101.0473207493415
-    },
-    {
-      "framework": "sglang",
-      "concurrency": 64,
-      "config": "fixed6",
-      "success": 300,
-      "tok_s": 2134.1108268150915
+      "capacity": 80,
+      "source_sha": "e262b44eef1f2bf83e34345276e2bb91a086587e",
+      "clean": true,
+      "before_after_equal": true,
+      "source_hashes_sha256": "2ee5748576a79d2fa189623f88ccf485f9cad62a59653d0fb4afe2fcc8a38096",
+      "requests": 300,
+      "input_tokens": 1351215,
+      "accept_length": 2.692539801617071
     }
-  ]
+  ],
+  "sfllm_reused_points": [
+    {
+      "concurrency": 1,
+      "requests": 300,
+      "input_tokens": 1351215,
+      "per_request_input_lengths_match": true,
+      "reused_summary": "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-upstream-polaris-20261020/sfllm/fixed8/scored-c1/bench/summary.json",
+      "input_count_source": "sum of SFLLM final_meta_info.prompt_length; client summary total_input_tokens is zero because it expects prompt_tokens"
+    },
+    {
+      "concurrency": 4,
+      "requests": 300,
+      "input_tokens": 1351215,
+      "per_request_input_lengths_match": true,
+      "reused_summary": "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-upstream-polaris-20261020/sfllm/fixed8/scored-c4/bench/summary.json",
+      "input_count_source": "sum of SFLLM final_meta_info.prompt_length; client summary total_input_tokens is zero because it expects prompt_tokens"
+    },
+    {
+      "concurrency": 8,
+      "requests": 300,
+      "input_tokens": 1351215,
+      "per_request_input_lengths_match": true,
+      "reused_summary": "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-upstream-polaris-20261020/sfllm/d8t6/scored-c8/bench/summary.json",
+      "input_count_source": "sum of SFLLM final_meta_info.prompt_length; client summary total_input_tokens is zero because it expects prompt_tokens"
+    },
+    {
+      "concurrency": 12,
+      "requests": 300,
+      "input_tokens": 1351215,
+      "per_request_input_lengths_match": true,
+      "reused_summary": "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-upstream-polaris-20261020/sfllm/d8t5/scored-c12/bench/summary.json",
+      "input_count_source": "sum of SFLLM final_meta_info.prompt_length; client summary total_input_tokens is zero because it expects prompt_tokens"
+    },
+    {
+      "concurrency": 16,
+      "requests": 300,
+      "input_tokens": 1351215,
+      "per_request_input_lengths_match": true,
+      "reused_summary": "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-upstream-polaris-20261020/sfllm/d8t6/scored-c16/bench/summary.json",
+      "input_count_source": "sum of SFLLM final_meta_info.prompt_length; client summary total_input_tokens is zero because it expects prompt_tokens"
+    },
+    {
+      "concurrency": 24,
+      "requests": 300,
+      "input_tokens": 1351215,
+      "per_request_input_lengths_match": true,
+      "reused_summary": "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-upstream-polaris-20261020/sfllm/d8t5/scored-c24/bench/summary.json",
+      "input_count_source": "sum of SFLLM final_meta_info.prompt_length; client summary total_input_tokens is zero because it expects prompt_tokens"
+    },
+    {
+      "concurrency": 32,
+      "requests": 300,
+      "input_tokens": 1351215,
+      "per_request_input_lengths_match": true,
+      "reused_summary": "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-upstream-polaris-20261020/sfllm/d8t5/scored-c32/bench/summary.json",
+      "input_count_source": "sum of SFLLM final_meta_info.prompt_length; client summary total_input_tokens is zero because it expects prompt_tokens"
+    },
+    {
+      "concurrency": 48,
+      "requests": 300,
+      "input_tokens": 1351215,
+      "per_request_input_lengths_match": true,
+      "reused_summary": "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-upstream-polaris-20261020/sfllm/fixed4/scored-c48/bench/summary.json",
+      "input_count_source": "sum of SFLLM final_meta_info.prompt_length; client summary total_input_tokens is zero because it expects prompt_tokens"
+    },
+    {
+      "concurrency": 64,
+      "requests": 300,
+      "input_tokens": 1351215,
+      "per_request_input_lengths_match": true,
+      "reused_summary": "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-upstream-polaris-20261020/sfllm/d8t4.5/scored-c64/bench/summary.json",
+      "input_count_source": "sum of SFLLM final_meta_info.prompt_length; client summary total_input_tokens is zero because it expects prompt_tokens"
+    }
+  ],
+  "sfllm_reused_from": "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-upstream-polaris-20261020/results.json"
 }

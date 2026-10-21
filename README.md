@@ -8,10 +8,10 @@ A production-ready, high-performance serving framework for large language models
 
 ![SFLLM and unmodified upstream SGLang: throughput and generation latency](docs/assets/polaris-dspark-comparison.png)
 
-**Curve correction in progress.** The figure now shows corrected SGLang
-300-request results at concurrency 12 and 64 using native FlashInfer draft
-attention; the other seven SGLang points are being remeasured and are omitted.
-The old forced-Triton curve is archived; the complete SFLLM curve is unchanged.
+**Corrected SGLang configuration:** native FlashInfer draft attention; all nine
+SGLang points use 300-request formal runs. SFLLM uses selective draft FP8/top-k16;
+SGLang uses its selected native draft configuration. Results cover the recorded
+candidates; see the [configuration audit](docs/benchmarks/polaris-dspark-alignment.md).
 
 DSpark on one H100 NVL, using the same 300 randomly sampled Polaris prompts
 (seed 42), an FP8 target, BF16 activations, and FP32 recurrent states.
@@ -22,8 +22,8 @@ measurement runs once on all 300 prompts. Measured revisions: SFLLM
 (`qwen35_specfic`) and official SGLang
 [`e262b44`](https://github.com/sgl-project/sglang/commit/e262b44eef1f2bf83e34345276e2bb91a086587e).
 
-SGLang is an **unmodified official checkout**; its native adaptive policy is
-included in configuration screening. See the [benchmark methodology, results,
+SGLang is an **unmodified official checkout**. Native adaptive screening and
+compatibility results are documented in the audit. See the [benchmark methodology, results,
 source revisions, and commands](docs/benchmarks/polaris-dspark.md).
 
 ## Project Background

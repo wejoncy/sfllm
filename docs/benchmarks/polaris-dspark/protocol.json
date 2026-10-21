@@ -327,13 +327,10 @@
   ],
   "server_max_running_requests": {
     "sfllm": 64,
-    "sglang": {
-      "default": 80,
-      "fixed16": 64
-    }
+    "sglang": 80
   },
   "cuda_graph_max_bs": 64,
-  "sglang_headroom": "Native explicit Mamba pools provide 80 slots for widths 6/8/adaptive; width16 uses 64 slots, native no_buffer prefix caching, memory fraction0.93 and prefill chunk4096, and --min-free-slots-delay1. Preflight fixed8 default pool (57 slots) is eligible only through concurrency48; fixed8-cap80 is additionally screened at C48/C64.",
+  "sglang_headroom": "All corrected candidates use native Mamba pool size400 and capacity80; decode CUDA graph capacity64.",
   "configs_screened": {
     "sfllm": [
       "d8t4.5",
@@ -343,14 +340,10 @@
       "fixed8"
     ],
     "sglang": [
-      "fixed8",
-      "fixed4",
-      "fixed2",
-      "fixed6",
-      "fixed16",
-      "fixed8-cap80",
-      "fixed8-nobuffer",
-      "native-adaptive"
+      "draft-flashinfer",
+      "draft-flashinfer-fp8",
+      "draft-flashinfer-w6",
+      "draft-flashinfer-w4"
     ]
   },
   "tuning_requests": "max(32, 2 * concurrency); same subset and generation parameters",
@@ -370,5 +363,8 @@
     }
   },
   "sglang": "Official sgl-project/sglang main at e262b44eef1f2bf83e34345276e2bb91a086587e; clean worktree; no local source changes",
-  "scope": "best among the explicitly recorded candidate configurations; no claim of global optimum"
+  "scope": "Best among recorded valid candidates; one formal run per point, not a global optimum or a numerical-equivalence claim.",
+  "corrected_draft_backend": "flashinfer",
+  "correction": "SGLang curve supersedes the forced-Triton draft-attention experiment. SFLLM formal points are reused without change.",
+  "adaptive_scope": "Earlier cap-accept screening used Triton draft attention. Corrected FlashInfer compact adaptive was fitted but failed real warmup and is excluded; see alignment report."
 }
