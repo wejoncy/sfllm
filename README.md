@@ -98,6 +98,13 @@ python python/sfllm/serving/app.py \
   --dtype float16
 ```
 
+**AngelSlim EAGLE3 config note:** Our tests favor `rope_theta=10000` in the
+draft `config.json` for `AngelSlim/Qwen3-4B_eagle3` and
+`AngelSlim/Qwen3-1.7B_eagle3`. Their configs declare `1000000`, but
+[AngelSlim's published training code](https://github.com/Tencent/AngelSlim/blob/917de3ae8c3147ff158b1b7a9c40082808486ae9/angelslim/compressor/speculative/train/models/draft/llama_eagle3.py#L186-L190)
+uses RoPE's default base of `10000`. Keep the target at `1000000`;
+this correction is specific to these draft checkpoints.
+
 ### 2. Test the API
 
 **Chat Completions (Streaming)**

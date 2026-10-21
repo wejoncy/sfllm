@@ -93,6 +93,13 @@ python python/sfllm/serving/app.py \
   --dtype float16
 ```
 
+**AngelSlim EAGLE3 配置说明：** 我们的测试表明，`AngelSlim/Qwen3-4B_eagle3`
+和 `AngelSlim/Qwen3-1.7B_eagle3` 的 draft `config.json` 更适合使用
+`rope_theta=10000`。它们的配置声明为 `1000000`，但
+[AngelSlim 公开的训练代码](https://github.com/Tencent/AngelSlim/blob/917de3ae8c3147ff158b1b7a9c40082808486ae9/angelslim/compressor/speculative/train/models/draft/llama_eagle3.py#L186-L190)
+使用 RoPE 默认基数 `10000`。目标模型保持 `1000000`；此修正仅针对这两个
+草稿检查点。
+
 ### 2. 测试API
 
 **聊天补全（流式）**
