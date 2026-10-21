@@ -2,6 +2,8 @@
 
 ![Throughput and generation latency](../assets/polaris-dspark-comparison.png)
 
+**Figure correction in progress:** the figure now includes corrected official FlashInfer-draft SGLang formal results only at C12 (2367.83 tok/s) and C64 (3429.20 tok/s). Other SGLang points are being remeasured and are omitted. The numeric tables below describe the historical forced-Triton experiment, retained under [history-triton](polaris-dspark/history-triton/results.json); they are not the corrected curve.
+
 Configuration coverage is under review. The plotted runs use SFLLM selective
 draft FP8/top-k16 and SGLang BF16/full-vocabulary drafting. Supplementary
 same-precision and native-option checks are documented in the

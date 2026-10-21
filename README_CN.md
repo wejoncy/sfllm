@@ -8,9 +8,9 @@
 
 ![SFLLM 与原版 SGLang 的吞吐和生成延迟对比](docs/assets/polaris-dspark-comparison.png)
 
-**配置覆盖仍在复核。** 图中 SFLLM 使用选择性 draft FP8/top-k16，SGLang
-使用 BF16 draft/全词表草稿。曲线只代表已记录候选的测量结果，不能视为
-SGLang 充分调优后的性能上限。补充实测见[配置对齐审计](docs/benchmarks/polaris-dspark-alignment.md)。
+**正在补齐修正曲线。** 图中已替换为原生 FlashInfer draft attention 下
+SGLang 并发 12、64 的正式 300 条结果；另外七个并发点正在重测，暂不连线。
+旧 Triton 曲线已归档，SFLLM 的九个正式点保持不变。
 
 单张 H100 NVL，DSpark 投机解码；使用相同的 Polaris 随机 300 条输入
 （seed 42）、FP8 目标模型、BF16 激活和 FP32 循环状态，并发覆盖 1–64。

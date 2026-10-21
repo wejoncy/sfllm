@@ -1,0 +1,712 @@
+{
+  "scope": "Targeted diagnostic screens, not replacement formal curves; one run per point.",
+  "sample_sha256": "8932bd9c7191221b3f953dea3a3addf441f352be9ca60c920710cfd65bec8876",
+  "counts": {
+    "12": 32,
+    "64": 128
+  },
+  "warmup": {
+    "requests": 128,
+    "concurrency": 64
+  },
+  "max_new_tokens": 1000,
+  "temperature": 0,
+  "seed": 42,
+  "stop_token_ids": [
+    248044
+  ],
+  "context_length": 16384,
+  "activation_dtype": "bfloat16",
+  "ssm_dtype": "float32",
+  "cache": "Prefix enabled; flushed before warmup and before each measured point.",
+  "original_runtime_versions": {
+    "sfllm": {
+      "torch": "2.13.0+cu130",
+      "torch_cuda": "13.0",
+      "triton": "3.7.1",
+      "flashinfer_path": "/workspace/sglang/.venv/lib/python3.12/site-packages/flashinfer/__init__.py",
+      "pythonpath": "/workspace/sfllm/python:/workspace/sfllm/sfkernels/python",
+      "flashinfer": "0.6.18",
+      "sglang_kernel": "0.4.6.post1",
+      "transformers": "5.12.1"
+    },
+    "sglang": {
+      "torch": "2.14.1+cu130",
+      "torch_cuda": "13.0",
+      "triton": "3.8.0",
+      "flashinfer_path": "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/deps/flashinfer/__init__.py",
+      "pythonpath": "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/upstream-sglang-e262b44/python:/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/deps",
+      "flashinfer": "0.7.2",
+      "sglang_kernel": "0.4.10",
+      "transformers": "5.19.0"
+    }
+  },
+  "runs": {
+    "baseline": {
+      "result": [
+        {
+          "concurrency": 12,
+          "tok_s": 1734.8185743703466,
+          "accept": 3.4362155874369913
+        },
+        {
+          "concurrency": 64,
+          "tok_s": 2168.480312821316,
+          "accept": 3.352682413694176
+        }
+      ],
+      "server-command": {
+        "command": [
+          "/workspace/sglang/.venv/bin/python",
+          "-B",
+          "-m",
+          "sglang.launch_server",
+          "--model-path",
+          "/mnt/data/work/dspark_repro_download/qwe35_dspark_qaa/dspark_repro/target",
+          "--speculative-draft-model-path",
+          "/mnt/data/work/dspark_repro_download/qwe35_dspark_qaa/dspark_repro/sglang/unified_run/dspark_ckpt6",
+          "--speculative-algorithm",
+          "DSPARK",
+          "--speculative-dspark-block-size",
+          "7",
+          "--json-model-override-args",
+          "{\"sample_from_anchor\":false}",
+          "--dtype",
+          "bfloat16",
+          "--mamba-ssm-dtype",
+          "float32",
+          "--attention-backend",
+          "fa3",
+          "--speculative-draft-attention-backend",
+          "triton",
+          "--linear-attn-prefill-backend",
+          "flashinfer",
+          "--linear-attn-decode-backend",
+          "flashinfer",
+          "--max-running-requests",
+          "80",
+          "--cuda-graph-max-bs-decode",
+          "64",
+          "--context-length",
+          "16384",
+          "--mem-fraction-static",
+          "0.9",
+          "--random-seed",
+          "42",
+          "--port",
+          "30000",
+          "--skip-server-warmup",
+          "--max-mamba-cache-size",
+          "400"
+        ],
+        "env_overrides": {
+          "CUDA_VISIBLE_DEVICES": "0",
+          "PYTHONPATH": "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/upstream-sglang-e262b44/python:/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/deps",
+          "FLASHINFER_WORKSPACE_BASE": "/root/.cache/sglang",
+          "SGLANG_DSPARK_USE_GREEDY_DRAFT": "1",
+          "SGLANG_DSPARK_ENABLE_SPS_RECORD": "0",
+          "SGLANG_RAGGED_VERIFY_MODE": "static"
+        }
+      },
+      "source": {
+        "git_head": "e262b44eef1f2bf83e34345276e2bb91a086587e",
+        "worktree_clean": true,
+        "repo": "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/upstream-sglang-e262b44",
+        "files_count": 5062,
+        "hash_manifest_sha256": "396cc84a8e7812be12a6c2198156c2d278c06948fe878db2f1f1a18ced71ef46",
+        "unchanged_after_run": true
+      }
+    },
+    "draft-fp8": {
+      "result": [
+        {
+          "concurrency": 12,
+          "tok_s": 1729.1063625586871,
+          "accept": 3.4338278931750743
+        },
+        {
+          "concurrency": 64,
+          "tok_s": 2196.6631540292415,
+          "accept": 3.336889441706932
+        }
+      ],
+      "server-command": {
+        "command": [
+          "/workspace/sglang/.venv/bin/python",
+          "-B",
+          "-m",
+          "sglang.launch_server",
+          "--model-path",
+          "/mnt/data/work/dspark_repro_download/qwe35_dspark_qaa/dspark_repro/target",
+          "--speculative-draft-model-path",
+          "/mnt/data/work/dspark_repro_download/qwe35_dspark_qaa/dspark_repro/sglang/unified_run/dspark_ckpt6",
+          "--speculative-algorithm",
+          "DSPARK",
+          "--speculative-dspark-block-size",
+          "7",
+          "--json-model-override-args",
+          "{\"sample_from_anchor\":false}",
+          "--dtype",
+          "bfloat16",
+          "--mamba-ssm-dtype",
+          "float32",
+          "--attention-backend",
+          "fa3",
+          "--speculative-draft-attention-backend",
+          "triton",
+          "--linear-attn-prefill-backend",
+          "flashinfer",
+          "--linear-attn-decode-backend",
+          "flashinfer",
+          "--max-running-requests",
+          "80",
+          "--cuda-graph-max-bs-decode",
+          "64",
+          "--context-length",
+          "16384",
+          "--mem-fraction-static",
+          "0.9",
+          "--random-seed",
+          "42",
+          "--port",
+          "30000",
+          "--skip-server-warmup",
+          "--max-mamba-cache-size",
+          "400",
+          "--speculative-draft-model-quantization",
+          "fp8"
+        ],
+        "env_overrides": {
+          "CUDA_VISIBLE_DEVICES": "0",
+          "PYTHONPATH": "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/upstream-sglang-e262b44/python:/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/deps",
+          "FLASHINFER_WORKSPACE_BASE": "/root/.cache/sglang",
+          "SGLANG_DSPARK_USE_GREEDY_DRAFT": "1",
+          "SGLANG_DSPARK_ENABLE_SPS_RECORD": "0",
+          "SGLANG_RAGGED_VERIFY_MODE": "static"
+        }
+      },
+      "source": {
+        "git_head": "e262b44eef1f2bf83e34345276e2bb91a086587e",
+        "worktree_clean": true,
+        "repo": "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/upstream-sglang-e262b44",
+        "files_count": 5062,
+        "hash_manifest_sha256": "396cc84a8e7812be12a6c2198156c2d278c06948fe878db2f1f1a18ced71ef46",
+        "unchanged_after_run": true
+      }
+    },
+    "tokenizer4": {
+      "result": [
+        {
+          "concurrency": 12,
+          "tok_s": 1736.8587508876274,
+          "accept": 3.4362155874369913
+        },
+        {
+          "concurrency": 64,
+          "tok_s": 2175.393778358299,
+          "accept": 3.3349826347590277
+        }
+      ],
+      "server-command": {
+        "command": [
+          "/workspace/sglang/.venv/bin/python",
+          "-B",
+          "-m",
+          "sglang.launch_server",
+          "--model-path",
+          "/mnt/data/work/dspark_repro_download/qwe35_dspark_qaa/dspark_repro/target",
+          "--speculative-draft-model-path",
+          "/mnt/data/work/dspark_repro_download/qwe35_dspark_qaa/dspark_repro/sglang/unified_run/dspark_ckpt6",
+          "--speculative-algorithm",
+          "DSPARK",
+          "--speculative-dspark-block-size",
+          "7",
+          "--json-model-override-args",
+          "{\"sample_from_anchor\":false}",
+          "--dtype",
+          "bfloat16",
+          "--mamba-ssm-dtype",
+          "float32",
+          "--attention-backend",
+          "fa3",
+          "--speculative-draft-attention-backend",
+          "triton",
+          "--linear-attn-prefill-backend",
+          "flashinfer",
+          "--linear-attn-decode-backend",
+          "flashinfer",
+          "--max-running-requests",
+          "80",
+          "--cuda-graph-max-bs-decode",
+          "64",
+          "--context-length",
+          "16384",
+          "--mem-fraction-static",
+          "0.9",
+          "--random-seed",
+          "42",
+          "--port",
+          "30000",
+          "--skip-server-warmup",
+          "--max-mamba-cache-size",
+          "400",
+          "--tokenizer-worker-num",
+          "4"
+        ],
+        "env_overrides": {
+          "CUDA_VISIBLE_DEVICES": "0",
+          "PYTHONPATH": "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/upstream-sglang-e262b44/python:/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/deps",
+          "FLASHINFER_WORKSPACE_BASE": "/root/.cache/sglang",
+          "SGLANG_DSPARK_USE_GREEDY_DRAFT": "1",
+          "SGLANG_DSPARK_ENABLE_SPS_RECORD": "0",
+          "SGLANG_RAGGED_VERIFY_MODE": "static"
+        }
+      },
+      "source": {
+        "git_head": "e262b44eef1f2bf83e34345276e2bb91a086587e",
+        "worktree_clean": true,
+        "repo": "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/upstream-sglang-e262b44",
+        "files_count": 5062,
+        "hash_manifest_sha256": "396cc84a8e7812be12a6c2198156c2d278c06948fe878db2f1f1a18ced71ef46",
+        "unchanged_after_run": true
+      }
+    },
+    "compact": {
+      "failure": {
+        "type": "RuntimeError",
+        "message": "Server exited -9; see /mnt/data/jicwen/work/sglang-sfllm-migration-20261019/alignment-audit-20261021/compact/server.log",
+        "server_errors": [
+          "RuntimeError: shape '[64, 7, 16, 128]' is invalid for input of size 983040",
+          "Exception: Capture cuda graph failed: shape '[64, 7, 16, 128]' is invalid for input of size 983040"
+        ]
+      },
+      "server-command": {
+        "command": [
+          "/workspace/sglang/.venv/bin/python",
+          "-B",
+          "-m",
+          "sglang.launch_server",
+          "--model-path",
+          "/mnt/data/work/dspark_repro_download/qwe35_dspark_qaa/dspark_repro/target",
+          "--speculative-draft-model-path",
+          "/mnt/data/work/dspark_repro_download/qwe35_dspark_qaa/dspark_repro/sglang/unified_run/dspark_ckpt6",
+          "--speculative-algorithm",
+          "DSPARK",
+          "--speculative-dspark-block-size",
+          "7",
+          "--json-model-override-args",
+          "{\"sample_from_anchor\":false}",
+          "--dtype",
+          "bfloat16",
+          "--mamba-ssm-dtype",
+          "float32",
+          "--attention-backend",
+          "fa3",
+          "--speculative-draft-attention-backend",
+          "triton",
+          "--linear-attn-prefill-backend",
+          "flashinfer",
+          "--linear-attn-decode-backend",
+          "flashinfer",
+          "--max-running-requests",
+          "80",
+          "--cuda-graph-max-bs-decode",
+          "64",
+          "--context-length",
+          "16384",
+          "--mem-fraction-static",
+          "0.9",
+          "--random-seed",
+          "42",
+          "--port",
+          "30000",
+          "--skip-server-warmup",
+          "--max-mamba-cache-size",
+          "400",
+          "--speculative-dspark-sps-table-path",
+          "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-upstream-polaris-20261020/native-cost/sps.json"
+        ],
+        "env_overrides": {
+          "CUDA_VISIBLE_DEVICES": "0",
+          "PYTHONPATH": "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/upstream-sglang-e262b44/python:/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/deps",
+          "FLASHINFER_WORKSPACE_BASE": "/root/.cache/sglang",
+          "SGLANG_DSPARK_USE_GREEDY_DRAFT": "1",
+          "SGLANG_DSPARK_ENABLE_SPS_RECORD": "0",
+          "SGLANG_RAGGED_VERIFY_MODE": "compact"
+        }
+      },
+      "source": {
+        "git_head": "e262b44eef1f2bf83e34345276e2bb91a086587e",
+        "worktree_clean": true,
+        "repo": "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/upstream-sglang-e262b44",
+        "files_count": 5062,
+        "hash_manifest_sha256": "396cc84a8e7812be12a6c2198156c2d278c06948fe878db2f1f1a18ced71ef46",
+        "unchanged_after_run": true
+      }
+    },
+    "compact-triton": {
+      "failure": {
+        "type": "CalledProcessError",
+        "message": "Command '['/workspace/sglang/.venv/bin/python', '-B', '/mnt/data/work/dspark_repro_download/qwe35_dspark_qaa/dspark_repro/benchmark/bench_sglang_raw.py', '--url', 'http://127.0.0.1:30000/generate', '--input', '/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-upstream-polaris-20261020/polaris-random300-seed42.jsonl', '--num-prompts', '128', '--concurrency', '64', '--max-new-tokens', '1000', '--temperature', '0', '--seed', '42', '--stop-token-id', '248044', '--request-timeout-seconds', '1800', '--output-dir', '/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/alignment-audit-20261021/compact-triton/warmup/bench', '--label', 'compact-triton-warmup']' returned non-zero exit status 1.",
+        "server_errors": [
+          "RuntimeError: shape '[64, -1]' is invalid for input of size 480"
+        ]
+      },
+      "server-command": {
+        "command": [
+          "/workspace/sglang/.venv/bin/python",
+          "-B",
+          "-m",
+          "sglang.launch_server",
+          "--model-path",
+          "/mnt/data/work/dspark_repro_download/qwe35_dspark_qaa/dspark_repro/target",
+          "--speculative-draft-model-path",
+          "/mnt/data/work/dspark_repro_download/qwe35_dspark_qaa/dspark_repro/sglang/unified_run/dspark_ckpt6",
+          "--speculative-algorithm",
+          "DSPARK",
+          "--speculative-dspark-block-size",
+          "7",
+          "--json-model-override-args",
+          "{\"sample_from_anchor\":false}",
+          "--dtype",
+          "bfloat16",
+          "--mamba-ssm-dtype",
+          "float32",
+          "--attention-backend",
+          "fa3",
+          "--speculative-draft-attention-backend",
+          "triton",
+          "--linear-attn-prefill-backend",
+          "flashinfer",
+          "--linear-attn-decode-backend",
+          "flashinfer",
+          "--max-running-requests",
+          "80",
+          "--cuda-graph-max-bs-decode",
+          "64",
+          "--context-length",
+          "16384",
+          "--mem-fraction-static",
+          "0.9",
+          "--random-seed",
+          "42",
+          "--port",
+          "30000",
+          "--skip-server-warmup",
+          "--max-mamba-cache-size",
+          "400",
+          "--speculative-dspark-sps-table-path",
+          "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-upstream-polaris-20261020/native-cost/sps.json",
+          "--linear-attn-verify-backend",
+          "triton"
+        ],
+        "env_overrides": {
+          "CUDA_VISIBLE_DEVICES": "0",
+          "PYTHONPATH": "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/upstream-sglang-e262b44/python:/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/deps",
+          "FLASHINFER_WORKSPACE_BASE": "/root/.cache/sglang",
+          "SGLANG_DSPARK_USE_GREEDY_DRAFT": "1",
+          "SGLANG_DSPARK_ENABLE_SPS_RECORD": "0",
+          "SGLANG_RAGGED_VERIFY_MODE": "compact"
+        }
+      },
+      "source": {
+        "git_head": "e262b44eef1f2bf83e34345276e2bb91a086587e",
+        "worktree_clean": true,
+        "repo": "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/upstream-sglang-e262b44",
+        "files_count": 5062,
+        "hash_manifest_sha256": "396cc84a8e7812be12a6c2198156c2d278c06948fe878db2f1f1a18ced71ef46",
+        "unchanged_after_run": true
+      }
+    },
+    "compile": {
+      "failure": {
+        "type": "RuntimeError",
+        "message": "Server exited -9; see /mnt/data/jicwen/work/sglang-sfllm-migration-20261019/alignment-audit-20261021/compile/server.log",
+        "server_errors": [
+          "Exception: Capture cuda graph failed: CUDA error: operation failed due to a previous error during capture"
+        ]
+      },
+      "server-command": {
+        "command": [
+          "/workspace/sglang/.venv/bin/python",
+          "-B",
+          "-m",
+          "sglang.launch_server",
+          "--model-path",
+          "/mnt/data/work/dspark_repro_download/qwe35_dspark_qaa/dspark_repro/target",
+          "--speculative-draft-model-path",
+          "/mnt/data/work/dspark_repro_download/qwe35_dspark_qaa/dspark_repro/sglang/unified_run/dspark_ckpt6",
+          "--speculative-algorithm",
+          "DSPARK",
+          "--speculative-dspark-block-size",
+          "7",
+          "--json-model-override-args",
+          "{\"sample_from_anchor\":false}",
+          "--dtype",
+          "bfloat16",
+          "--mamba-ssm-dtype",
+          "float32",
+          "--attention-backend",
+          "fa3",
+          "--speculative-draft-attention-backend",
+          "triton",
+          "--linear-attn-prefill-backend",
+          "flashinfer",
+          "--linear-attn-decode-backend",
+          "flashinfer",
+          "--max-running-requests",
+          "80",
+          "--cuda-graph-max-bs-decode",
+          "64",
+          "--context-length",
+          "16384",
+          "--mem-fraction-static",
+          "0.9",
+          "--random-seed",
+          "42",
+          "--port",
+          "30000",
+          "--skip-server-warmup",
+          "--max-mamba-cache-size",
+          "400",
+          "--enable-torch-compile",
+          "--torch-compile-max-bs",
+          "32"
+        ],
+        "env_overrides": {
+          "CUDA_VISIBLE_DEVICES": "0",
+          "PYTHONPATH": "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/upstream-sglang-e262b44/python:/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/deps",
+          "FLASHINFER_WORKSPACE_BASE": "/root/.cache/sglang",
+          "SGLANG_DSPARK_USE_GREEDY_DRAFT": "1",
+          "SGLANG_DSPARK_ENABLE_SPS_RECORD": "0",
+          "SGLANG_RAGGED_VERIFY_MODE": "static"
+        }
+      },
+      "source": {
+        "git_head": "e262b44eef1f2bf83e34345276e2bb91a086587e",
+        "worktree_clean": true,
+        "repo": "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/upstream-sglang-e262b44",
+        "files_count": 5062,
+        "hash_manifest_sha256": "396cc84a8e7812be12a6c2198156c2d278c06948fe878db2f1f1a18ced71ef46",
+        "unchanged_after_run": true
+      }
+    },
+    "compile-triton": {
+      "server-command": {
+        "command": [
+          "/workspace/sglang/.venv/bin/python",
+          "-B",
+          "-m",
+          "sglang.launch_server",
+          "--model-path",
+          "/mnt/data/work/dspark_repro_download/qwe35_dspark_qaa/dspark_repro/target",
+          "--speculative-draft-model-path",
+          "/mnt/data/work/dspark_repro_download/qwe35_dspark_qaa/dspark_repro/sglang/unified_run/dspark_ckpt6",
+          "--speculative-algorithm",
+          "DSPARK",
+          "--speculative-dspark-block-size",
+          "7",
+          "--json-model-override-args",
+          "{\"sample_from_anchor\":false}",
+          "--dtype",
+          "bfloat16",
+          "--mamba-ssm-dtype",
+          "float32",
+          "--attention-backend",
+          "fa3",
+          "--speculative-draft-attention-backend",
+          "triton",
+          "--linear-attn-prefill-backend",
+          "flashinfer",
+          "--linear-attn-decode-backend",
+          "flashinfer",
+          "--max-running-requests",
+          "80",
+          "--cuda-graph-max-bs-decode",
+          "64",
+          "--context-length",
+          "16384",
+          "--mem-fraction-static",
+          "0.9",
+          "--random-seed",
+          "42",
+          "--port",
+          "30000",
+          "--skip-server-warmup",
+          "--max-mamba-cache-size",
+          "400",
+          "--enable-torch-compile",
+          "--torch-compile-max-bs",
+          "32",
+          "--linear-attn-verify-backend",
+          "triton"
+        ],
+        "env_overrides": {
+          "CUDA_VISIBLE_DEVICES": "0",
+          "PYTHONPATH": "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/upstream-sglang-e262b44/python:/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/deps",
+          "FLASHINFER_WORKSPACE_BASE": "/root/.cache/sglang",
+          "SGLANG_DSPARK_USE_GREEDY_DRAFT": "1",
+          "SGLANG_DSPARK_ENABLE_SPS_RECORD": "0",
+          "SGLANG_RAGGED_VERIFY_MODE": "static"
+        }
+      }
+    },
+    "verify-triton": {
+      "result": [
+        {
+          "concurrency": 12,
+          "tok_s": 1816.7471624083282,
+          "accept": 3.502973830293418
+        },
+        {
+          "concurrency": 64,
+          "tok_s": 2137.47530923995,
+          "accept": 3.3212569671343455
+        }
+      ],
+      "server-command": {
+        "command": [
+          "/workspace/sglang/.venv/bin/python",
+          "-B",
+          "-m",
+          "sglang.launch_server",
+          "--model-path",
+          "/mnt/data/work/dspark_repro_download/qwe35_dspark_qaa/dspark_repro/target",
+          "--speculative-draft-model-path",
+          "/mnt/data/work/dspark_repro_download/qwe35_dspark_qaa/dspark_repro/sglang/unified_run/dspark_ckpt6",
+          "--speculative-algorithm",
+          "DSPARK",
+          "--speculative-dspark-block-size",
+          "7",
+          "--json-model-override-args",
+          "{\"sample_from_anchor\":false}",
+          "--dtype",
+          "bfloat16",
+          "--mamba-ssm-dtype",
+          "float32",
+          "--attention-backend",
+          "fa3",
+          "--speculative-draft-attention-backend",
+          "triton",
+          "--linear-attn-prefill-backend",
+          "flashinfer",
+          "--linear-attn-decode-backend",
+          "flashinfer",
+          "--max-running-requests",
+          "80",
+          "--cuda-graph-max-bs-decode",
+          "64",
+          "--context-length",
+          "16384",
+          "--mem-fraction-static",
+          "0.9",
+          "--random-seed",
+          "42",
+          "--port",
+          "30000",
+          "--skip-server-warmup",
+          "--max-mamba-cache-size",
+          "400",
+          "--linear-attn-verify-backend",
+          "triton"
+        ],
+        "env_overrides": {
+          "CUDA_VISIBLE_DEVICES": "0",
+          "PYTHONPATH": "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/upstream-sglang-e262b44/python:/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/deps",
+          "FLASHINFER_WORKSPACE_BASE": "/root/.cache/sglang",
+          "SGLANG_DSPARK_USE_GREEDY_DRAFT": "1",
+          "SGLANG_DSPARK_ENABLE_SPS_RECORD": "0",
+          "SGLANG_RAGGED_VERIFY_MODE": "static"
+        }
+      },
+      "source": {
+        "git_head": "e262b44eef1f2bf83e34345276e2bb91a086587e",
+        "worktree_clean": true,
+        "repo": "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/upstream-sglang-e262b44",
+        "files_count": 5062,
+        "hash_manifest_sha256": "396cc84a8e7812be12a6c2198156c2d278c06948fe878db2f1f1a18ced71ef46",
+        "unchanged_after_run": true
+      }
+    },
+    "sf-bf16-full": {
+      "result": [
+        {
+          "stage": "warmup",
+          "concurrency": 64,
+          "tok_s": 3784.445777588705,
+          "accept": 3.309175056061835,
+          "verify_calls": 20959
+        },
+        {
+          "stage": "check-c12",
+          "concurrency": 12,
+          "tok_s": 3310.603977952057,
+          "accept": 3.4818847752920212,
+          "verify_calls": 5051
+        },
+        {
+          "stage": "check-c64",
+          "concurrency": 64,
+          "tok_s": 4355.569545964965,
+          "accept": 3.3084313163177517,
+          "verify_calls": 20922
+        }
+      ],
+      "server-command": {
+        "command": [
+          "/workspace/sglang/.venv/bin/python",
+          "-B",
+          "-m",
+          "sfllm.serving.app",
+          "--model-path",
+          "/mnt/data/work/dspark_repro_download/qwe35_dspark_qaa/dspark_repro/target",
+          "--speculative-draft-model-path",
+          "/mnt/data/work/dspark_repro_download/qwe35_dspark_qaa/dspark_repro/sglang/unified_run/dspark_ckpt6",
+          "--speculative-algorithm",
+          "dspark",
+          "--speculative-dspark-topk",
+          "-1",
+          "--dtype",
+          "bfloat16",
+          "--mamba-ssm-dtype",
+          "float32",
+          "--attention-backend",
+          "fa3",
+          "--linear-attn-prefill-backend",
+          "flashinfer",
+          "--linear-attn-decode-backend",
+          "flashinfer",
+          "--max-running-requests",
+          "64",
+          "--cuda-graph-max-bs",
+          "64",
+          "--max-context-length",
+          "16384",
+          "--mem-fraction",
+          "0.9",
+          "--tokenizer-worker-num",
+          "4",
+          "--enable-prefix-cache",
+          "--port",
+          "30000",
+          "--speculative-num-draft-tokens",
+          "8"
+        ],
+        "env_overrides": {
+          "PYTHONPATH": "/workspace/sfllm/python:/workspace/sfllm/sfkernels/python",
+          "CUDA_VISIBLE_DEVICES": "0",
+          "FLASHINFER_WORKSPACE_BASE": "/root/.cache/sglang",
+          "SFLLM_GDN_JOURNAL": "1"
+        }
+      },
+      "source": {
+        "git_head": "17555935c3237ad1cf4afdd756943ae3f503dfa1",
+        "worktree_clean": false,
+        "repo": "/workspace/sfllm",
+        "files_count": 272,
+        "hash_manifest_sha256": "b4bb8e37e037cbcde8fab3742ceb14405bb0d1bf6b488e7f168b1bb887b97cb6",
+        "unchanged_after_run": true
+      }
+    }
+  }
+}
