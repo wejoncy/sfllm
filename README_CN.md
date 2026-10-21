@@ -17,8 +17,7 @@
 [`e262b44`](https://github.com/sgl-project/sglang/commit/e262b44eef1f2bf83e34345276e2bb91a086587e)。
 
 SFLLM 使用选择性 draft FP8/top-k16，SGLang 使用原生 FlashInfer draft attention
-和各并发下选出的草稿配置。候选范围、原生 adaptive 实测及兼容性检查见[配置审计](docs/benchmarks/internal-dataset-dspark-alignment.md)。
-测试口径、详细结果、源码版本及完整命令见[benchmark 说明](docs/benchmarks/internal-dataset-dspark.md)。
+和各并发下选出的草稿配置。
 
 ## 项目背景
 

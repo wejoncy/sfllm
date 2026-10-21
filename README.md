@@ -18,10 +18,7 @@ measurement runs once on all 300 prompts. Measured revisions: SFLLM
 [`e262b44`](https://github.com/sgl-project/sglang/commit/e262b44eef1f2bf83e34345276e2bb91a086587e).
 
 SFLLM uses selective draft FP8/top-k16; SGLang uses native FlashInfer draft attention
-with its selected draft configuration. Native adaptive screening and compatibility
-results are documented in the [configuration audit](docs/benchmarks/internal-dataset-dspark-alignment.md).
-See the [benchmark methodology, results,
-source revisions, and commands](docs/benchmarks/internal-dataset-dspark.md).
+with its selected draft configuration.
 
 ## Project Background
 

@@ -85,7 +85,7 @@ python python/sfllm/serving/app.py \
 
 This command was tested on one H100 NVL reporting 95,830 MiB total memory.
 The text checkpoint tensors occupy 64.56 GiB; SFLLM skips the 0.83 GiB vision
-encoder and 1.57 GiB MTP tensors. The fused CUTLASS run on the internal dataset peaked at 88.97 GiB, including
+encoder and 1.57 GiB MTP tensors. The fused CUTLASS Polaris run peaked at 88.97 GiB, including
 weights, FP32 recurrent states, KV cache, CUDA Graphs and runtime allocations. No CPU offload or
 quantization was needed. Different workloads and higher concurrency need
 separate memory checks.
@@ -127,7 +127,7 @@ python -m pytest tests/test_optional_triton_backends.py
 Before source extraction, on 2026-09-14, the full official model passed all nine smoke questions with
 those optional packages blocked in the server and its spawned workers. Both
 GDN phases and the local MoE executed, and decode graphs were captured and used.
-The unchanged FlashInfer configuration then completed all 500 original internal dataset
+The unchanged FlashInfer configuration then completed all 500 original Polaris
 requests at **781.90 output tokens/s**, versus the prior **783.49** (-0.20%);
 mean TPOT was 19.517 versus 19.504 ms. This single regression run shows no material
 performance change; generated output lengths differed (112,481 versus 113,451).
@@ -213,7 +213,7 @@ This sample showed no accuracy degradation relative to SGLang. It is a small,
 capped diagnostic comparison, not evidence of a general accuracy improvement
 or equivalence: the exact paired McNemar two-sided p-value is 0.125. The engines
 produced no identical full token sequences, which does not affect final-answer
-scoring. This run does not replace the separate internal dataset serving benchmark.
+scoring. This run does not replace the separate Polaris serving benchmark.
 
 Dataset: `math-ai/aime25`, revision
 `563bb8404243c5f09de6ec262f2db674fe5bce9b`, all 30 test records. Commands,
@@ -240,7 +240,7 @@ answers are not edited.
 
 The aligned version did not turn any previously correct answer into an
 incorrect answer in this sample. This small, capped evaluation does not establish
-equivalent quality on all tasks. The internal dataset contains prompts only, so its generated
+equivalent quality on all tasks. Polaris contains prompts only, so its generated
 text agreement is not an answer-accuracy score.
 
 Experimental Triton tile tuning gained one correct non-thinking answer and lost one
@@ -271,7 +271,7 @@ FA3, FlashInfer GDN and decode CUDA Graphs, without speculative decoding.
 SFLLM used the server command above and the tuned fused CUTLASS implementation.
 SGLang used the fastest measured configuration described below.
 
-The internal dataset benchmark used all 500 records from `internal-dataset.jsonl`, preserving
+Polaris used all 500 records from `dashv4_polaris_test_data.jsonl`, preserving
 the raw preformatted prompts, chat delimiters and literal backslash-n sequences.
 Input length averaged 4486.1 tokens, with a maximum of 14,187. Both engines used
 concurrency 16, unlimited request rate, greedy streaming generation, a 1000-token
@@ -347,7 +347,7 @@ kernel comparisons produced identical expert IDs and weights on all tested
 inputs, and 67 candidate regression tests passed. Routing CUDA Graph time at
 16 tokens fell from 15.7 to 10.6 microseconds.
 
-The complete 500-prompt internal dataset run nevertheless measured only **784.70 vs
+The complete 500-prompt Polaris run nevertheless measured only **784.70 vs
 783.49 output tokens/s (+0.16%)**. Mean TPOT slightly increased from 19.504 to
 19.518 ms; mean TTFT decreased from 180.77 to 175.46 ms. It generated 111,047
 tokens in 141.51 seconds, with no output-limit hits. Its command, input hashes,
@@ -369,7 +369,7 @@ FP32 recurrent states, FA3, FlashInfer GDN, concurrency 16 and generation
 settings. Speculative decoding was disabled. The checkout contained local
 changes in speculative-decoding files; these were retained.
 
-Configuration selection used 96 unchanged internal dataset prompts at evenly spaced
+Configuration selection used 96 unchanged Polaris prompts at evenly spaced
 dataset indices, totaling 409,895 input tokens. Each trial used the same four
 warmup requests, cache reset and stopping conditions as the full benchmark.
 The following numbers are configuration trials, not the 500-request comparison:
