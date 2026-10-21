@@ -1,5 +1,5 @@
 {
-  "server": [
+  "command": [
     "/workspace/sglang/.venv/bin/python",
     "-B",
     "-m",
@@ -39,56 +39,17 @@
     "--port",
     "30000",
     "--skip-server-warmup",
+    "--max-mamba-cache-size",
+    "400",
     "--speculative-dspark-sps-table-path",
-    "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-upstream-polaris-20261020/native-cost/bootstrap.json"
-  ],
-  "profile": [
-    "/workspace/sglang/.venv/bin/python",
-    "-B",
-    "-m",
-    "sglang.benchmark.dspark_sps_profiler",
-    "all",
-    "--base-url",
-    "http://127.0.0.1:30000",
-    "--out",
-    "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-upstream-polaris-20261020/native-cost/sps.json",
-    "--batch-size",
-    "1",
-    "4",
-    "8",
-    "16",
-    "32",
-    "64",
-    "--fracs",
-    "0.25",
-    "0.5",
-    "0.75",
-    "1",
-    "--input-len",
-    "4096",
-    "--temperature",
-    "0",
-    "--min-steady-steps",
-    "64",
-    "--min-steady-seconds",
-    "1.5",
-    "--round-timeout",
-    "90",
-    "--ramp-token-slack",
-    "1024",
-    "--repeats",
-    "1",
-    "--no-plot",
-    "--local-tokenizer-path",
-    "/mnt/data/work/dspark_repro_download/qwe35_dspark_qaa/dspark_repro/target"
+    "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-upstream-internal-dataset-20261020/native-cost/sps.json"
   ],
   "env_overrides": {
     "CUDA_VISIBLE_DEVICES": "0",
     "PYTHONPATH": "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/upstream-sglang-e262b44/python:/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/deps",
+    "FLASHINFER_WORKSPACE_BASE": "/root/.cache/sglang",
     "SGLANG_DSPARK_USE_GREEDY_DRAFT": "1",
-    "SGLANG_DSPARK_ENABLE_SPS_RECORD": "1",
-    "SGLANG_RAGGED_VERIFY_MODE": "cap-accept",
-    "SGLANG_SIMULATE_ACC_LEN": "1"
-  },
-  "note": "Simulation is restricted to compute cost fitting; all scored serving runs remove it."
+    "SGLANG_DSPARK_ENABLE_SPS_RECORD": "0",
+    "SGLANG_RAGGED_VERIFY_MODE": "cap-accept"
+  }
 }

@@ -1,15 +1,15 @@
-# DSpark on Polaris: SFLLM vs unmodified upstream SGLang
+# DSpark on an internal dataset: SFLLM vs SGLang
 
-![Throughput and generation latency](../assets/polaris-dspark-comparison.png)
+![Throughput and generation latency](../assets/internal-dataset-dspark-comparison.png)
 
-The SGLang curve is corrected: native FlashInfer draft attention replaces the earlier forced-Triton draft backend. All nine corrected SGLang points are separate 300-request formal measurements; the nine previously validated SFLLM points are reused unchanged. Historical Triton measurements are retained under [history-triton](polaris-dspark/history-triton/results.json).
+The SGLang curve is corrected: native FlashInfer draft attention replaces the earlier forced-Triton draft backend. All nine corrected SGLang points are separate 300-request formal measurements; the nine previously validated SFLLM points are reused unchanged. Historical Triton measurements are retained under [history-triton](internal-dataset-dspark/history-triton/results.json).
 
 ## Source and workload
 
 - SFLLM: [`17555935c3237ad1cf4afdd756943ae3f503dfa1`](https://github.com/wejoncy/sfllm/commit/17555935c3237ad1cf4afdd756943ae3f503dfa1), measured `qwen35_specfic` branch, ahead of the `main` documentation base.
 - SGLang: official [`e262b44eef1f2bf83e34345276e2bb91a086587e`](https://github.com/sgl-project/sglang/commit/e262b44eef1f2bf83e34345276e2bb91a086587e). Clean checkout and equal per-file source hashes before/after every server lifetime. No SFLLM patches or migrated optimizations.
 - One H100 NVL 96 GB. Target: user-provided `target`; draft: `dspark_ckpt6`, 6 layers consuming target layers [1,5,9,13,17,21,25,29]. Native `sample_from_anchor=false` model override.
-- Same 300 prompts sampled without replacement from 500 Polaris entries, seed42; SHA256 `8932bd9c7191221b3f953dea3a3addf441f352be9ca60c920710cfd65bec8876`. Each formal point: 300/300 successes, 1,351,215 input tokens, every per-request tokenized input length checked.
+- Same 300 prompts sampled without replacement from 500 internal dataset entries, seed42; SHA256 `8932bd9c7191221b3f953dea3a3addf441f352be9ca60c920710cfd65bec8876`. Each formal point: 300/300 successes, 1,351,215 input tokens, every per-request tokenized input length checked.
 - BF16 activations, FP8 per-channel target, FP32 recurrent states, temperature0, max1000 output tokens, stop248044, context16384. Outputs are not required to be token-identical.
 - Prefix caching enabled; flush after warmup and before each measurement. SFLLM warmup32/C32; SGLang warmup128/C64. SGLang native Mamba pool400 provides capacity80; decode graphs cover64. No simulator in tuning/formal generation.
 
@@ -24,11 +24,11 @@ Candidates are screened with `max(32, 2 * concurrency)` requests before selectin
 - SFLLM: fixed widths4/8 and SF prefix adaptive d8t4.5/d8t5/d8t6, selective draft FP8/top-k16, GDN journal.
 - Corrected SGLang: native FlashInfer draft attention, widths4/6/8 BF16 draft plus width8 native draftFP8; FA3 target attention, FlashInfer GDN prefill/decode, native greedy drafting, overlap scheduling, prefix cache, CUDA graphs.
 - These are independently selected practical configurations, with differing draft precision/search strategy. This curve is best among the recorded valid candidates, not proof of a global optimum or equal draft arithmetic.
-- Native adaptive: the earlier cap-accept sweep used Triton draft attention and remains historical evidence. A FlashInfer-draft compact adaptive check with refitted B1/4/8/16/32/64 costs failed real warmup with a CUDA/CUBLAS error; it is excluded. Native GDN does not advertise compact ragged graph support at this SHA. Details and rejected configurations are in the [alignment audit](polaris-dspark-alignment.md).
+- Native adaptive: the earlier cap-accept sweep used Triton draft attention and remains historical evidence. A FlashInfer-draft compact adaptive check with refitted B1/4/8/16/32/64 costs failed real warmup with a CUDA/CUBLAS error; it is excluded. Native GDN does not advertise compact ragged graph support at this SHA. Details and rejected configurations are in the [alignment audit](internal-dataset-dspark-alignment.md).
 
 ## Results
 
-| Concurrency | SFLLM tok/s | Official SGLang tok/s | SFLLM / SGLang |
+| Concurrency | SFLLM tok/s | SGLang tok/s | SFLLM / SGLang |
 | ---: | ---: | ---: | ---: |
 | 1 | 760.59 | 479.54 | 1.586x |
 | 4 | 2202.29 | 1420.17 | 1.551x |
@@ -43,7 +43,7 @@ Candidates are screened with `max(32, 2 * concurrency)` requests before selectin
 Observed peaks within concurrency1–64:
 
 - SFLLM: 4732.20 tok/s at C48 (`fixed4`).
-- Official SGLang: 3429.20 tok/s at C64 (`draft-flashinfer-w4`).
+- SGLang: 3429.20 tok/s at C64 (`draft-flashinfer-w4`).
 
 | Framework | Concurrency | Configuration | Output tok/s | P95 TPOT ms | P95 TTFT ms | Accept length | Success |
 | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: |
@@ -73,4 +73,4 @@ Observed peaks within concurrency1–64:
 | SFLLM | 2.13.0+cu130 | 3.7.1 | 0.6.18 | 5.12.1 |
 | SGLang | 2.14.1+cu130 | 3.8.0 | 0.7.2 | 5.19.0 |
 
-See [results CSV](polaris-dspark/results.csv), [commands](polaris-dspark/commands.json), [selection scores](polaris-dspark/sglang-selection.json), [verification](polaris-dspark/verification.json), and [protocol](polaris-dspark/protocol.json). Runtime/import/dependency-integrity metadata remain adjacent. Full server logs, request records, and source manifests remain in the local experiment directory. Private checkpoint files and prompt text are not bundled. Re-render using `python docs/benchmarks/polaris-dspark/plot.py --output /tmp/comparison.png`.
+See [results CSV](internal-dataset-dspark/results.csv), [commands](internal-dataset-dspark/commands.json), [selection scores](internal-dataset-dspark/sglang-selection.json), [verification](internal-dataset-dspark/verification.json), and [protocol](internal-dataset-dspark/protocol.json). Runtime/import/dependency-integrity metadata remain adjacent. Dataset names and dataset-identifying paths use `internal-dataset` placeholders; substitute local paths when running the published commands. Measurements and hashes are unchanged. Full server logs, original request records, and source manifests remain in the private experiment directory. Private checkpoint files and prompt text are not bundled. Re-render using `python docs/benchmarks/internal-dataset-dspark/plot.py --output /tmp/comparison.png`.

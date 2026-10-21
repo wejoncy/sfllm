@@ -42,7 +42,7 @@
     "--max-mamba-cache-size",
     "400",
     "--speculative-dspark-sps-table-path",
-    "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-upstream-polaris-20261020/native-cost/sps.json"
+    "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-upstream-internal-dataset-20261020/native-cost/sps.json"
   ],
   "env_overrides": {
     "CUDA_VISIBLE_DEVICES": "0",

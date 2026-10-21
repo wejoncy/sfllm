@@ -5,6 +5,6 @@
   "sglang.benchmark.dspark_sps_profiler",
   "fit",
   "--out",
-  "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-upstream-polaris-20261020/native-cost/sps.json",
+  "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-upstream-internal-dataset-20261020/native-cost/sps.json",
   "--no-plot"
 ]

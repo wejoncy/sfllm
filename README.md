@@ -6,25 +6,22 @@ A production-ready, high-performance serving framework for large language models
 
 ## Performance
 
-![SFLLM and unmodified upstream SGLang: throughput and generation latency](docs/assets/polaris-dspark-comparison.png)
+![SFLLM and SGLang: throughput and generation latency](docs/assets/internal-dataset-dspark-comparison.png)
 
-**Corrected SGLang configuration:** native FlashInfer draft attention; all nine
-SGLang points use 300-request formal runs. SFLLM uses selective draft FP8/top-k16;
-SGLang uses its selected native draft configuration. Results cover the recorded
-candidates; see the [configuration audit](docs/benchmarks/polaris-dspark-alignment.md).
-
-DSpark on one H100 NVL, using the same 300 randomly sampled Polaris prompts
+DSpark on one H100 NVL, using the same 300 prompts randomly sampled from an internal dataset
 (seed 42), an FP8 target, BF16 activations, and FP32 recurrent states.
 Client concurrency ranges from 1 to 64. Each point uses the fastest configuration
 among the candidates tested for that framework and concurrency; each formal
 measurement runs once on all 300 prompts. Measured revisions: SFLLM
 [`1755593`](https://github.com/wejoncy/sfllm/commit/17555935c3237ad1cf4afdd756943ae3f503dfa1)
-(`qwen35_specfic`) and official SGLang
+(`qwen35_specfic`) and SGLang
 [`e262b44`](https://github.com/sgl-project/sglang/commit/e262b44eef1f2bf83e34345276e2bb91a086587e).
 
-SGLang is an **unmodified official checkout**. Native adaptive screening and
-compatibility results are documented in the audit. See the [benchmark methodology, results,
-source revisions, and commands](docs/benchmarks/polaris-dspark.md).
+SFLLM uses selective draft FP8/top-k16; SGLang uses native FlashInfer draft attention
+with its selected draft configuration. Native adaptive screening and compatibility
+results are documented in the [configuration audit](docs/benchmarks/internal-dataset-dspark-alignment.md).
+See the [benchmark methodology, results,
+source revisions, and commands](docs/benchmarks/internal-dataset-dspark.md).
 
 ## Project Background
 

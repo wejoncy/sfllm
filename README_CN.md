@@ -6,22 +6,19 @@
 
 ## 性能对比
 
-![SFLLM 与原版 SGLang 的吞吐和生成延迟对比](docs/assets/polaris-dspark-comparison.png)
+![SFLLM 与 SGLang 的吞吐和生成延迟对比](docs/assets/internal-dataset-dspark-comparison.png)
 
-**已修正 SGLang 配置：** 使用原生 FlashInfer draft attention，九个并发点
-均完成正式 300 条测试。SFLLM 使用选择性 draft FP8/top-k16，SGLang 使用
-各并发下选出的原生草稿配置。候选范围及兼容性检查见[配置审计](docs/benchmarks/polaris-dspark-alignment.md)。
-
-单张 H100 NVL，DSpark 投机解码；使用相同的 Polaris 随机 300 条输入
+单张 H100 NVL，DSpark 投机解码；使用相同的内部数据集随机 300 条输入
 （seed 42）、FP8 目标模型、BF16 激活和 FP32 循环状态，并发覆盖 1–64。
 每个点分别选择该框架、该并发下已测候选中的最快配置，再用全部 300 条
 进行一次正式测量。实测版本为 SFLLM
 [`1755593`](https://github.com/wejoncy/sfllm/commit/17555935c3237ad1cf4afdd756943ae3f503dfa1)
-（`qwen35_specfic` 分支）和官方 SGLang
+（`qwen35_specfic` 分支）和 SGLang
 [`e262b44`](https://github.com/sgl-project/sglang/commit/e262b44eef1f2bf83e34345276e2bb91a086587e)。
 
-SGLang 使用**官方未修改的源码**；原生 adaptive 的实测与兼容性结果见审计。
-测试口径、详细结果、源码版本及完整命令见[benchmark 说明](docs/benchmarks/polaris-dspark.md)。
+SFLLM 使用选择性 draft FP8/top-k16，SGLang 使用原生 FlashInfer draft attention
+和各并发下选出的草稿配置。候选范围、原生 adaptive 实测及兼容性检查见[配置审计](docs/benchmarks/internal-dataset-dspark-alignment.md)。
+测试口径、详细结果、源码版本及完整命令见[benchmark 说明](docs/benchmarks/internal-dataset-dspark.md)。
 
 ## 项目背景
 
@@ -126,7 +123,7 @@ python python/sfllm/serving/app.py \
 ```
 
 显存实测、思考模式和验证范围见 [Qwen3.5 MoE 使用说明](docs/qwen3_5_moe.md)。
-同卡 Polaris 对照、SGLang 最快实测配置的启动命令和调优缓存也记录在该说明中。
+同卡内部数据集对照、SGLang 最快实测配置的启动命令和调优缓存也记录在该说明中。
 目前不支持 MoE 量化检查点。
 
 ### 2. 测试API

@@ -324,7 +324,7 @@
           "--max-mamba-cache-size",
           "400",
           "--speculative-dspark-sps-table-path",
-          "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-upstream-polaris-20261020/native-cost/sps.json"
+          "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-upstream-internal-dataset-20261020/native-cost/sps.json"
         ],
         "env_overrides": {
           "CUDA_VISIBLE_DEVICES": "0",
@@ -347,7 +347,7 @@
     "compact-triton": {
       "failure": {
         "type": "CalledProcessError",
-        "message": "Command '['/workspace/sglang/.venv/bin/python', '-B', '/mnt/data/work/dspark_repro_download/qwe35_dspark_qaa/dspark_repro/benchmark/bench_sglang_raw.py', '--url', 'http://127.0.0.1:30000/generate', '--input', '/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-upstream-polaris-20261020/polaris-random300-seed42.jsonl', '--num-prompts', '128', '--concurrency', '64', '--max-new-tokens', '1000', '--temperature', '0', '--seed', '42', '--stop-token-id', '248044', '--request-timeout-seconds', '1800', '--output-dir', '/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/alignment-audit-20261021/compact-triton/warmup/bench', '--label', 'compact-triton-warmup']' returned non-zero exit status 1.",
+        "message": "Command '['/workspace/sglang/.venv/bin/python', '-B', '/mnt/data/work/dspark_repro_download/qwe35_dspark_qaa/dspark_repro/benchmark/bench_sglang_raw.py', '--url', 'http://127.0.0.1:30000/generate', '--input', '/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-upstream-internal-dataset-20261020/internal-dataset-random300-seed42.jsonl', '--num-prompts', '128', '--concurrency', '64', '--max-new-tokens', '1000', '--temperature', '0', '--seed', '42', '--stop-token-id', '248044', '--request-timeout-seconds', '1800', '--output-dir', '/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/alignment-audit-20261021/compact-triton/warmup/bench', '--label', 'compact-triton-warmup']' returned non-zero exit status 1.",
         "server_errors": [
           "RuntimeError: shape '[64, -1]' is invalid for input of size 480"
         ]
@@ -396,7 +396,7 @@
           "--max-mamba-cache-size",
           "400",
           "--speculative-dspark-sps-table-path",
-          "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-upstream-polaris-20261020/native-cost/sps.json",
+          "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-upstream-internal-dataset-20261020/native-cost/sps.json",
           "--linear-attn-verify-backend",
           "triton"
         ],

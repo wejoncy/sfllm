@@ -2,7 +2,8 @@
 
 `results.json` / `results.csv` contain 18 formal points, 300 requests each.
 SGLang uses corrected native FlashInfer draft attention; SFLLM points are reused
-from the original validated run. `summaries/` contains exact client summaries.
+from the original validated run. `summaries/` contains client summaries with
+dataset-identifying paths anonymized; measurement fields are unchanged.
 Re-render: `python plot.py --output /tmp/comparison.png` (matplotlib required).
 
 `commands.json` gives selected server/client commands and environment overrides.
@@ -18,5 +19,8 @@ Existing native-cost/command files describe historical calibration, not a
 successful corrected compact-adaptive benchmark.
 
 Runtime, hardware, source import, and dependency integrity metadata are retained.
-Local absolute paths identify the measured environment and must be adapted on
-another host. Full logs and per-request records remain in the experiment folder.
+Dataset names and dataset-identifying paths in this evidence bundle use
+`internal-dataset` placeholders. Published commands therefore require local path
+substitution; they are not byte-for-byte copies of the private run records.
+Measurements, sample indices, dataset SHA256, and source hashes are unchanged.
+Full logs and original per-request records remain in the private experiment folder.

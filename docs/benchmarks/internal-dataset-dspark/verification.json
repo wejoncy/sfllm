@@ -106,7 +106,7 @@
       "requests": 300,
       "input_tokens": 1351215,
       "per_request_input_lengths_match": true,
-      "reused_summary": "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-upstream-polaris-20261020/sfllm/fixed8/scored-c1/bench/summary.json",
+      "reused_summary": "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-upstream-internal-dataset-20261020/sfllm/fixed8/scored-c1/bench/summary.json",
       "input_count_source": "sum of SFLLM final_meta_info.prompt_length; client summary total_input_tokens is zero because it expects prompt_tokens"
     },
     {
@@ -114,7 +114,7 @@
       "requests": 300,
       "input_tokens": 1351215,
       "per_request_input_lengths_match": true,
-      "reused_summary": "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-upstream-polaris-20261020/sfllm/fixed8/scored-c4/bench/summary.json",
+      "reused_summary": "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-upstream-internal-dataset-20261020/sfllm/fixed8/scored-c4/bench/summary.json",
       "input_count_source": "sum of SFLLM final_meta_info.prompt_length; client summary total_input_tokens is zero because it expects prompt_tokens"
     },
     {
@@ -122,7 +122,7 @@
       "requests": 300,
       "input_tokens": 1351215,
       "per_request_input_lengths_match": true,
-      "reused_summary": "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-upstream-polaris-20261020/sfllm/d8t6/scored-c8/bench/summary.json",
+      "reused_summary": "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-upstream-internal-dataset-20261020/sfllm/d8t6/scored-c8/bench/summary.json",
       "input_count_source": "sum of SFLLM final_meta_info.prompt_length; client summary total_input_tokens is zero because it expects prompt_tokens"
     },
     {
@@ -130,7 +130,7 @@
       "requests": 300,
       "input_tokens": 1351215,
       "per_request_input_lengths_match": true,
-      "reused_summary": "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-upstream-polaris-20261020/sfllm/d8t5/scored-c12/bench/summary.json",
+      "reused_summary": "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-upstream-internal-dataset-20261020/sfllm/d8t5/scored-c12/bench/summary.json",
       "input_count_source": "sum of SFLLM final_meta_info.prompt_length; client summary total_input_tokens is zero because it expects prompt_tokens"
     },
     {
@@ -138,7 +138,7 @@
       "requests": 300,
       "input_tokens": 1351215,
       "per_request_input_lengths_match": true,
-      "reused_summary": "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-upstream-polaris-20261020/sfllm/d8t6/scored-c16/bench/summary.json",
+      "reused_summary": "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-upstream-internal-dataset-20261020/sfllm/d8t6/scored-c16/bench/summary.json",
       "input_count_source": "sum of SFLLM final_meta_info.prompt_length; client summary total_input_tokens is zero because it expects prompt_tokens"
     },
     {
@@ -146,7 +146,7 @@
       "requests": 300,
       "input_tokens": 1351215,
       "per_request_input_lengths_match": true,
-      "reused_summary": "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-upstream-polaris-20261020/sfllm/d8t5/scored-c24/bench/summary.json",
+      "reused_summary": "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-upstream-internal-dataset-20261020/sfllm/d8t5/scored-c24/bench/summary.json",
       "input_count_source": "sum of SFLLM final_meta_info.prompt_length; client summary total_input_tokens is zero because it expects prompt_tokens"
     },
     {
@@ -154,7 +154,7 @@
       "requests": 300,
       "input_tokens": 1351215,
       "per_request_input_lengths_match": true,
-      "reused_summary": "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-upstream-polaris-20261020/sfllm/d8t5/scored-c32/bench/summary.json",
+      "reused_summary": "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-upstream-internal-dataset-20261020/sfllm/d8t5/scored-c32/bench/summary.json",
       "input_count_source": "sum of SFLLM final_meta_info.prompt_length; client summary total_input_tokens is zero because it expects prompt_tokens"
     },
     {
@@ -162,7 +162,7 @@
       "requests": 300,
       "input_tokens": 1351215,
       "per_request_input_lengths_match": true,
-      "reused_summary": "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-upstream-polaris-20261020/sfllm/fixed4/scored-c48/bench/summary.json",
+      "reused_summary": "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-upstream-internal-dataset-20261020/sfllm/fixed4/scored-c48/bench/summary.json",
       "input_count_source": "sum of SFLLM final_meta_info.prompt_length; client summary total_input_tokens is zero because it expects prompt_tokens"
     },
     {
@@ -170,9 +170,9 @@
       "requests": 300,
       "input_tokens": 1351215,
       "per_request_input_lengths_match": true,
-      "reused_summary": "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-upstream-polaris-20261020/sfllm/d8t4.5/scored-c64/bench/summary.json",
+      "reused_summary": "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-upstream-internal-dataset-20261020/sfllm/d8t4.5/scored-c64/bench/summary.json",
       "input_count_source": "sum of SFLLM final_meta_info.prompt_length; client summary total_input_tokens is zero because it expects prompt_tokens"
     }
   ],
-  "sfllm_reused_from": "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-upstream-polaris-20261020/results.json"
+  "sfllm_reused_from": "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-upstream-internal-dataset-20261020/results.json"
 }

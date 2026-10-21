@@ -1,7 +1,7 @@
 {
   "target": "/mnt/data/work/dspark_repro_download/qwe35_dspark_qaa/dspark_repro/target",
   "draft": "/mnt/data/work/dspark_repro_download/qwe35_dspark_qaa/dspark_repro/sglang/unified_run/dspark_ckpt6",
-  "dataset": "/mnt/data/work/dspark_repro_download/qwe35_dspark_qaa/dspark_repro/data/dashv4_polaris_test_data.jsonl",
+  "dataset": "/mnt/data/work/dspark_repro_download/qwe35_dspark_qaa/dspark_repro/data/internal-dataset.jsonl",
   "source_count": 500,
   "sample_count": 300,
   "sample_indices_zero_based": [

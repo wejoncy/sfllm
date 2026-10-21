@@ -1,10 +1,10 @@
-# 原版 SGLang 性能差距：原因与修正结果
+# SGLang 性能差距：原因与修正结果
 
 主要配置问题：此前强制指定了 Triton draft attention，遗漏了可正常运行的官方 FlashInfer draft 路径。此路径修正不涉及 SGLang 源码改动。官方源码锁定 `e262b44eef1f2bf83e34345276e2bb91a086587e`，每次有效运行均通过前后 SHA/逐文件哈希与 clean worktree 检查。
 
 ## 已完成的300条正式结果
 
-同一 target/draft、同一份 Polaris 随机300条（seed42）、temperature0、输出上限1000、stop248044、BF16 activation、FP32 SSM；先预热，再清缓存。旧配置取原图对应的正式点。
+同一 target/draft、同一份内部数据集随机300条（seed42）、temperature0、输出上限1000、stop248044、BF16 activation、FP32 SSM；先预热，再清缓存。旧配置取原图对应的正式点。
 
 | 并发 | 修正后配置 | 旧图 SG tok/s | 修正后 SG tok/s | 提升 | 接受长度 | 完成 |
 |---:|---|---:|---:|---:|---:|---:|
@@ -34,7 +34,7 @@ GDN 部分：SG约10.04 ms/轮、SF journal约7.49；conv：SG约2.48、SF约1.0
 ## 官方路径兼容性检查
 
 - FA3：`flashattention_backend.py:231` 调用通用 resolver，而 `spec_info.py:298` 对 DSpark draft 无条件减1；`model_runner.py:875` 对 sample_from_anchor=false 保留完整宽度8。运行时接受长度约1.16–1.22，已拒绝。没有给运行中的官方 SGLang 打补丁。
-- Compact adaptive：通过原生 JSON model override 声明 language_model_only=true 后解决 mRoPE reshape；完成B1/4/8/16/32/64各4种预算的实际成本拟合。官方GDN继承 `supports_ragged_verify_graph=False`，target退回eager；不含SIMULATE环境变量的新服务在真实128条Polaris预热后段，`dspark_kv_inject -> project_target_hidden -> F.linear` 报CUDA/CUBLAS execution failed，整组排除。
+- Compact adaptive：通过原生 JSON model override 声明 language_model_only=true 后解决 mRoPE reshape；完成B1/4/8/16/32/64各4种预算的实际成本拟合。官方GDN继承 `supports_ragged_verify_graph=False`，target退回eager；不含SIMULATE环境变量的新服务在真实128条内部数据集预热后段，`dspark_kv_inject -> project_target_hidden -> F.linear` 报CUDA/CUBLAS execution failed，整组排除。
 - ReplaySSM：当前官方对GDN+DSPARK明确要求KDA，配置拒绝，不能假装已开启。
 
 ## 文件
@@ -46,4 +46,4 @@ GDN 部分：SG约10.04 ms/轮、SF journal约7.49；conv：SG约2.48、SF约1.0
 - profile目录 `kernel-analysis.json`：逐图、逐kernel时间。
 - `corrected-results.json`：本次完整机器可读结果。
 
-修正后的九点正式曲线现已完成，并替换 README 图片；完整结果见 [benchmark](polaris-dspark.md)。SFLLM 沿用原九个已验证点，SGLang 每个并发点均按原生 FlashInfer draft 重新筛选。历史 Triton 曲线不再用作主图。
+修正后的九点正式曲线现已完成，并替换 README 图片；完整结果见 [benchmark](internal-dataset-dspark.md)。SFLLM 沿用原九个已验证点，SGLang 每个并发点均按原生 FlashInfer draft 重新筛选。历史 Triton 曲线不再用作主图。

@@ -42,7 +42,7 @@
     "--max-mamba-cache-size",
     "400",
     "--speculative-dspark-sps-table-path",
-    "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-upstream-polaris-20261020/native-cost-b64/bootstrap.json"
+    "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-upstream-internal-dataset-20261020/native-cost-b64/bootstrap.json"
   ],
   "profile": [
     "/workspace/sglang/.venv/bin/python",
@@ -53,7 +53,7 @@
     "--base-url",
     "http://127.0.0.1:30000",
     "--out",
-    "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-upstream-polaris-20261020/native-cost-b64/sps.json",
+    "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-upstream-internal-dataset-20261020/native-cost-b64/sps.json",
     "--batch-size",
     "64",
     "--fracs",

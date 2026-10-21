@@ -13,7 +13,7 @@ output.parent.mkdir(parents=True, exist_ok=True)
 rows = json.loads((ROOT/'results.json').read_text())
 assert len(rows) == 18 and all(x['success'] == 300 and x['failures'] == 0 for x in rows)
 FRAMEWORKS = {'sfllm': ('SFLLM', '#1676bd', 'o'),
-              'sglang': ('SGLang (unmodified upstream)', '#e06c26', 's')}
+              'sglang': ('SGLang', '#e06c26', 's')}
 plt.rcParams.update({'font.size': 11, 'axes.spines.top': False,
                      'axes.spines.right': False, 'svg.fonttype': 'none'})
 complete = len(rows) == 18
@@ -50,10 +50,10 @@ if rows:
 for ax in axes:
     ax.grid(alpha=0.2)
 axes[0].legend(loc='lower right', fontsize=9)
-fig.suptitle('DSpark | Polaris random 300 | 1 x H100 NVL', fontsize=15, y=0.97)
+fig.suptitle('DSpark | Internal dataset: 300 samples | 1 x H100 NVL', fontsize=15, y=0.97)
 fig.text(0.5, 0.885, 'FP8 target / BF16 activations / FP32 SSM state | identical workload and generation limits',
          ha='center', fontsize=10, color='#555555')
-fig.text(0.5, 0.835, 'SFLLM 1755593 | SGLang official main e262b44eef (no local source changes)', ha='center', fontsize=9, color='#555555')
+fig.text(0.5, 0.835, 'SFLLM 1755593 | SGLang e262b44eef', ha='center', fontsize=9, color='#555555')
 fig.text(0.5, 0.045, 'Best among recorded candidates at each concurrency; one scored run per point.\n'
          'TPOT point labels = concurrency.', ha='center', fontsize=9, color='#555555', linespacing=1.5)
 for ext in ['png', 'svg', 'pdf']:

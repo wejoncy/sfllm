@@ -56,7 +56,7 @@
         "--url",
         "http://127.0.0.1:30000/generate",
         "--input",
-        "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-target-polaris-20261020/polaris-random300-seed42.jsonl",
+        "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-target-internal-dataset-20261020/internal-dataset-random300-seed42.jsonl",
         "--num-prompts",
         "300",
         "--concurrency",
@@ -72,7 +72,7 @@
         "--request-timeout-seconds",
         "1800",
         "--output-dir",
-        "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-target-polaris-20261020/sfllm/fixed8/scored-c1/bench",
+        "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-target-internal-dataset-20261020/sfllm/fixed8/scored-c1/bench",
         "--label",
         "sfllm-fixed8-scored-c1"
       ]
@@ -133,7 +133,7 @@
         "--url",
         "http://127.0.0.1:30000/generate",
         "--input",
-        "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-target-polaris-20261020/polaris-random300-seed42.jsonl",
+        "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-target-internal-dataset-20261020/internal-dataset-random300-seed42.jsonl",
         "--num-prompts",
         "300",
         "--concurrency",
@@ -149,7 +149,7 @@
         "--request-timeout-seconds",
         "1800",
         "--output-dir",
-        "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-target-polaris-20261020/sfllm/fixed8/scored-c4/bench",
+        "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-target-internal-dataset-20261020/sfllm/fixed8/scored-c4/bench",
         "--label",
         "sfllm-fixed8-scored-c4"
       ]
@@ -210,7 +210,7 @@
         "--url",
         "http://127.0.0.1:30000/generate",
         "--input",
-        "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-target-polaris-20261020/polaris-random300-seed42.jsonl",
+        "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-target-internal-dataset-20261020/internal-dataset-random300-seed42.jsonl",
         "--num-prompts",
         "300",
         "--concurrency",
@@ -226,7 +226,7 @@
         "--request-timeout-seconds",
         "1800",
         "--output-dir",
-        "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-target-polaris-20261020/sfllm/d8t6/scored-c8/bench",
+        "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-target-internal-dataset-20261020/sfllm/d8t6/scored-c8/bench",
         "--label",
         "sfllm-d8t6-scored-c8"
       ]
@@ -287,7 +287,7 @@
         "--url",
         "http://127.0.0.1:30000/generate",
         "--input",
-        "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-target-polaris-20261020/polaris-random300-seed42.jsonl",
+        "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-target-internal-dataset-20261020/internal-dataset-random300-seed42.jsonl",
         "--num-prompts",
         "300",
         "--concurrency",
@@ -303,7 +303,7 @@
         "--request-timeout-seconds",
         "1800",
         "--output-dir",
-        "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-target-polaris-20261020/sfllm/d8t5/scored-c12/bench",
+        "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-target-internal-dataset-20261020/sfllm/d8t5/scored-c12/bench",
         "--label",
         "sfllm-d8t5-scored-c12"
       ]
@@ -364,7 +364,7 @@
         "--url",
         "http://127.0.0.1:30000/generate",
         "--input",
-        "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-target-polaris-20261020/polaris-random300-seed42.jsonl",
+        "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-target-internal-dataset-20261020/internal-dataset-random300-seed42.jsonl",
         "--num-prompts",
         "300",
         "--concurrency",
@@ -380,7 +380,7 @@
         "--request-timeout-seconds",
         "1800",
         "--output-dir",
-        "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-target-polaris-20261020/sfllm/d8t6/scored-c16/bench",
+        "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-target-internal-dataset-20261020/sfllm/d8t6/scored-c16/bench",
         "--label",
         "sfllm-d8t6-scored-c16"
       ]
@@ -441,7 +441,7 @@
         "--url",
         "http://127.0.0.1:30000/generate",
         "--input",
-        "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-target-polaris-20261020/polaris-random300-seed42.jsonl",
+        "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-target-internal-dataset-20261020/internal-dataset-random300-seed42.jsonl",
         "--num-prompts",
         "300",
         "--concurrency",
@@ -457,7 +457,7 @@
         "--request-timeout-seconds",
         "1800",
         "--output-dir",
-        "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-target-polaris-20261020/sfllm/d8t5/scored-c24/bench",
+        "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-target-internal-dataset-20261020/sfllm/d8t5/scored-c24/bench",
         "--label",
         "sfllm-d8t5-scored-c24"
       ]
@@ -518,7 +518,7 @@
         "--url",
         "http://127.0.0.1:30000/generate",
         "--input",
-        "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-target-polaris-20261020/polaris-random300-seed42.jsonl",
+        "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-target-internal-dataset-20261020/internal-dataset-random300-seed42.jsonl",
         "--num-prompts",
         "300",
         "--concurrency",
@@ -534,7 +534,7 @@
         "--request-timeout-seconds",
         "1800",
         "--output-dir",
-        "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-target-polaris-20261020/sfllm/d8t5/scored-c32/bench",
+        "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-target-internal-dataset-20261020/sfllm/d8t5/scored-c32/bench",
         "--label",
         "sfllm-d8t5-scored-c32"
       ]
@@ -595,7 +595,7 @@
         "--url",
         "http://127.0.0.1:30000/generate",
         "--input",
-        "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-target-polaris-20261020/polaris-random300-seed42.jsonl",
+        "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-target-internal-dataset-20261020/internal-dataset-random300-seed42.jsonl",
         "--num-prompts",
         "300",
         "--concurrency",
@@ -611,7 +611,7 @@
         "--request-timeout-seconds",
         "1800",
         "--output-dir",
-        "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-target-polaris-20261020/sfllm/fixed4/scored-c48/bench",
+        "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-target-internal-dataset-20261020/sfllm/fixed4/scored-c48/bench",
         "--label",
         "sfllm-fixed4-scored-c48"
       ]
@@ -672,7 +672,7 @@
         "--url",
         "http://127.0.0.1:30000/generate",
         "--input",
-        "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-target-polaris-20261020/polaris-random300-seed42.jsonl",
+        "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-target-internal-dataset-20261020/internal-dataset-random300-seed42.jsonl",
         "--num-prompts",
         "300",
         "--concurrency",
@@ -688,7 +688,7 @@
         "--request-timeout-seconds",
         "1800",
         "--output-dir",
-        "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-target-polaris-20261020/sfllm/d8t4.5/scored-c64/bench",
+        "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-target-internal-dataset-20261020/sfllm/d8t4.5/scored-c64/bench",
         "--label",
         "sfllm-d8t4.5-scored-c64"
       ]
@@ -696,7 +696,7 @@
   },
   "sglang": {
     "1": {
-      "config": "draft-flashinfer-fp8",
+      "config": "fixed8",
       "command": [
         "/workspace/sglang/.venv/bin/python",
         "-B",
@@ -719,7 +719,7 @@
         "--attention-backend",
         "fa3",
         "--speculative-draft-attention-backend",
-        "flashinfer",
+        "triton",
         "--linear-attn-prefill-backend",
         "flashinfer",
         "--linear-attn-decode-backend",
@@ -736,11 +736,7 @@
         "42",
         "--port",
         "30000",
-        "--skip-server-warmup",
-        "--max-mamba-cache-size",
-        "400",
-        "--speculative-draft-model-quantization",
-        "fp8"
+        "--skip-server-warmup"
       ],
       "env_overrides": {
         "CUDA_VISIBLE_DEVICES": "0",
@@ -750,14 +746,14 @@
         "SGLANG_DSPARK_ENABLE_SPS_RECORD": "0",
         "SGLANG_RAGGED_VERIFY_MODE": "static"
       },
-      "client": [
+      "client_command": [
         "/workspace/sglang/.venv/bin/python",
         "-B",
         "/mnt/data/work/dspark_repro_download/qwe35_dspark_qaa/dspark_repro/benchmark/bench_sglang_raw.py",
         "--url",
         "http://127.0.0.1:30000/generate",
         "--input",
-        "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-upstream-polaris-20261020/polaris-random300-seed42.jsonl",
+        "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-upstream-internal-dataset-20261020/internal-dataset-random300-seed42.jsonl",
         "--num-prompts",
         "300",
         "--concurrency",
@@ -773,13 +769,13 @@
         "--request-timeout-seconds",
         "1800",
         "--output-dir",
-        "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-corrected-flashinfer-20261021/draft-flashinfer-fp8/formal/c1/bench",
+        "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-upstream-internal-dataset-20261020/sglang/fixed8/scored-c1/bench",
         "--label",
-        "formal-c1"
+        "sglang-fixed8-scored-c1"
       ]
     },
     "4": {
-      "config": "draft-flashinfer",
+      "config": "fixed8",
       "command": [
         "/workspace/sglang/.venv/bin/python",
         "-B",
@@ -802,7 +798,7 @@
         "--attention-backend",
         "fa3",
         "--speculative-draft-attention-backend",
-        "flashinfer",
+        "triton",
         "--linear-attn-prefill-backend",
         "flashinfer",
         "--linear-attn-decode-backend",
@@ -819,9 +815,7 @@
         "42",
         "--port",
         "30000",
-        "--skip-server-warmup",
-        "--max-mamba-cache-size",
-        "400"
+        "--skip-server-warmup"
       ],
       "env_overrides": {
         "CUDA_VISIBLE_DEVICES": "0",
@@ -831,14 +825,14 @@
         "SGLANG_DSPARK_ENABLE_SPS_RECORD": "0",
         "SGLANG_RAGGED_VERIFY_MODE": "static"
       },
-      "client": [
+      "client_command": [
         "/workspace/sglang/.venv/bin/python",
         "-B",
         "/mnt/data/work/dspark_repro_download/qwe35_dspark_qaa/dspark_repro/benchmark/bench_sglang_raw.py",
         "--url",
         "http://127.0.0.1:30000/generate",
         "--input",
-        "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-upstream-polaris-20261020/polaris-random300-seed42.jsonl",
+        "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-upstream-internal-dataset-20261020/internal-dataset-random300-seed42.jsonl",
         "--num-prompts",
         "300",
         "--concurrency",
@@ -854,13 +848,13 @@
         "--request-timeout-seconds",
         "1800",
         "--output-dir",
-        "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-corrected-flashinfer-20261021/draft-flashinfer/formal/c4/bench",
+        "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-upstream-internal-dataset-20261020/sglang/fixed8/scored-c4/bench",
         "--label",
-        "formal-c4"
+        "sglang-fixed8-scored-c4"
       ]
     },
     "8": {
-      "config": "draft-flashinfer",
+      "config": "fixed8",
       "command": [
         "/workspace/sglang/.venv/bin/python",
         "-B",
@@ -883,7 +877,7 @@
         "--attention-backend",
         "fa3",
         "--speculative-draft-attention-backend",
-        "flashinfer",
+        "triton",
         "--linear-attn-prefill-backend",
         "flashinfer",
         "--linear-attn-decode-backend",
@@ -900,9 +894,7 @@
         "42",
         "--port",
         "30000",
-        "--skip-server-warmup",
-        "--max-mamba-cache-size",
-        "400"
+        "--skip-server-warmup"
       ],
       "env_overrides": {
         "CUDA_VISIBLE_DEVICES": "0",
@@ -912,14 +904,14 @@
         "SGLANG_DSPARK_ENABLE_SPS_RECORD": "0",
         "SGLANG_RAGGED_VERIFY_MODE": "static"
       },
-      "client": [
+      "client_command": [
         "/workspace/sglang/.venv/bin/python",
         "-B",
         "/mnt/data/work/dspark_repro_download/qwe35_dspark_qaa/dspark_repro/benchmark/bench_sglang_raw.py",
         "--url",
         "http://127.0.0.1:30000/generate",
         "--input",
-        "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-upstream-polaris-20261020/polaris-random300-seed42.jsonl",
+        "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-upstream-internal-dataset-20261020/internal-dataset-random300-seed42.jsonl",
         "--num-prompts",
         "300",
         "--concurrency",
@@ -935,13 +927,13 @@
         "--request-timeout-seconds",
         "1800",
         "--output-dir",
-        "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-corrected-flashinfer-20261021/draft-flashinfer/formal/c8/bench",
+        "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-upstream-internal-dataset-20261020/sglang/fixed8/scored-c8/bench",
         "--label",
-        "formal-c8"
+        "sglang-fixed8-scored-c8"
       ]
     },
     "12": {
-      "config": "draft-flashinfer-w4",
+      "config": "fixed8",
       "command": [
         "/workspace/sglang/.venv/bin/python",
         "-B",
@@ -954,7 +946,7 @@
         "--speculative-algorithm",
         "DSPARK",
         "--speculative-dspark-block-size",
-        "3",
+        "7",
         "--json-model-override-args",
         "{\"sample_from_anchor\":false}",
         "--dtype",
@@ -964,7 +956,7 @@
         "--attention-backend",
         "fa3",
         "--speculative-draft-attention-backend",
-        "flashinfer",
+        "triton",
         "--linear-attn-prefill-backend",
         "flashinfer",
         "--linear-attn-decode-backend",
@@ -981,9 +973,7 @@
         "42",
         "--port",
         "30000",
-        "--skip-server-warmup",
-        "--max-mamba-cache-size",
-        "400"
+        "--skip-server-warmup"
       ],
       "env_overrides": {
         "CUDA_VISIBLE_DEVICES": "0",
@@ -993,14 +983,14 @@
         "SGLANG_DSPARK_ENABLE_SPS_RECORD": "0",
         "SGLANG_RAGGED_VERIFY_MODE": "static"
       },
-      "client": [
+      "client_command": [
         "/workspace/sglang/.venv/bin/python",
         "-B",
         "/mnt/data/work/dspark_repro_download/qwe35_dspark_qaa/dspark_repro/benchmark/bench_sglang_raw.py",
         "--url",
         "http://127.0.0.1:30000/generate",
         "--input",
-        "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-upstream-polaris-20261020/polaris-random300-seed42.jsonl",
+        "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-upstream-internal-dataset-20261020/internal-dataset-random300-seed42.jsonl",
         "--num-prompts",
         "300",
         "--concurrency",
@@ -1016,13 +1006,13 @@
         "--request-timeout-seconds",
         "1800",
         "--output-dir",
-        "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/alignment-audit-20261021/draft-flashinfer-w4-formal/formal-c12/bench",
+        "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-upstream-internal-dataset-20261020/sglang/fixed8/scored-c12/bench",
         "--label",
-        "draft-flashinfer-w4-formal-formal-c12"
+        "sglang-fixed8-scored-c12"
       ]
     },
     "16": {
-      "config": "draft-flashinfer-w4",
+      "config": "fixed6",
       "command": [
         "/workspace/sglang/.venv/bin/python",
         "-B",
@@ -1035,7 +1025,7 @@
         "--speculative-algorithm",
         "DSPARK",
         "--speculative-dspark-block-size",
-        "3",
+        "5",
         "--json-model-override-args",
         "{\"sample_from_anchor\":false}",
         "--dtype",
@@ -1045,7 +1035,7 @@
         "--attention-backend",
         "fa3",
         "--speculative-draft-attention-backend",
-        "flashinfer",
+        "triton",
         "--linear-attn-prefill-backend",
         "flashinfer",
         "--linear-attn-decode-backend",
@@ -1074,14 +1064,14 @@
         "SGLANG_DSPARK_ENABLE_SPS_RECORD": "0",
         "SGLANG_RAGGED_VERIFY_MODE": "static"
       },
-      "client": [
+      "client_command": [
         "/workspace/sglang/.venv/bin/python",
         "-B",
         "/mnt/data/work/dspark_repro_download/qwe35_dspark_qaa/dspark_repro/benchmark/bench_sglang_raw.py",
         "--url",
         "http://127.0.0.1:30000/generate",
         "--input",
-        "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-upstream-polaris-20261020/polaris-random300-seed42.jsonl",
+        "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-upstream-internal-dataset-20261020/internal-dataset-random300-seed42.jsonl",
         "--num-prompts",
         "300",
         "--concurrency",
@@ -1097,13 +1087,13 @@
         "--request-timeout-seconds",
         "1800",
         "--output-dir",
-        "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-corrected-flashinfer-20261021/draft-flashinfer-w4/formal/c16/bench",
+        "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-upstream-internal-dataset-20261020/sglang/fixed6/scored-c16/bench",
         "--label",
-        "formal-c16"
+        "sglang-fixed6-scored-c16"
       ]
     },
     "24": {
-      "config": "draft-flashinfer-w4",
+      "config": "fixed4",
       "command": [
         "/workspace/sglang/.venv/bin/python",
         "-B",
@@ -1126,7 +1116,7 @@
         "--attention-backend",
         "fa3",
         "--speculative-draft-attention-backend",
-        "flashinfer",
+        "triton",
         "--linear-attn-prefill-backend",
         "flashinfer",
         "--linear-attn-decode-backend",
@@ -1143,9 +1133,7 @@
         "42",
         "--port",
         "30000",
-        "--skip-server-warmup",
-        "--max-mamba-cache-size",
-        "400"
+        "--skip-server-warmup"
       ],
       "env_overrides": {
         "CUDA_VISIBLE_DEVICES": "0",
@@ -1155,14 +1143,14 @@
         "SGLANG_DSPARK_ENABLE_SPS_RECORD": "0",
         "SGLANG_RAGGED_VERIFY_MODE": "static"
       },
-      "client": [
+      "client_command": [
         "/workspace/sglang/.venv/bin/python",
         "-B",
         "/mnt/data/work/dspark_repro_download/qwe35_dspark_qaa/dspark_repro/benchmark/bench_sglang_raw.py",
         "--url",
         "http://127.0.0.1:30000/generate",
         "--input",
-        "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-upstream-polaris-20261020/polaris-random300-seed42.jsonl",
+        "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-upstream-internal-dataset-20261020/internal-dataset-random300-seed42.jsonl",
         "--num-prompts",
         "300",
         "--concurrency",
@@ -1178,13 +1166,13 @@
         "--request-timeout-seconds",
         "1800",
         "--output-dir",
-        "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-corrected-flashinfer-20261021/draft-flashinfer-w4/formal/c24/bench",
+        "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-upstream-internal-dataset-20261020/sglang/fixed4/scored-c24/bench",
         "--label",
-        "formal-c24"
+        "sglang-fixed4-scored-c24"
       ]
     },
     "32": {
-      "config": "draft-flashinfer-w4",
+      "config": "fixed6",
       "command": [
         "/workspace/sglang/.venv/bin/python",
         "-B",
@@ -1197,7 +1185,7 @@
         "--speculative-algorithm",
         "DSPARK",
         "--speculative-dspark-block-size",
-        "3",
+        "5",
         "--json-model-override-args",
         "{\"sample_from_anchor\":false}",
         "--dtype",
@@ -1207,7 +1195,7 @@
         "--attention-backend",
         "fa3",
         "--speculative-draft-attention-backend",
-        "flashinfer",
+        "triton",
         "--linear-attn-prefill-backend",
         "flashinfer",
         "--linear-attn-decode-backend",
@@ -1236,14 +1224,14 @@
         "SGLANG_DSPARK_ENABLE_SPS_RECORD": "0",
         "SGLANG_RAGGED_VERIFY_MODE": "static"
       },
-      "client": [
+      "client_command": [
         "/workspace/sglang/.venv/bin/python",
         "-B",
         "/mnt/data/work/dspark_repro_download/qwe35_dspark_qaa/dspark_repro/benchmark/bench_sglang_raw.py",
         "--url",
         "http://127.0.0.1:30000/generate",
         "--input",
-        "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-upstream-polaris-20261020/polaris-random300-seed42.jsonl",
+        "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-upstream-internal-dataset-20261020/internal-dataset-random300-seed42.jsonl",
         "--num-prompts",
         "300",
         "--concurrency",
@@ -1259,13 +1247,13 @@
         "--request-timeout-seconds",
         "1800",
         "--output-dir",
-        "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-corrected-flashinfer-20261021/draft-flashinfer-w4/formal/c32/bench",
+        "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-upstream-internal-dataset-20261020/sglang/fixed6/scored-c32/bench",
         "--label",
-        "formal-c32"
+        "sglang-fixed6-scored-c32"
       ]
     },
     "48": {
-      "config": "draft-flashinfer-w4",
+      "config": "fixed8-cap80",
       "command": [
         "/workspace/sglang/.venv/bin/python",
         "-B",
@@ -1278,7 +1266,7 @@
         "--speculative-algorithm",
         "DSPARK",
         "--speculative-dspark-block-size",
-        "3",
+        "7",
         "--json-model-override-args",
         "{\"sample_from_anchor\":false}",
         "--dtype",
@@ -1288,7 +1276,7 @@
         "--attention-backend",
         "fa3",
         "--speculative-draft-attention-backend",
-        "flashinfer",
+        "triton",
         "--linear-attn-prefill-backend",
         "flashinfer",
         "--linear-attn-decode-backend",
@@ -1317,14 +1305,14 @@
         "SGLANG_DSPARK_ENABLE_SPS_RECORD": "0",
         "SGLANG_RAGGED_VERIFY_MODE": "static"
       },
-      "client": [
+      "client_command": [
         "/workspace/sglang/.venv/bin/python",
         "-B",
         "/mnt/data/work/dspark_repro_download/qwe35_dspark_qaa/dspark_repro/benchmark/bench_sglang_raw.py",
         "--url",
         "http://127.0.0.1:30000/generate",
         "--input",
-        "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-upstream-polaris-20261020/polaris-random300-seed42.jsonl",
+        "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-upstream-internal-dataset-20261020/internal-dataset-random300-seed42.jsonl",
         "--num-prompts",
         "300",
         "--concurrency",
@@ -1340,13 +1328,13 @@
         "--request-timeout-seconds",
         "1800",
         "--output-dir",
-        "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-corrected-flashinfer-20261021/draft-flashinfer-w4/formal/c48/bench",
+        "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-upstream-internal-dataset-20261020/sglang/fixed8-cap80/scored-c48/bench",
         "--label",
-        "formal-c48"
+        "sglang-fixed8-cap80-scored-c48"
       ]
     },
     "64": {
-      "config": "draft-flashinfer-w4",
+      "config": "fixed6",
       "command": [
         "/workspace/sglang/.venv/bin/python",
         "-B",
@@ -1359,7 +1347,7 @@
         "--speculative-algorithm",
         "DSPARK",
         "--speculative-dspark-block-size",
-        "3",
+        "5",
         "--json-model-override-args",
         "{\"sample_from_anchor\":false}",
         "--dtype",
@@ -1369,7 +1357,7 @@
         "--attention-backend",
         "fa3",
         "--speculative-draft-attention-backend",
-        "flashinfer",
+        "triton",
         "--linear-attn-prefill-backend",
         "flashinfer",
         "--linear-attn-decode-backend",
@@ -1398,14 +1386,14 @@
         "SGLANG_DSPARK_ENABLE_SPS_RECORD": "0",
         "SGLANG_RAGGED_VERIFY_MODE": "static"
       },
-      "client": [
+      "client_command": [
         "/workspace/sglang/.venv/bin/python",
         "-B",
         "/mnt/data/work/dspark_repro_download/qwe35_dspark_qaa/dspark_repro/benchmark/bench_sglang_raw.py",
         "--url",
         "http://127.0.0.1:30000/generate",
         "--input",
-        "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-upstream-polaris-20261020/polaris-random300-seed42.jsonl",
+        "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-upstream-internal-dataset-20261020/internal-dataset-random300-seed42.jsonl",
         "--num-prompts",
         "300",
         "--concurrency",
@@ -1421,9 +1409,9 @@
         "--request-timeout-seconds",
         "1800",
         "--output-dir",
-        "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/alignment-audit-20261021/draft-flashinfer-w4-formal/formal-c64/bench",
+        "/mnt/data/jicwen/work/sglang-sfllm-migration-20261019/curve-upstream-internal-dataset-20261020/sglang/fixed6/scored-c64/bench",
         "--label",
-        "draft-flashinfer-w4-formal-formal-c64"
+        "sglang-fixed6-scored-c64"
       ]
     }
   }
