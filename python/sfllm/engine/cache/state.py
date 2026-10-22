@@ -49,7 +49,7 @@ class GatedDeltaNetState:
         self.backends = backends
         layers = len(backends)
         use_journal = (bool(spec_steps) and ssm_dtype == torch.float32
-                       and os.environ.get('SFLLM_GDN_JOURNAL') == '1')
+                       and os.environ.get('SFLLM_GDN_JOURNAL', '1') == '1')
         self.conv = torch.zeros((layers, max_requests + 1, *conv_shape),
                                 dtype=dtype, device=device)
         self.ssm = torch.zeros(
