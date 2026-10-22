@@ -4,6 +4,21 @@
 
 一个生产就绪的高性能大语言模型推理框架，提供与OpenAI兼容的API接口。
 
+## 性能对比
+
+![SFLLM 与 SGLang 的吞吐和生成延迟对比](docs/assets/internal-dataset-dspark-comparison.png)
+
+单张 H100 NVL，DSpark 投机解码；使用相同的内部数据集随机 300 条输入
+（seed 42）、FP8 目标模型、BF16 激活和 FP32 循环状态，并发覆盖 1–64。
+每个点分别选择该框架、该并发下已测候选中的最快配置，再用全部 300 条
+进行一次正式测量。实测版本为 SFLLM
+[`1755593`](https://github.com/wejoncy/sfllm/commit/17555935c3237ad1cf4afdd756943ae3f503dfa1)
+（`qwen35_specfic` 分支）和 SGLang
+[`e262b44`](https://github.com/sgl-project/sglang/commit/e262b44eef1f2bf83e34345276e2bb91a086587e)。
+
+SFLLM 使用选择性 draft FP8/top-k16，SGLang 使用原生 FlashInfer draft attention
+和各并发下选出的草稿配置。
+
 ## 项目背景
 
 SFLLM (Serving Framework for Large Language Models) 旨在为大语言模型提供高效可扩展的推理服务。项目专注于通过智能批处理、CUDA优化和内存高效实现来最大化GPU利用率并降低推理延迟。
@@ -19,6 +34,17 @@ SFLLM (Serving Framework for Large Language Models) 旨在为大语言模型提�
 - **Eagle3投机解码**: 采用先进的Eagle3算法进行投机解码，显著提升生成速度
 - **重叠调度**: 智能的计算与通信重叠调度，提高整体吞吐量
 - **Eagle3 CUDA图加速**: 结合CUDA图优化的Eagle3实现，极致性能表现
+
+## 支持的模型
+
+| 模型 | 支持范围 |
+| --- | --- |
+| Llama / Phi-3 / InternLM3 | 文本生成 |
+| Qwen2 / Qwen2.5 | 文本生成 |
+| Qwen3（dense） | 文本生成 |
+| Qwen3.5（dense） | 文本生成；BF16 和 FP8（ModelOpt / compressed-tensors） |
+| Qwen3.5-35B-A3B | BF16 文本生成（MoE） |
+| Qwen3.8-27B | BF16 文本生成 |
 
 ## 安装
 
@@ -42,10 +68,7 @@ pip install -r requirements.txt
 pip install -e .
 ```
 
-FlashInfer GDN、FA3 和 Hopper CUTLASS MoE 高性能路径通过
-`pip install -e '.[flashinfer]'` 安装。未安装这些可选包时，Qwen3.5/3.8
-的 GDN 使用 `--linear-attn-backend triton`，Qwen3.5 MoE 可使用
-`--moe-runner-backend triton_kernel` 选择仓库内置源码。
+可选 GPU 后端：`pip install -e '.[flashinfer]'`。
 
 ## 快速开始
 
@@ -70,45 +93,12 @@ python python/sfllm/serving/app.py \
   --dtype float16
 ```
 
-**Qwen3.8-27B 文本推理：**
-
-```bash
-hf download Qwen/Qwen3.8-27B --local-dir /mnt/data/work/Qwen3.8-27B
-python python/sfllm/serving/app.py \
-  --model /mnt/data/work/Qwen3.8-27B --dtype bfloat16 \
-  --attention-backend fa3 --max-running-requests 8 --cuda-graph-max-bs 8 \
-  --port 8081
-```
-
-独立的 [`qwen3_8.py`](python/sfllm/models/qwen3_8.py) 入口继承 Qwen3.5 实现。
-官方检查点按配置声明的 `Qwen3_5ForConditionalGeneration` 架构加载，
-加载语言模型，跳过视觉编码器和 MTP 权重。
-该 BF16 配置可在 H100 96 GB 上运行，默认使用 FP32 循环状态和 FlashInfer GDN。
-支持通过聊天模板参数控制思考模式，详见 [Qwen3.8 使用说明](docs/qwen3_8.md)。
-
-**Qwen3.5-35B-A3B MoE 文本推理：**
-
-独立的 [`qwen3_5_moe.py`](python/sfllm/models/qwen3_5_moe.py) 注册官方 MoE
-架构，复用 Qwen3.5 注意力和循环状态。BF16 文本模型可在一张 H100 NVL
-上运行，路由专家和共享专家均驻留 GPU，跳过视觉和 MTP 权重。
-Hopper 默认调用 FlashInfer 调优后的 fused CUTLASS MoE，融合共享专家。
-通过 `--moe-runner-backend triton_kernel` 可选择仓库内置的 Triton v3.7.1
-分组 GEMM 源码实现。配合 `--linear-attn-backend triton --attention-backend triton`，
-GDN 的 prefill/decode 和全注意力均走 Triton，无需安装 FlashInfer 或 `sglang-kernel`。
-FlashInfer 高性能路径保持原有 top-k GPU kernel、融合方式和调优参数。
-
-```bash
-pip install -e '.[flashinfer]'
-hf download Qwen/Qwen3.5-35B-A3B --local-dir /mnt/data/work/Qwen3.5-35B-A3B
-python python/sfllm/serving/app.py \
-  --model /mnt/data/work/Qwen3.5-35B-A3B --dtype bfloat16 \
-  --attention-backend fa3 --max-running-requests 16 --cuda-graph-max-bs 16 \
-  --max-context-length 16384 --port 8084
-```
-
-显存实测、思考模式和验证范围见 [Qwen3.5 MoE 使用说明](docs/qwen3_5_moe.md)。
-同卡 Polaris 对照、SGLang 最快实测配置的启动命令和调优缓存也记录在该说明中。
-目前不支持 MoE 量化检查点。
+**AngelSlim EAGLE3 配置说明：** 我们的测试表明，`AngelSlim/Qwen3-4B_eagle3`
+和 `AngelSlim/Qwen3-1.7B_eagle3` 的 draft `config.json` 更适合使用
+`rope_theta=10000`。它们的配置声明为 `1000000`，但
+[AngelSlim 公开的训练代码](https://github.com/Tencent/AngelSlim/blob/917de3ae8c3147ff158b1b7a9c40082808486ae9/angelslim/compressor/speculative/train/models/draft/llama_eagle3.py#L186-L190)
+使用 RoPE 默认基数 `10000`。目标模型保持 `1000000`；此修正仅针对这两个
+草稿检查点。
 
 ### 2. 测试API
 
