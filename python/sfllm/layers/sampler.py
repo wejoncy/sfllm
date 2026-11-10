@@ -3,6 +3,8 @@ from torch import nn
 import platform
 import dataclasses
 
+from sfllm.kernels.topk import pruned_topk
+
 
 @dataclasses.dataclass
 class SamplingBatchInfo:
@@ -12,6 +14,8 @@ class SamplingBatchInfo:
     top_ks: torch.Tensor
     min_ps: torch.Tensor
     is_all_greedy: bool
+    # Computed from request parameters on the CPU, without reading GPU tensors.
+    max_top_k: int | None = None
 
 
 def maybe_compile(fn):
@@ -36,12 +40,18 @@ class Sampler(nn.Module):
         top_ps: torch.Tensor,
         min_ps: torch.Tensor,
         need_min_p_sampling: bool,
+        max_top_k: int | None = None,
     ):
-        """A top-k, top-p and min-p sampling implementation with native pytorch operations."""
-        probs_sort, probs_idx = probs.sort(dim=-1, descending=True)
+        """Sample after filtering full-softmax probabilities by top-k, top-p and min-p."""
+        if max_top_k is not None and 0 < max_top_k <= 64 and max_top_k < probs.shape[-1]:
+            # Only these entries survive the top-k mask. Keep full-softmax
+            # probabilities so the existing top-p cutoff has the same meaning.
+            probs_sort, probs_idx = pruned_topk(probs, max_top_k)
+        else:
+            probs_sort, probs_idx = probs.sort(dim=-1, descending=True)
         probs_sum = torch.cumsum(probs_sort, dim=-1)
         probs_sort[
-            torch.arange(0, probs.shape[-1], device=probs.device).view(1, -1)
+            torch.arange(0, probs_sort.shape[-1], device=probs.device).view(1, -1)
             >= top_ks.view(-1, 1)
         ] = 0.0
         probs_sort[(probs_sum - probs_sort) > top_ps.view(-1, 1)] = 0.0
@@ -72,6 +82,7 @@ class Sampler(nn.Module):
                 sampling_batch_info.top_ps,
                 sampling_batch_info.min_ps,
                 False,
+                sampling_batch_info.max_top_k,
             )
         # sample_tokens = probs.div_(
         #     torch.empty_like(probs).exponential_(1).clamp_min_(1e-10)

@@ -9,7 +9,10 @@ from sfllm.kernels.topk import pruned_topk
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
 
 
-@pytest.mark.parametrize("m,n", [(1, 65536), (96, 248320), (192, 248320), (12, 250001)])
+@pytest.mark.parametrize("m,n", [
+    (1, 65536), (96, 248320), (192, 248320), (193, 248320),
+    (224, 248320), (384, 248320), (12, 250001),
+])
 def test_topk_graph_candidates(m, n):
     x = torch.randn(m, n, device="cuda", dtype=torch.bfloat16)
     pruned_topk(x)
@@ -45,7 +48,7 @@ def test_topk_fallback(case, monkeypatch):
     m, n, k = 12, 65536, 16
     dtype = torch.bfloat16
     if case == "large_m":
-        m = 193
+        m = 385
     elif case == "fp32":
         dtype = torch.float32
     elif case == "small_vocab":
@@ -74,3 +77,26 @@ def test_topk_fallback(case, monkeypatch):
     assert calls == [True]
     assert torch.equal(values, expected[0])
     assert torch.equal(ids, expected[1])
+
+
+@pytest.mark.parametrize("k", [8, 16])
+@pytest.mark.parametrize("missing_backend", [False, True])
+def test_draft_candidates_use_shared_topk(monkeypatch, k, missing_backend):
+    from types import SimpleNamespace
+
+    import sfllm.kernels.topk as topk_module
+    from sfllm.models.dflash2 import DFlash2DraftModel
+
+    if missing_backend:
+        monkeypatch.setattr(topk_module, "flashinfer", None)
+    logits = torch.randn(6, 65536, device="cuda", dtype=torch.bfloat16)
+    draft = SimpleNamespace(
+        dflash_config=SimpleNamespace(selector_top_k=k),
+        compute_logits=lambda *args: logits,
+    )
+    ids, values = DFlash2DraftModel.compute_candidates(
+        draft, torch.empty(2, 3, 4, device="cuda"), None,
+    )
+    assert ids.shape == values.shape == (2, 3, k)
+    assert torch.equal(values.flatten(0, 1), logits.topk(k, dim=-1).values)
+    assert torch.equal(logits.gather(1, ids.flatten(0, 1)), values.flatten(0, 1))
