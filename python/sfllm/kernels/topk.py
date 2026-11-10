@@ -1,9 +1,13 @@
 """Exact pruned BF16 vocabulary top-k with ascending token IDs for ties."""
 
-import flashinfer
 import torch
 import triton
 import triton.language as tl
+
+try:
+    import flashinfer
+except ImportError:
+    flashinfer = None
 
 
 @triton.jit
@@ -103,6 +107,17 @@ def _merge_words_kernel(
 
 
 def pruned_topk(x, k=16, *, sorted=True, deterministic=True):
+    if (
+        flashinfer is None
+        or not x.is_cuda
+        or torch.version.hip is not None
+        or x.dtype not in (torch.float16, torch.bfloat16, torch.float32)
+        or (x.dtype == torch.float32 and (
+            x.ndim != 2 or not x.is_contiguous()
+            or x.shape[-1] < 65536 or not 0 < k <= 64
+        ))
+    ):
+        return x.topk(k, dim=-1, sorted=sorted)
     block = 1024
     if (
         not sorted
@@ -115,7 +130,7 @@ def pruned_topk(x, k=16, *, sorted=True, deterministic=True):
         # Keep at least four times as many blocks as retained candidates.
         or (x.shape[-1] < 65536)
         or (x.shape[0] < 1)
-        or (x.shape[0] > 192)
+        or (x.shape[0] > 384)
     ):
         return flashinfer.top_k(x, k, sorted=sorted, deterministic=deterministic)
     n = x.shape[-1]

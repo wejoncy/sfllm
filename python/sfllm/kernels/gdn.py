@@ -1480,7 +1480,8 @@ class GatedDeltaNetBackend:
         fast_journal = (
             ssm_journal is not None and conv_journal is not None
             and projected_qkvz.is_cuda and torch.version.hip is None
-            and 0 < projected_qkvz.shape[0] <= 192
+            and 0 < projected_qkvz.shape[0] <= 256
+            and (projected_qkvz.shape[0] <= 192 or verify_bound <= 8)
             and projected_qkvz.dtype == torch.bfloat16
             and torch.cuda.get_device_capability(projected_qkvz.device)[0] >= 9
             and head_k_dim == head_v_dim == 128

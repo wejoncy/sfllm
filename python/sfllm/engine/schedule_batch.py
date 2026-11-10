@@ -366,6 +366,7 @@ class ScheduleBatch:
             )
             top_ps.append(seq.sampling_params.top_p)
             top_ks.append(1 if seq.sampling_params.is_greedy else seq.sampling_params.top_k)
+        max_top_k = max(top_ks)
         temperatures = torch.tensor(temperatures, dtype=torch.float32, pin_memory=True).to(device, non_blocking=True)
         top_ks = torch.tensor(top_ks, dtype=torch.int32, pin_memory=True).to(device, non_blocking=True)
         top_ps = torch.tensor(top_ps, dtype=torch.float32, pin_memory=True).to(device, non_blocking=True)
@@ -375,6 +376,7 @@ class ScheduleBatch:
             top_ks=top_ks,
             min_ps=torch.zeros_like(top_ps),
             is_all_greedy=False,
+            max_top_k=max_top_k,
         )
 
 @dataclasses.dataclass
