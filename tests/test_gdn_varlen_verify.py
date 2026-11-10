@@ -6,21 +6,23 @@ import torch
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
 
 
-@pytest.mark.parametrize("kind,conv_width,h,hv,k,v", [
-    ("journal", 4, 2, 4, 64, 80),
-    ("fp32", 4, 2, 4, 64, 80),
-    ("bf16", 4, 2, 4, 64, 80),
-    ("journal", 3, 4, 8, 128, 128),
-    ("journal", 4, 4, 8, 128, 128),
+@pytest.mark.parametrize("kind,conv_width,h,hv,k,v,batch,full_width", [
+    ("journal", 4, 2, 4, 64, 80, 20, False),
+    ("fp32", 4, 2, 4, 64, 80, 20, False),
+    ("bf16", 4, 2, 4, 64, 80, 20, False),
+    ("journal", 3, 4, 8, 128, 128, 20, False),
+    ("journal", 4, 4, 8, 128, 128, 20, False),
+    ("journal", 4, 4, 8, 128, 128, 32, True),
 ])
-def test_varlen_verify_outputs_and_states(kind, conv_width, h, hv, k, v):
+def test_varlen_verify_outputs_and_states(kind, conv_width, h, hv, k, v, batch, full_width, monkeypatch):
+    import sfllm.kernels.gdn as gdn
     from sfllm.kernels.gdn import GatedDeltaNetBackend
     from sfllm.kernels.gdn_journal import commit_conv_journal, replay_gdn_journal
 
     torch.manual_seed(81)
-    batch, capacity = 20, 8
+    capacity = 8
     slots = batch + 5
-    lengths = torch.tensor([(i * 3) % 8 + 1 for i in range(batch)])
+    lengths = torch.tensor([8 if full_width else (i * 3) % 8 + 1 for i in range(batch)])
     tokens = int(lengths.sum())
     cu = torch.empty(batch + 1, device="cuda", dtype=torch.int64)
     indices = torch.empty(batch * 2, device="cuda", dtype=torch.int32)[::2]
@@ -46,6 +48,15 @@ def test_varlen_verify_outputs_and_states(kind, conv_width, h, hv, k, v):
         (1, batch, hv, capacity),
     )) if kind == "journal" else None
     backend = GatedDeltaNetBackend("triton", "triton")
+    prepare_calls = []
+    original_prepare = gdn._prepare_gdn_journal
+
+    def prepare(*args, **kwargs):
+        prepare_calls.append(args[0].shape[0])
+        return original_prepare(*args, **kwargs)
+
+    if full_width:
+        monkeypatch.setattr(gdn, "_prepare_gdn_journal", prepare)
 
     def forward():
         return backend.decode(
@@ -61,7 +72,7 @@ def test_varlen_verify_outputs_and_states(kind, conv_width, h, hv, k, v):
     def metadata(round_id):
         # Exercise different request lengths and state slots, including 1 and 8.
         lens = lengths.roll(round_id * 3)
-        if round_id == 2:
+        if round_id == 2 and not full_width:
             # An empty graph row must not read the next request's first token.
             donor = next(i for i, n in enumerate(lens) if n == 1 and i not in (2, 7))
             recipient = next(i for i, n in enumerate(lens) if n == 7)
@@ -84,6 +95,8 @@ def test_varlen_verify_outputs_and_states(kind, conv_width, h, hv, k, v):
             for tensor in journal:
                 tensor.fill_(17)
         outputs = forward()
+        if full_width:
+            assert prepare_calls[-1] == 256
         # Verify must leave every request's persistent starting state intact.
         assert torch.equal(state[:slots], initial)
         assert torch.equal(conv, initial_conv)
